@@ -1,0 +1,12 @@
+apiVersion: polixy.olix0r.net/v1
+kind: Server
+metadata:
+  namespace: default
+  name: admin-server
+spec:
+  ports:
+    names:
+      - admin-http
+  podSelector:
+    matchLabels:
+      app: myapp

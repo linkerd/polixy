@@ -1,0 +1,59 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: servers.polixy.olix0r.net
+spec:
+  group: polixy.olix0r.net
+  names:
+    plural: servers
+    singular: server
+    kind: Server
+    shortNames: [srv]
+  scope: Namespaced
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required:
+                - ports
+                - podSelector
+              properties:
+                ports:
+                  type: object
+                  properties:
+                    names:
+                      type: array
+                      items:
+                        type: string
+                        pattern: "^[A-Za-z0-9-]+$"
+
+                podSelector:
+                  type: object
+                  properties:
+                    matchLabels: {type: object}
+                    matchExpressions:
+                      type: object
+                      properties:
+                        key: {type: string}
+                        operator:
+                          type: string
+                          enum: [In, NotIn]
+                        values:
+                          type: array
+                          items: {type: string}
+
+                protocol:
+                  type: string
+                  default: unknown
+                  enum:
+                    - unknown
+                    - http
+                    - grpc
+                    - opaque
+

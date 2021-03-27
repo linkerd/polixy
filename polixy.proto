@@ -1,0 +1,72 @@
+syntax = "proto3";
+
+package net.olix0r.polixy;
+
+service ServerPolicy {
+  rpc WatchServerPolicy(Request) returns (stream Update) {}
+}
+
+// === Request ===
+
+message Request {
+  string instance = 1;
+
+  oneof port {
+    string name = 10;
+    uint32 number = 11;
+  }
+}
+
+// === Update ===
+
+message Update {
+  repeated ClientAccess client_access = 1;
+
+  oneof proxyProtocol {
+    UnknownProtocol unknown = 10;
+    OpaqueProtocol opaque = 11;
+    HttpProtocol http = 12;
+    GrpcProtocol grpc = 13;
+  }
+}
+
+// === ClientAccess ===
+
+message ClientAccess {
+  repeated Network networks = 1;
+
+  oneof authz {
+    Unauthenticated unauthenticated = 10;
+    Authenticated authenticated = 11;
+    Restricted restricted = 12;
+  }
+
+  // Places no authentication requirements on clients.
+  message Unauthenticated {}
+
+  // Requires that clients are authenticated.
+  message Authenticated {}
+
+  // Requires that clients are authenticated and their identities are in the
+  // provided list.
+  //
+  // If the list is empty, clients are permitted.
+  message Restricted { repeated ClientId ids = 1; }
+}
+
+message Network {
+  string ip = 1; // TODO use structured address
+  uint32 mask = 2;
+}
+
+message ClientId { string id = 1; }
+
+// === Protocols ===
+
+message UnknownProtocol {}
+
+message OpaqueProtocol {}
+
+message HttpProtocol {}
+
+message GrpcProtocol {}

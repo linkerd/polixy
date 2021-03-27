@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: emojivoto
+  labels:
+    app.kubernetes.io/part-of: emojivoto
+    app.kubernetes.io/version: v11
+    linkerd.io/inject: enabled
+---
+apiVersion: polixy.olix0r.net/v1
+kind: Server
+metadata:
+  namespace: emojivoto
+  name: prom
+  labels:
+    app.kubernetes.io/part-of: emojivoto
+    app.kubernetes.io/version: v11
+spec:
+  port: prom
+  pods:
+    matchLabels:
+      app.kubernetes.io/part-of: emojivoto
+  proxyProtocol: Http

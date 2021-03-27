@@ -23,6 +23,9 @@ communication and to enforce authorization for pod-to-pod communication.
 
 ## Design
 
+* Inbound proxies watch policies for each server port.
+* 
+
 ### Proxy configuration/discovery
 
 Access policies obviously need to be enforced on the server-side in order to

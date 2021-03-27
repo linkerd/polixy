@@ -109,6 +109,14 @@ mod authz {
     }
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
+    tracing_subscriber::fmt::init();
+
+    #[allow(unused_variables)]
+    let client = kube::Client::try_default()
+        .await
+        .expect("Failed to initialize client");
+
     println!("Hello, world!");
 }

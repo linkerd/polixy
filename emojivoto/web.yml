@@ -83,7 +83,7 @@ metadata:
     emojivoto/api: web
 spec:
   port: http
-  pods:
+  podSelector:
     matchLabels:
       app.kubernetes.io/part-of: emojivoto
       app.kubernetes.io/name: web
@@ -98,11 +98,8 @@ metadata:
     app.kubernetes.io/part-of: emojivoto
     app.kubernetes.io/name: web
     app.kubernetes.io/version: v11
-    emojivoto/api: web
 spec:
-  servers:
-    matchLabels:
-      app.kubernetes.io/part-of: emojivoto
-      app.kubernetes.io/name: web
+  serverName: web-http
   authorizations:
-    - kind: Unauthenticated
+    - unauthenticated:
+        any: true

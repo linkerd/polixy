@@ -82,8 +82,25 @@ metadata:
     app.kubernetes.io/version: v11
 spec:
   port: grpc
-  pods:
+  podSelector:
     matchLabels:
       app.kubernetes.io/part-of: emojivoto
       app.kubernetes.io/name: voting
   proxyProtocol: Grpc
+---
+apiVersion: polixy.olix0r.net/v1
+kind: Authorization
+metadata:
+  namespace: emojivoto
+  name: voting-grpc
+  labels:
+    app.kubernetes.io/part-of: emojivoto
+    app.kubernetes.io/name: voting
+    app.kubernetes.io/version: v11
+spec:
+  serverName: voting-grpc
+  authorizations:
+    - authenticated:
+        serviceAccountRef:
+          namespace: emojivoto
+          name: web

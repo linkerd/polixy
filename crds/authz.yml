@@ -22,6 +22,11 @@ spec:
             spec:
               type: object
               properties:
+                # References a `Server` instance in the same namespace.
+                serverName:
+                  type: string
+                  pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+                # Selects `Server` instances in the same namespace.
                 serverSelector:
                   type: object
                   properties:
@@ -32,7 +37,6 @@ spec:
                       type: array
                       items:
                         type: object
-                        required: [key, operator, values]
                         properties:
                           key:
                             type: string
@@ -43,6 +47,10 @@ spec:
                             type: array
                             items:
                               type: string
+                        required:
+                          - key
+                          - operator
+                          - values
                 authorizations:
                   type: array
                   items:
@@ -51,15 +59,19 @@ spec:
                       unauthenticated:
                         type: object
                         properties:
+                          any:
+                            type: boolean
                           parentNode:
                             type: boolean
                           network:
                             type: string
-                        oneof:
-                          - properties:
-                              parentNode: {}
-                          - properties:
-                              network: {}
+                        # oneOf:
+                        #   - properties:
+                        #       any: {}
+                        #   - properties:
+                        #       parentNode: {}
+                        #   - properties:
+                        #       network: {}
                       authenticated:
                         type: object
                         properties:
@@ -72,8 +84,10 @@ spec:
                             properties:
                               name:
                                 type: string
+                                pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
                               namespace:
                                 type: string
+                                pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
                             required:
                               - name
                           serviceAccountSelector:
@@ -81,6 +95,7 @@ spec:
                             properties:
                               namespace:
                                 type: string
+                                pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
                               matchLabels:
                                 type: object
                                 x-kubernetes-preserve-unknown-fields: true
@@ -88,7 +103,6 @@ spec:
                                 type: array
                                 items:
                                   type: object
-                                  required: [key, operator, values]
                                   properties:
                                     key:
                                       type: string
@@ -99,15 +113,23 @@ spec:
                                       type: array
                                       items:
                                         type: string
-                        oneOf:
-                          - properties:
-                              any: {}
-                          - properties:
-                              identity: {}
-                          - properties:
-                              serviceAccountSelector: {}
-                          - properties:
-                              serviceAccountRef: {}
+                                  required:
+                                    - key
+                                    - operator
+                                    - values
+                        # oneOf:
+                        #   - properties:
+                        #       any: {}
+                        #   - properties:
+                        #       identity: {}
+                        #   - properties:
+                        #       serviceAccountSelector: {}
+                        #   - properties:
+                        #       serviceAccountRef: {}
               required:
-                - servers
                 - authorizations
+              # oneOf:
+              #   - properties:
+              #       serverName: {}
+              #   - properties:
+              #       serverSelector: {}

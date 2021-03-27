@@ -47,10 +47,7 @@ spec:
                             type: array
                             items:
                               type: string
-                        required:
-                          - key
-                          - operator
-                          - values
+                        required: [key, operator, value]
                 authorizations:
                   type: array
                   items:
@@ -65,13 +62,10 @@ spec:
                             type: boolean
                           network:
                             type: string
-                        # oneOf:
-                        #   - properties:
-                        #       any: {}
-                        #   - properties:
-                        #       parentNode: {}
-                        #   - properties:
-                        #       network: {}
+                        oneOf:
+                          - required: [any]
+                          - required: [parentNode]
+                          - required: [network]
                       authenticated:
                         type: object
                         properties:
@@ -117,19 +111,11 @@ spec:
                                     - key
                                     - operator
                                     - values
-                        # oneOf:
-                        #   - properties:
-                        #       any: {}
-                        #   - properties:
-                        #       identity: {}
-                        #   - properties:
-                        #       serviceAccountSelector: {}
-                        #   - properties:
-                        #       serviceAccountRef: {}
-              required:
-                - authorizations
-              # oneOf:
-              #   - properties:
-              #       serverName: {}
-              #   - properties:
-              #       serverSelector: {}
+                        oneOf:
+                          - required: [any]
+                          - required: [identity]
+                          - required: [serviceAccountRef]
+                          - required: [serviceAccountSelector]
+              oneOf:
+                - required: [serverName, authorizations]
+                - required: [serverSelector, authorizations]

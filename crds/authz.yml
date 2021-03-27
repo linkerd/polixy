@@ -1,0 +1,113 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: authorizations.polixy.olix0r.net
+spec:
+  group: polixy.olix0r.net
+  names:
+    kind: Authorization
+    plural: authorizations
+    singular: authorization
+    shortNames: [authz]
+  scope: Namespaced
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          properties:
+            spec:
+              type: object
+              properties:
+                serverSelector:
+                  type: object
+                  properties:
+                    matchLabels:
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
+                    matchExpressions:
+                      type: array
+                      items:
+                        type: object
+                        required: [key, operator, values]
+                        properties:
+                          key:
+                            type: string
+                          operator:
+                            type: string
+                            enum: [In, NotIn]
+                          values:
+                            type: array
+                            items:
+                              type: string
+                authorizations:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      unauthenticated:
+                        type: object
+                        properties:
+                          parentNode:
+                            type: boolean
+                          network:
+                            type: string
+                        oneof:
+                          - properties:
+                              parentNode: {}
+                          - properties:
+                              network: {}
+                      authenticated:
+                        type: object
+                        properties:
+                          any:
+                            type: boolean
+                          identity:
+                            type: string
+                          serviceAccountRef:
+                            type: object
+                            properties:
+                              name:
+                                type: string
+                              namespace:
+                                type: string
+                            required:
+                              - name
+                          serviceAccountSelector:
+                            type: object
+                            properties:
+                              namespace:
+                                type: string
+                              matchLabels:
+                                type: object
+                                x-kubernetes-preserve-unknown-fields: true
+                              matchExpressions:
+                                type: array
+                                items:
+                                  type: object
+                                  required: [key, operator, values]
+                                  properties:
+                                    key:
+                                      type: string
+                                    operator:
+                                      type: string
+                                      enum: [In, NotIn]
+                                    values:
+                                      type: array
+                                      items:
+                                        type: string
+                        oneOf:
+                          - properties:
+                              any: {}
+                          - properties:
+                              identity: {}
+                          - properties:
+                              serviceAccountSelector: {}
+                          - properties:
+                              serviceAccountRef: {}
+              required:
+                - servers
+                - authorizations

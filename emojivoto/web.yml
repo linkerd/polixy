@@ -90,7 +90,7 @@ spec:
   proxyProtocol: Http
 ---
 apiVersion: polixy.olix0r.net/v1
-kind: Access
+kind: Authorization
 metadata:
   namespace: emojivoto
   name: web-http
@@ -104,4 +104,5 @@ spec:
     matchLabels:
       app.kubernetes.io/part-of: emojivoto
       app.kubernetes.io/name: web
-  proxyProtocol: Http
+  authorizations:
+    - kind: Unauthenticated

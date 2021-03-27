@@ -80,7 +80,6 @@ metadata:
     app.kubernetes.io/part-of: emojivoto
     app.kubernetes.io/name: web
     app.kubernetes.io/version: v11
-    emojivoto/api: web
 spec:
   port: http
   podSelector:
@@ -93,13 +92,14 @@ apiVersion: polixy.olix0r.net/v1
 kind: Authorization
 metadata:
   namespace: emojivoto
-  name: web-http
+  name: web-public
   labels:
     app.kubernetes.io/part-of: emojivoto
     app.kubernetes.io/name: web
     app.kubernetes.io/version: v11
 spec:
-  serverName: web-http
-  authorizations:
+  server:
+    name: web-http
+  clients:
     - unauthenticated:
         any: true

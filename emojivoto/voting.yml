@@ -98,9 +98,10 @@ metadata:
     app.kubernetes.io/name: voting
     app.kubernetes.io/version: v11
 spec:
-  serverName: voting-grpc
-  authorizations:
+  server:
+    name: voting-grpc
+  clients:
     - authenticated:
-        serviceAccountRef:
+        serviceAccount:
           namespace: emojivoto
           name: web

@@ -21,34 +21,9 @@ spec:
           properties:
             spec:
               type: object
+              required: [clients, server]
               properties:
-                # References a `Server` instance in the same namespace.
-                serverName:
-                  type: string
-                  pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
-                # Selects `Server` instances in the same namespace.
-                serverSelector:
-                  type: object
-                  properties:
-                    matchLabels:
-                      type: object
-                      x-kubernetes-preserve-unknown-fields: true
-                    matchExpressions:
-                      type: array
-                      items:
-                        type: object
-                        properties:
-                          key:
-                            type: string
-                          operator:
-                            type: string
-                            enum: [In, NotIn]
-                          values:
-                            type: array
-                            items:
-                              type: string
-                        required: [key, operator, value]
-                authorizations:
+                clients:
                   type: array
                   items:
                     type: object
@@ -58,35 +33,31 @@ spec:
                         properties:
                           any:
                             type: boolean
-                          parentNode:
-                            type: boolean
+                            enum: [true]
                           network:
                             type: string
+                          node:
+                            type: boolean
+                            enum: [true]
                         oneOf:
                           - required: [any]
-                          - required: [parentNode]
+                          - required: [node]
                           - required: [network]
                       authenticated:
                         type: object
                         properties:
                           any:
                             type: boolean
+                            enum: [true]
                           identity:
                             type: string
-                          serviceAccountRef:
+                            pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$'
+                          serviceAccount:
                             type: object
                             properties:
                               name:
                                 type: string
                                 pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
-                              namespace:
-                                type: string
-                                pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
-                            required:
-                              - name
-                          serviceAccountSelector:
-                            type: object
-                            properties:
                               namespace:
                                 type: string
                                 pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
@@ -97,6 +68,7 @@ spec:
                                 type: array
                                 items:
                                   type: object
+                                  required: [key, operator, values]
                                   properties:
                                     key:
                                       type: string
@@ -107,15 +79,44 @@ spec:
                                       type: array
                                       items:
                                         type: string
-                                  required:
-                                    - key
-                                    - operator
-                                    - values
+                            oneOf:
+                              - required: [name]
+                              - required: [matchLabels]
+                              - required: [matchExpressions]
                         oneOf:
                           - required: [any]
                           - required: [identity]
-                          - required: [serviceAccountRef]
-                          - required: [serviceAccountSelector]
-              oneOf:
-                - required: [serverName, authorizations]
-                - required: [serverSelector, authorizations]
+                          - required: [serviceAccount]
+                    oneOf:
+                      - required: [unauthenticated]
+                      - required: [authenticated]
+
+                # References `Server` instances in the same namespace.
+                server:
+                  type: object
+                  properties:
+                    name:
+                      type: string
+                      pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+                    matchLabels:
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
+                    matchExpressions:
+                      type: array
+                      items:
+                        type: object
+                        required: [key, operator, value]
+                        properties:
+                          key:
+                            type: string
+                          operator:
+                            type: string
+                            enum: [In, NotIn]
+                          values:
+                            type: array
+                            items:
+                              type: string
+                  oneOf:
+                    - required: [name]
+                    - required: [matchLabels]
+                    - required: [matchExpressions]

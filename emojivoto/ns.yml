@@ -31,11 +31,12 @@ metadata:
     app.kubernetes.io/part-of: emojivoto
     app.kubernetes.io/version: v11
 spec:
-  serverName: prom
-  authorizations:
+  server:
+    name: prom
+  clients:
     - authenticated:
-        serviceAccountRef:
+        serviceAccount:
           namespace: linkerd-viz
           name: prometheus
     - unauthenticated:
-        parentNode: true
+        node: true

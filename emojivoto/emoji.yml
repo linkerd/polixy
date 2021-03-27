@@ -99,9 +99,10 @@ metadata:
     app.kubernetes.io/name: emoji
     app.kubernetes.io/version: v11
 spec:
-  serverName: emoji-grpc
-  authorizations:
+  server:
+    name: emoji-grpc
+  clients:
     - authenticated:
-        serviceAccountRef:
+        serviceAccount:
           namespace: emojivoto
           name: web

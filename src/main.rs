@@ -1,35 +1,28 @@
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+#[tokio::main]
+async fn main() {
+    tracing_subscriber::fmt::init();
 
-pub type MatchLabels = HashMap<String, String>;
+    #[allow(unused_variables)]
+    let client = kube::Client::try_default()
+        .await
+        .expect("Failed to initialize client");
 
-#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
-struct MatchExpr {
-    key: String,
-    operator: MatchExprOperator,
-    values: Vec<String>,
-}
-
-#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
-enum MatchExprOperator {
-    In,
-    NotIn,
+    println!("Hello, world!");
 }
 
 mod server {
-    use super::{MatchExpr, MatchLabels};
+    use super::labels;
     use kube::CustomResource;
     use schemars::JsonSchema;
     use serde::{Deserialize, Serialize};
 
-    #[derive(CustomResource, Deserialize, Serialize, Clone, Debug, JsonSchema)]
     #[kube(
         group = "polixy.olix0r.net",
         version = "v1",
         kind = "Server",
         namespaced
     )]
+    #[derive(CustomResource, Deserialize, Serialize, Clone, Debug, JsonSchema)]
     #[serde(rename_all = "camelCase")]
     pub struct ServerSpec {
         pod_selector: PodSelector,
@@ -39,8 +32,8 @@ mod server {
     #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
     #[serde(rename_all = "camelCase")]
     pub struct PodSelector {
-        match_labels: MatchLabels,
-        match_expressions: Vec<MatchExpr>,
+        match_labels: labels::Map,
+        match_expressions: labels::Expressions,
     }
 
     #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
@@ -52,18 +45,18 @@ mod server {
 }
 
 mod authz {
-    use super::{MatchExpr, MatchLabels};
+    use super::labels;
     use kube::CustomResource;
     use schemars::JsonSchema;
     use serde::{Deserialize, Serialize};
 
-    #[derive(CustomResource, Deserialize, Serialize, Clone, Debug, JsonSchema)]
     #[kube(
         group = "polixy.olix0r.net",
         version = "v1",
         kind = "Authorization",
         namespaced
     )]
+    #[derive(CustomResource, Deserialize, Serialize, Clone, Debug, JsonSchema)]
     #[serde(rename_all = "camelCase")]
     pub struct AuthorizationSpec {
         server: Server,
@@ -74,8 +67,8 @@ mod authz {
     #[serde(rename_all = "camelCase")]
     pub struct Server {
         name: String,
-        match_labels: MatchLabels,
-        match_expressions: Vec<MatchExpr>,
+        match_labels: labels::Map,
+        match_expressions: labels::Expressions,
     }
 
     #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
@@ -97,8 +90,8 @@ mod authz {
     pub struct ServiceAccount {
         name: String,
         namespace: String,
-        match_labels: MatchLabels,
-        match_expressions: Vec<MatchExpr>,
+        match_labels: labels::Map,
+        match_expressions: labels::Expressions,
     }
 
     #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
@@ -109,14 +102,25 @@ mod authz {
     }
 }
 
-#[tokio::main]
-async fn main() {
-    tracing_subscriber::fmt::init();
+mod labels {
+    use schemars::JsonSchema;
+    use serde::{Deserialize, Serialize};
+    use std::collections::HashMap;
 
-    #[allow(unused_variables)]
-    let client = kube::Client::try_default()
-        .await
-        .expect("Failed to initialize client");
+    pub type Map = HashMap<String, String>;
 
-    println!("Hello, world!");
+    pub type Expressions = Vec<Expression>;
+
+    #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
+    pub struct Expression {
+        key: String,
+        operator: Operator,
+        values: Vec<String>,
+    }
+
+    #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
+    pub enum Operator {
+        In,
+        NotIn,
+    }
 }

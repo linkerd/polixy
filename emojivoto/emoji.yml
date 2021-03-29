@@ -101,8 +101,7 @@ metadata:
 spec:
   server:
     name: emoji-grpc
-  clients:
-    - authenticated:
-        serviceAccount:
-          namespace: emojivoto
-          name: web
+  authenticated:
+    serviceAccounts:
+      - namespace: emojivoto
+        name: web

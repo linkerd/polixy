@@ -16,6 +16,7 @@ mod server {
     use schemars::JsonSchema;
     use serde::{Deserialize, Serialize};
 
+    /// Describes a server interface exposed by a set of pods.
     #[kube(
         group = "polixy.olix0r.net",
         version = "v1",
@@ -29,13 +30,15 @@ mod server {
         port: Port,
     }
 
+    /// Selects a set of pods that expose a server.
     #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
     #[serde(rename_all = "camelCase")]
     pub struct PodSelector {
-        match_labels: labels::Map,
-        match_expressions: labels::Expressions,
+        match_labels: Option<labels::Map>,
+        match_expressions: Option<labels::Expressions>,
     }
 
+    /// References a pod spec's port by name or number.
     #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
     #[serde(untagged)]
     enum Port {
@@ -50,6 +53,7 @@ mod authz {
     use schemars::JsonSchema;
     use serde::{Deserialize, Serialize};
 
+    /// Authorizes clients to connect to a Server.
     #[kube(
         group = "polixy.olix0r.net",
         version = "v1",
@@ -59,46 +63,71 @@ mod authz {
     #[derive(CustomResource, Deserialize, Serialize, Clone, Debug, JsonSchema)]
     #[serde(rename_all = "camelCase")]
     pub struct AuthorizationSpec {
-        server: Server,
         clients: Vec<Client>,
+        server: Server,
     }
 
+    /// Selects one or more server instances in the same namespace as the `Authorization`.
+    ///
+    /// Exactly one of `name`, `match_labels`, and `match_expressions` should be set.
     #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
     #[serde(rename_all = "camelCase")]
     pub struct Server {
-        name: String,
-        match_labels: labels::Map,
-        match_expressions: labels::Expressions,
+        /// References a server instance by name.
+        name: Option<String>,
+        /// Selects an arbitrary number of `Server` instances by label key-value.
+        match_labels: Option<labels::Map>,
+        /// Selects an arbitrary number of `Server` instances by label expression.
+        match_expressions: Option<labels::Expressions>,
     }
 
+    /// Describes a client authorized to connect to a server.
+    ///
+    /// Either `authenticated` or `unauthenticated` should be set.
     #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
     pub struct Client {
-        authenticated: Authenticated,
-        unauthenticated: Unauthenticated,
+        authenticated: Option<Authenticated>,
+        unauthenticated: Option<Unauthenticated>,
     }
 
+    /// Describes an authenticated client.
+    ///
+    /// Exactly one of `any`, `identity`, and `service_account` should be set.
     #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
     #[serde(rename_all = "camelCase")]
     pub struct Authenticated {
-        any: bool,
-        identity: String,
-        service_account: ServiceAccount,
+        /// Indicates that all authenticated clients are authorized to access a server.
+        ///
+        /// If set, must be true.
+        any: Option<bool>,
+        /// Indicates a Linkerd identity that is authorized to access a server.
+        identity: Option<String>,
+        /// Identifies a `ServiceAccount` authorized to access a server.
+        service_account: Option<ServiceAccount>,
     }
 
+    /// References Kubernetes `ServiceAccount` instances.
+    ///
+    /// If no namespace is specified, the `Authorization`'s namespace is used.
+    ///
+    /// Exactly one of `name`, `match_labels`, or `match_expressions` should be set.
     #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
     #[serde(rename_all = "camelCase")]
     pub struct ServiceAccount {
-        name: String,
         namespace: String,
-        match_labels: labels::Map,
-        match_expressions: labels::Expressions,
+        name: Option<String>,
+        match_labels: Option<labels::Map>,
+        match_expressions: Option<labels::Expressions>,
     }
 
+    /// Describes an unauthenticated client.
+    ///
+    /// Exactly one of `any`, `node`, and `network` should be set.
     #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
     pub struct Unauthenticated {
-        any: bool,
-        node: bool,
-        network: String,
+        any: Option<bool>,
+        node: Option<bool>,
+        network: Option<String>,
     }
 }
 

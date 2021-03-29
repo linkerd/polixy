@@ -20,88 +20,34 @@ spec:
           required: [spec]
           properties:
             spec:
+              description: >-
+                Authorizes clients to communicate with Linkerd-proxied servers.
               type: object
-              required: [clients, server]
+              required: [server]
+              oneOf:
+                - required: [authenticated]
+                - required: [unauthenticated]
               properties:
-                clients:
-                  type: array
-                  items:
-                    type: object
-                    properties:
-                      unauthenticated:
-                        type: object
-                        properties:
-                          any:
-                            type: boolean
-                            enum: [true]
-                          network:
-                            type: string
-                          node:
-                            type: boolean
-                            enum: [true]
-                        oneOf:
-                          - required: [any]
-                          - required: [node]
-                          - required: [network]
-                      authenticated:
-                        type: object
-                        properties:
-                          any:
-                            type: boolean
-                            enum: [true]
-                          identity:
-                            type: string
-                            pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$'
-                          serviceAccount:
-                            type: object
-                            properties:
-                              name:
-                                type: string
-                                pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
-                              namespace:
-                                type: string
-                                pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
-                              matchLabels:
-                                type: object
-                                x-kubernetes-preserve-unknown-fields: true
-                              matchExpressions:
-                                type: array
-                                items:
-                                  type: object
-                                  required: [key, operator, values]
-                                  properties:
-                                    key:
-                                      type: string
-                                    operator:
-                                      type: string
-                                      enum: [In, NotIn]
-                                    values:
-                                      type: array
-                                      items:
-                                        type: string
-                            oneOf:
-                              - required: [name]
-                              - required: [matchLabels]
-                              - required: [matchExpressions]
-                        oneOf:
-                          - required: [any]
-                          - required: [identity]
-                          - required: [serviceAccount]
-                    oneOf:
-                      - required: [unauthenticated]
-                      - required: [authenticated]
-
-                # References `Server` instances in the same namespace.
                 server:
+                  description: >-
+                    References `Server` instances in the same namespace.
+
+                    Exactly one of `name`, `matchLabels`, and
+                    `matchExpressions` may be set.
                   type: object
                   properties:
                     name:
+                      description: References a `Server` instance by name
                       type: string
                       pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
                     matchLabels:
+                      description: >-
+                        References `Server` instances by label key-value pairs. An empty object matches all servers.
                       type: object
                       x-kubernetes-preserve-unknown-fields: true
                     matchExpressions:
+                      description: >-
+                        References `Server` instances by label expressions. An empty array matches all servers.
                       type: array
                       items:
                         type: object
@@ -120,3 +66,77 @@ spec:
                     - required: [name]
                     - required: [matchLabels]
                     - required: [matchExpressions]
+
+                authenticated:
+                  description: >-
+                    Authorizes a clients to connect to a server with Linkerd
+                    mTLS identity.
+                  type: object
+                  oneOf:
+                    - required: [identities]
+                    - required: [serviceAccounts]
+                  properties:
+
+                    identities:
+                      description: >-
+                        Authorizes authenticated clients with the provided identity strings.
+
+                        An identity string of `*` indicates that all authenticated clients are authorized.
+                      type: array
+                      items:
+                        type: string
+                        pattern: '^(\*|[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*)$'
+
+                    serviceAccounts:
+                      type: array
+                      items:
+                        type: object
+                        oneOf:
+                          - required: [name]
+                          - required: [matchLabels]
+                          - required: [matchExpressions]
+                        properties:
+                          namespace:
+                            type: string
+                            pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+                          name:
+                            type: string
+                            pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+                          matchLabels:
+                            type: object
+                            x-kubernetes-preserve-unknown-fields: true
+                          matchExpressions:
+                            type: array
+                            items:
+                              type: object
+                              required: [key, operator, values]
+                              properties:
+                                key:
+                                  type: string
+                                operator:
+                                  type: string
+                                  enum: [In, NotIn]
+                                values:
+                                  type: array
+                                  items:
+                                    type: string
+
+                unauthenticated:
+                  description: >-
+                    Authorizes unauthenticated clients to connect to a server.
+                  type: object
+                  oneOf:
+                    - required: [localNode]
+                    - required: [networks]
+                  properties:
+
+                    localNode:
+                      description: "Authorizes traffic from a pod's local node, i.e., for kubelet probes."
+                      type: boolean
+                      enum: [true]
+
+                    networks:
+                      description: "Authorizes traffic from specified CIDR blocks"
+                      type: array
+                      items:
+                        type: string

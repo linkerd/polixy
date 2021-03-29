@@ -48,12 +48,6 @@ spec:
                               type: string
                 port:
                   x-kubernetes-int-or-string: true
-                  oneOf:
-                    - type: integer
-                      minimum: 1
-                      maximum: 65535
-                    - type: string
-                      pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
                 proxyProtocol:
                   type: string
                   default: Unknown

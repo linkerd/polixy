@@ -26,17 +26,28 @@ apiVersion: polixy.olix0r.net/v1
 kind: Authorization
 metadata:
   namespace: emojivoto
-  name: prom
+  name: prom-prometheus
   labels:
     app.kubernetes.io/part-of: emojivoto
     app.kubernetes.io/version: v11
 spec:
   server:
     name: prom
-  clients:
-    - authenticated:
-        serviceAccount:
-          namespace: linkerd-viz
-          name: prometheus
-    - unauthenticated:
-        node: true
+  authenticated:
+    serviceAccounts:
+      - namespace: linkerd-viz
+        name: prometheus
+---
+apiVersion: polixy.olix0r.net/v1
+kind: Authorization
+metadata:
+  namespace: emojivoto
+  name: prom-kubelet
+  labels:
+    app.kubernetes.io/part-of: emojivoto
+    app.kubernetes.io/version: v11
+spec:
+  server:
+    name: prom
+  unauthenticated:
+    localNode: true

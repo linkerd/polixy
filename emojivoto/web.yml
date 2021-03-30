@@ -100,6 +100,9 @@ metadata:
 spec:
   server:
     name: web-http
+  # Allow all clients to access the web HTTP port without regard for
+  # authentication. If unauthenticated connections are permitted, there is no
+  # need to describe authenticated clients.
   unauthenticated:
     networks:
       - 0.0.0.0/0

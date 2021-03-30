@@ -12,48 +12,93 @@ communication and to enforce authorization for pod-to-pod communication.
 
 ## Goals
 
-1. Provides a means for cluster operators to enforce cluster-wide access policies.
-2. Provides a means for application operators to enforce application-level
-   access policies.
-3. Does not complicate getting started with Linkerd.
-4. Leverages existing Kubernetes primitives/patterns wherever possible.
-5. Identifies primitives/patterns that can be re-used for other types of
+1. Provides mechanisms for application operators to restrict access to
+   their servers.
+2. Does not complicate getting started with Linkerd.
+3. Leverages existing Kubernetes primitives/patterns wherever possible.
+4. Identifies primitives/patterns that can be re-used for other types of
    configuration.
-6. Supports compability with SMI's `TrafficPolicy` API.
 
 ## Design
 
-* Inbound proxies watch policies for each server port.
-* 
-
-### Proxy configuration/discovery
+### Server-centric
 
 Access policies obviously need to be enforced on the server-side in order to
-provide any reasonable guarantees against malfeasant clients. And, while the
-proxy performs per-destination discovery its outbound side, no such
-serverside logic exists presently. (The proxy does perform service profile
-discovery based on inbound HTTP request metadata, but these lookups do not
-necessarily block requests and only apply to HTTP requests).
+provide any reasonable guarantees against malfeasant clients. As such, we
+need a means for an inbound proxy to discover policies for its local servers
+(ports that the pod-local containers listen on).
 
-#### Bootstrapping and identity
+While it may be attractive to use Kubernetes `Service`s for this, they are
+really not the right tool for the job. Kubernetes services are more of a
+client-centric concept than a server-centric concept: they define a logical
+target for traffic independent of its actual destination. A server, however,
+has no way to correlate an inbound connection with a service. And it may
+receive traffic that isn't associated with a `Service` at all (kubelet
+probes, for instance).
 
-The identity controller, in particular, must not depend on any external services.
+This points to the introduction of a new custom resource type that
+describes a *server*--matching a port on a set of pods.
 
-### Policies
+#### Dynamic Policy Discovery
 
-#### Requiring authenticated communication
+Outbound proxies perform service discovery based on the target IP:Port of a
+connection. Inbound proxies will similarly need to watch for policy changes.
 
-##### Inbound
+Outbound proxies are lazy and dynamic, as we cannot require an application to
+document all endpoints to which an application connects; but, on the inbound
+side, it's much more reasonable to expect operators to document the ports on
+which an application accepts connections. In fact, this almost always done as
+part of a `Pod` spec.
 
-#### Limiting Authorized Clients
+This means that we can likely configure a proxy (at inject-time) with a list
+of ports for which the inbound proxy may accept connections. Then, the proxy
+can watch policy updates for each of these ports. This could be completed
+before a proxy starts accepting connections and marks itself as _ready_.
+
+The inbound policy API (as well as a validating admission controller) should
+probably be served from the destination controller's pod--proxies already
+have a client to this service, and a policy API does not need any special
+privileges that we would not want the destination controller to have
+otherwise.
+
+##### Controller Bootstrapping
+
+The above scheme poses a "*Wyld Stallyns* problem" for the identity
+controller: the identity controller needs to discover inbound policy in order
+to start issuing certificates, but the destination controller cannot accept
+connections until it obtains a certificate from the identity controller.
+
+We want the identity controller to remain in a distinct deployment, separate
+from the other controller containers, as it requires access to signing
+secrets that these other processes should not be able to access.
+
+We'll need to figure out a way for the identity controller to startup without
+requiring access to the destination controller. One approach could be to
+serve a specialized version of the API endpoints--only for the identity
+controller's proxy--from the identity controller. This only feasible because
+the identity controller has very limited discovery needs:
+
+* It
+
+### Allow-lists (default deny)
+
+We've identified the need for _server_ resources; but we haven't yet
+described how access policy is defined.
 
 #### Allowing unauthenticated access for kubelet
 
 Kubelet is a node-level process--that cannot be meshed with Linkerd--
 responsible for probing pods to report their status to controllers. As such, we need to
 
+![Policy resources](./img/resources.png "Policy resources")
+
+#### Modifying the default behavior
+
+#### Control plane policies
+
 ## Future work
 
+- Cluster-wide policies
 - Egress policies
 - Timeouts
 - HTTP Route configuration
@@ -61,7 +106,7 @@ responsible for probing pods to report their status to controllers. As such, we 
 
 ## Prior art
 
-- SMI `TrafficPolicy`
-- `serviceprofiles.linkerd.io/ServiceProfile`
-- `Role`/`ClusterRole`, `RoleBinding`/`ClusterRoleBinding`
-- `NetworkPolicy`
+- SMI `TrafficPolicy` -- not port-aware; not workload-aware.
+- `serviceprofiles.linkerd.io/ServiceProfile` -- not port-aware; tied to DNS (service) names
+- `NetworkPolicy` -- not authentication-aware
+- `Role`/`ClusterRole`, `RoleBinding`/`ClusterRoleBinding` -- requires authentication

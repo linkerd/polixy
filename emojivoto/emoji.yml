@@ -99,9 +99,8 @@ metadata:
     app.kubernetes.io/name: emoji
     app.kubernetes.io/version: v11
 spec:
+  # Allow all authenticated clients to access the (read-only) emoji service.
   server:
     name: emoji-grpc
   authenticated:
-    serviceAccounts:
-      - namespace: emojivoto
-        name: web
+    identities: ['*']

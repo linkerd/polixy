@@ -110,15 +110,44 @@ which runs on the local node's host network.
 
 #### Default behavior
 
-When no policy is configured for a server...
+When no policy is configured for a server, the default behavior must be to
+**allow** connections; otherwise policies would have to be created for all
+servers when installing Linkerd.
+
+But a default-allow policy isn't exactly ideal from a security point-of-view.
+To ameliorate this, we probably want to support ways to enable a default-deny
+mode:
+
+* At install-time, users can configure the default behavior (allow vs deny).
+* Namespace-level and workload-level annotations configure a proxy's default
+  behavior.
+* Richer default polices (e.g. allowing unauthenticated connections from
+  specific networks, requiring identity, etc) are not currently supported,
+  though they may be added in the future.
 
 #### Allowing unauthenticated access for kubelet
 
 Kubelet is a node-level process responsible for probing pods to report their
 status to controllers. It's essential that kubelet be able to access health
-checking ports; but
+checking ports without authentication;
+
+See [this blog post on pod networking][pod-ips]--we can use a node's
+`podCIDRs` fields to determine the address of the kubelet. this could also
+allow us to limit connections to other pods on the same node, but that's kind
+of weird...
+
+[pod-ips]: https://ronaknathani.com/blog/2020/08/how-a-kubernetes-pod-gets-an-ip-address/
 
 #### Control plane policies
+
+The core control plane should ship with a set of default policies:
+
+* The identity controller requires mutually authenticated requests.
+* The identity controller requires secured connections that may not be
+  authenticated (because clients have not yet received identity).
+* Webhook connections must be secured.
+* Admin server connections must be authenticated or originate from the
+  node-local network.
 
 #### Proxy admin, tap, & inbound policies
 
@@ -151,7 +180,7 @@ situation.
 
 #### [`Authorization`](crds/authz.yml)
 
-Authorizes clients to access `Server`s
+Authorizes clients to access `Server`s.
 
 ![Policy resources](./img/resources.png "Policy resources")
 

@@ -76,25 +76,84 @@ We'll need to figure out a way for the identity controller to startup without
 requiring access to the destination controller. One approach could be to
 serve a specialized version of the API endpoints--only for the identity
 controller's proxy--from the identity controller. This only feasible because
-the identity controller has very limited discovery needs:
+the identity controller's proxy has very limited discovery needs:
 
-* It
+* It only initiates outbound connections to the Kubernetes API (on 443).
+* It needs to discover policy for its local ports (identity gRPC + admin, proxy
+  ports)
+* It attempts to discover a service profile for inbound gRPC requests
 
-### Allow-lists (default deny)
+### Authorizing clients
 
 We've identified the need for _server_ resources; but we haven't yet
 described how access policy is defined.
 
+When policy is configured for a server, connections are denied by default.
+This supports a secure default and allows authorizations to be purely
+addititive. This eliminates any need for ordering/precedence in authorization
+policies. Authoriztions simply grant access for a class of clients to connect
+to a server (or servers).
+
+There are two fundamental classes of clients:
+
+1. Clients authenticated with Linkerd's mutual identity (via mTLS)
+2. Unauthenticated clients
+
+Authenticated clients may be matched by `ServiceAccount` (because Linkerd's
+identity system builds on `ServiceAccount`s) or, in order to support
+multicluster use cases where no local `ServiceAccount` exists for a client,
+raw Linkerd identity strings may be used to identify clients.
+
+Unauthenticated clients may be permitted with source-IP restrictions. The
+most common case for this is to support connections from the local kubelet,
+which runs on the local node's host network.
+
+#### Default behavior
+
+When no policy is configured for a server...
+
 #### Allowing unauthenticated access for kubelet
 
-Kubelet is a node-level process--that cannot be meshed with Linkerd--
-responsible for probing pods to report their status to controllers. As such, we need to
-
-![Policy resources](./img/resources.png "Policy resources")
-
-#### Modifying the default behavior
+Kubelet is a node-level process responsible for probing pods to report their
+status to controllers. It's essential that kubelet be able to access health
+checking ports; but
 
 #### Control plane policies
+
+#### Proxy admin, tap, & inbound policies
+
+### Visibility
+
+## Proposal
+
+### Resources
+
+We propose introducing two new `CustomResourceDefinition`s to Linkerd:
+
+#### [`Server`](crds/server.yml)
+
+Each `Server` instance:
+
+* Selects over pods by label
+* Matches a single port by name or value
+* Optionally indicates how the proxy should detect the protocol of these
+  streams
+
+It's possible for multiple `Server` instances to conflict by matching the
+same workloads + ports, much in the way that it's possible for multiple
+`Deployment` instances to match the same pods. This behavior is undefined. We
+cannot necessarily detect this situation at `Server`-creation time (due to
+the nature of label selector expressions), so this situation should be
+flagged by `linkerd check`. It may also make sense to try to handle this
+in an admission controller to prevent resources from being created in this
+state, but it may be difficult to provide exhaustive defenses agains this
+situation.
+
+#### [`Authorization`](crds/authz.yml)
+
+Authorizes clients to access `Server`s
+
+![Policy resources](./img/resources.png "Policy resources")
 
 ## Future work
 

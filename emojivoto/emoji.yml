@@ -82,11 +82,12 @@ metadata:
     app.kubernetes.io/name: emoji
     app.kubernetes.io/version: v11
 spec:
-  port: grpc
   podSelector:
     matchLabels:
       app.kubernetes.io/part-of: emojivoto
       app.kubernetes.io/name: emoji
+  containerName: main
+  port: grpc
   proxyProtocol: Grpc
 ---
 apiVersion: polixy.olix0r.net/v1

@@ -48,7 +48,20 @@ spec:
                             items:
                               type: string
 
+                containerName:
+                  description: >-
+                    Indicates the name of the container that `port` refers to.
+
+                    Kubernetes does not enforce port name uniqueness across
+                    multiple containers in a port. So, when a pod has
+                    containers with overlapping port names, this field can be
+                    used to disambiguate a port.
+                  type: string
+                  pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+
                 port:
+                  description: >-
+                    A port name or number. Must exist in a pod spec.
                   x-kubernetes-int-or-string: true
 
                 proxyProtocol:

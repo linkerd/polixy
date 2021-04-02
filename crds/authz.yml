@@ -126,7 +126,7 @@ spec:
                     Authorizes unauthenticated clients to connect to a server.
                   type: object
                   oneOf:
-                    - required: [localNode]
+                    - required: [kubelet]
                     - required: [networks]
                   properties:
 

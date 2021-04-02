@@ -99,14 +99,39 @@ There are two fundamental classes of clients:
 1. Clients authenticated with Linkerd's mutual identity (via mTLS)
 2. Unauthenticated clients
 
+#### Authenticated clients
+
+Meshed clients automatically authenticate to servers via mTLS so that the
+client's identity is available to the server. An operator may restrict access
+to all authenticated clients or a subset of authenticated clients.
+
 Authenticated clients may be matched by `ServiceAccount` (because Linkerd's
 identity system builds on `ServiceAccount`s) or, in order to support
 multicluster use cases where no local `ServiceAccount` exists for a client,
 raw Linkerd identity strings may be used to identify clients.
 
-Unauthenticated clients may be permitted with source-IP restrictions. The
-most common case for this is to support connections from the local kubelet,
-which runs on the local node's host network.
+#### Unauthenticated clients
+
+Operators may authorize access to unmeshed clients (and meshed clients that
+have not yet established an identity):
+
+* from the local kubelet
+* by network (CIDR)
+* by pod selector
+* constraining TLS settings (i.e. requiring TLSv1.3, signature algorithms, etc)
+
+##### Lifecycle probes
+
+We need to expose a means for operators to authorize unauthenticated lifecyle
+probes.
+
+Kubelet is responsible for managing pod lifecycle (including its networking).
+As such, it may initiate network probes from the first address on the node's
+pod network--e.g, if the node's `podCIDR` is `10.0.1.0/24`, then the kubelet
+will initiate connections from `10.0.1.1`. See [this blog post on pod
+networking][pod-ips] for more information.
+
+[pod-ips]: https://ronaknathani.com/blog/2020/08/how-a-kubernetes-pod-gets-an-ip-address/
 
 #### Default behavior
 
@@ -121,22 +146,10 @@ mode:
 * At install-time, users can configure the default behavior (allow vs deny).
 * Namespace-level and workload-level annotations configure a proxy's default
   behavior.
-* Richer default polices (e.g. allowing unauthenticated connections from
-  specific networks, requiring identity, etc) are not currently supported,
-  though they may be added in the future.
 
-#### Allowing unauthenticated access for kubelet
-
-Kubelet is a node-level process responsible for probing pods to report their
-status to controllers. It's essential that kubelet be able to access health
-checking ports without authentication;
-
-See [this blog post on pod networking][pod-ips]--we can use a node's
-`podCIDRs` fields to determine the address of the kubelet. this could also
-allow us to limit connections to other pods on the same node, but that's kind
-of weird...
-
-[pod-ips]: https://ronaknathani.com/blog/2020/08/how-a-kubernetes-pod-gets-an-ip-address/
+In the future, we may want to implement richer default polices (e.g. allowing
+unauthenticated connections from specific networks, requiring identity, etc),
+but this is probably undesirable complexity initially.
 
 #### Control plane policies
 

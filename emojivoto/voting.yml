@@ -81,11 +81,12 @@ metadata:
     app.kubernetes.io/name: voting
     app.kubernetes.io/version: v11
 spec:
-  port: grpc
   podSelector:
     matchLabels:
       app.kubernetes.io/part-of: emojivoto
       app.kubernetes.io/name: voting
+  containerName: main
+  port: grpc
   proxyProtocol: Grpc
 ---
 apiVersion: polixy.olix0r.net/v1
@@ -99,6 +100,7 @@ metadata:
     app.kubernetes.io/version: v11
 spec:
   server:
+    containerName: main
     name: voting-grpc
   # The voting service only allows requests from the web service.
   authenticated:

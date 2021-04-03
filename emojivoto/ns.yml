@@ -52,4 +52,4 @@ spec:
   server:
     name: prom
   unauthenticated:
-    localNode: true
+    kubelet: true

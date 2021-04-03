@@ -27,6 +27,7 @@ mod server {
     #[serde(rename_all = "camelCase")]
     pub struct ServerSpec {
         pod_selector: PodSelector,
+        container_name: Option<String>,
         port: Port,
     }
 
@@ -63,8 +64,9 @@ mod authz {
     #[derive(CustomResource, Deserialize, Serialize, Clone, Debug, JsonSchema)]
     #[serde(rename_all = "camelCase")]
     pub struct AuthorizationSpec {
-        clients: Vec<Client>,
         server: Server,
+        authenticated: Option<Authenticated>,
+        unauthenticated: Option<Unauthenticated>,
     }
 
     /// Selects one or more server instances in the same namespace as the `Authorization`.
@@ -81,29 +83,16 @@ mod authz {
         match_expressions: Option<labels::Expressions>,
     }
 
-    /// Describes a client authorized to connect to a server.
-    ///
-    /// Either `authenticated` or `unauthenticated` should be set.
-    #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
-    pub struct Client {
-        authenticated: Option<Authenticated>,
-        unauthenticated: Option<Unauthenticated>,
-    }
-
     /// Describes an authenticated client.
     ///
     /// Exactly one of `any`, `identity`, and `service_account` should be set.
     #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
     #[serde(rename_all = "camelCase")]
     pub struct Authenticated {
-        /// Indicates that all authenticated clients are authorized to access a server.
-        ///
-        /// If set, must be true.
-        any: Option<bool>,
         /// Indicates a Linkerd identity that is authorized to access a server.
-        identity: Option<String>,
+        identities: Option<String>,
         /// Identifies a `ServiceAccount` authorized to access a server.
-        service_account: Option<ServiceAccount>,
+        service_accounts: Vec<ServiceAccount>,
     }
 
     /// References Kubernetes `ServiceAccount` instances.
@@ -125,9 +114,8 @@ mod authz {
     /// Exactly one of `any`, `node`, and `network` should be set.
     #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
     pub struct Unauthenticated {
-        any: Option<bool>,
-        node: Option<bool>,
-        network: Option<String>,
+        kubelet: Option<bool>,
+        networks: Vec<String>,
     }
 }
 

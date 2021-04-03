@@ -28,6 +28,7 @@ spec:
                 - required: [authenticated]
                 - required: [unauthenticated]
               properties:
+
                 server:
                   description: >-
                     References `Server` instances in the same namespace.
@@ -35,6 +36,10 @@ spec:
                     Exactly one of `name`, `matchLabels`, and
                     `matchExpressions` may be set.
                   type: object
+                  oneOf:
+                    - required: [name]
+                    - required: [matchLabels]
+                    - required: [matchExpressions]
                   properties:
                     name:
                       description: References a `Server` instance by name
@@ -62,10 +67,6 @@ spec:
                             type: array
                             items:
                               type: string
-                  oneOf:
-                    - required: [name]
-                    - required: [matchLabels]
-                    - required: [matchExpressions]
 
                 authenticated:
                   description: >-
@@ -122,21 +123,20 @@ spec:
                                     type: string
 
                 unauthenticated:
-                  description: >-
-                    Authorizes unauthenticated clients to connect to a server.
+                  description: Authorizes unauthenticated clients to connect to a server
                   type: object
                   oneOf:
                     - required: [kubelet]
                     - required: [networks]
                   properties:
 
-                    localNode:
-                      description: "Authorizes traffic from a pod's local node, i.e., for kubelet probes."
+                    kubelet:
+                      description: Authorizes traffic from a pod's local node, i.e., for kubelet probes
                       type: boolean
                       enum: [true]
 
                     networks:
-                      description: "Authorizes traffic from specified CIDR blocks"
+                      description: Authorizes traffic from specified CIDR blocks
                       type: array
                       items:
                         type: string

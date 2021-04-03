@@ -1,10 +1,13 @@
-use futures::prelude::*;
-use k8s_openapi::api::core::v1::Namespace;
+#![allow(warnings)]
+
+use futures::{future, prelude::*};
 use kube::{
-    api::{ListParams, Meta},
+    api::{ListParams, Resource},
     Api,
 };
 use kube_runtime::{watcher, watcher::Event};
+use std::{collections::HashMap, sync::Arc};
+use tokio::sync::{watch, Mutex};
 
 #[tokio::main]
 async fn main() {
@@ -14,26 +17,88 @@ async fn main() {
         .await
         .expect("Failed to initialize client");
 
-    let ns = Api::<Namespace>::all(client);
-    let mut ns_watch = watcher(ns, ListParams::default()).boxed_local();
-    while let Some(ev) = ns_watch.try_next().await.expect("Watch must not fail") {
-        match ev {
-            Event::Applied(ns) => {
-                println!("+ {}", Meta::name(&ns));
-                println!("{:#?}", ns);
-            }
-            Event::Deleted(ns) => {
-                println!("- {}", Meta::name(&ns));
-                println!("{:#?}", ns);
-            }
-            Event::Restarted(nses) => {
-                for ns in nses.into_iter() {
-                    println!("* {}", Meta::name(&ns));
-                    println!("{:#?}", ns);
+    let authz_api = Api::<authz::Authorization>::all(client.clone());
+    let srv_api = Api::<server::Server>::all(client);
+
+    let authz_task = tokio::spawn(async move {
+        let mut authz = watcher(authz_api, ListParams::default()).boxed();
+        while let Some(ev) = authz.try_next().await? {
+            match ev {
+                Event::Applied(authz) => {
+                    println!("+ {} {}", authz.namespace().unwrap(), authz.name());
+                    println!("{:#?}", authz);
+                }
+                Event::Deleted(authz) => {
+                    println!("- {} {}", authz.namespace().unwrap(), authz.name());
+                    println!("{:#?}", authz);
+                }
+                Event::Restarted(authzs) => {
+                    for authz in authzs.into_iter() {
+                        println!("* {} {}", authz.namespace().unwrap(), authz.name());
+                        println!("{:#?}", authz);
+                    }
                 }
             }
         }
-    }
+        Ok::<(), kube_runtime::watcher::Error>(())
+    });
+
+    let srv_task = tokio::spawn(async move {
+        let mut srvs = watcher(srv_api, ListParams::default()).boxed();
+        while let Some(ev) = srvs.try_next().await? {
+            match ev {
+                Event::Applied(srv) => {
+                    println!("+ {} {}", srv.namespace().unwrap(), srv.name());
+                    println!("{:#?}", srv);
+                }
+                Event::Deleted(srv) => {
+                    println!("- {} {}", srv.namespace().unwrap(), srv.name());
+                    println!("{:#?}", srv);
+                }
+                Event::Restarted(srvs) => {
+                    for srv in srvs.into_iter() {
+                        println!("* {} {}", srv.namespace().unwrap(), srv.name());
+                        println!("{:#?}", srv);
+                    }
+                }
+            }
+        }
+        Ok::<(), kube_runtime::watcher::Error>(())
+    });
+
+    let ctrl_c = tokio::signal::ctrl_c();
+    let term = async move {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => term.recv().await,
+            _ => future::pending().await,
+        }
+    };
+
+    tokio::select! {
+        res = authz_task => match res.expect("Spawn must succeed") {
+            Ok(()) => eprintln!("authz watch completed"),
+            Err(e) => eprintln!("authz error: {}", e),
+        },
+        res = srv_task => match res.expect("Spawn must succeed") {
+            Ok(()) => eprintln!("srv watch completed"),
+            Err(e) => eprintln!("srv error: {}", e),
+        },
+        _ = ctrl_c => {}
+        _ = term => {}
+    };
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+struct WatchKey {
+    ns: Option<String>,
+    name: String,
+}
+
+#[derive(Debug)]
+struct WatchUpdater<T> {
+    rx: watch::Receiver<T>,
+    tx: watch::Sender<T>,
 }
 
 mod server {

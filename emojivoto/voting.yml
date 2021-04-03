@@ -100,7 +100,6 @@ metadata:
     app.kubernetes.io/version: v11
 spec:
   server:
-    containerName: main
     name: voting-grpc
   # The voting service only allows requests from the web service.
   authenticated:

@@ -1,13 +1,39 @@
+use futures::prelude::*;
+use k8s_openapi::api::core::v1::Namespace;
+use kube::{
+    api::{ListParams, Meta},
+    Api,
+};
+use kube_runtime::{watcher, watcher::Event};
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
 
-    #[allow(unused_variables)]
     let client = kube::Client::try_default()
         .await
         .expect("Failed to initialize client");
 
-    println!("Hello, world!");
+    let ns = Api::<Namespace>::all(client);
+    let mut ns_watch = watcher(ns, ListParams::default()).boxed_local();
+    while let Some(ev) = ns_watch.try_next().await.expect("Watch must not fail") {
+        match ev {
+            Event::Applied(ns) => {
+                println!("+ {}", Meta::name(&ns));
+                println!("{:#?}", ns);
+            }
+            Event::Deleted(ns) => {
+                println!("- {}", Meta::name(&ns));
+                println!("{:#?}", ns);
+            }
+            Event::Restarted(nses) => {
+                for ns in nses.into_iter() {
+                    println!("* {}", Meta::name(&ns));
+                    println!("{:#?}", ns);
+                }
+            }
+        }
+    }
 }
 
 mod server {

@@ -1,72 +1,107 @@
 syntax = "proto3";
 
-package net.olix0r.polixy;
+package polixy.olix0r.net;
 
-service ServerPolicy {
-  rpc WatchServerPolicy(Request) returns (stream Update) {}
+import "google/protobuf/duration.proto";
+
+service ProxyConfigService {
+  rpc WatchInbound(InboundProxyPort) returns (stream InboundProxyConfig) {}
 }
 
-// === Request ===
+message InboundProxyPort {
+  // Identifies a proxy workload (e.g., pod name).
+  string workload = 1;
 
-message Request {
-  string instance = 1;
+  // An inbound port on _workload_.
+  uint32 port = 2;
+}
 
-  oneof port {
-    string name = 10;
-    uint32 number = 11;
+message InboundProxyConfig {
+  // If set, indicates how the proxy should proxy connections on the specified
+  // port.
+  ProxyProtocol protocol = 1;
+
+  // Descriptive labels to be added to metrics, etc.
+  //
+  // A control plane SHOULD return the same keys in all policies. That is, we do
+  // NOT want to return arbitrary pod labels in this field.
+  map<string, string> labels = 3;
+
+  // Configures a proxy to allow connections from the specified clients.
+  //
+  // If unset, no connections are permitted.
+  repeated Authorization authorizations = 2;
+}
+
+message ProxyProtocol {
+  oneof kind {
+    Detect detect = 1;
+    Opaque opaque = 2;
+    Http http = 3;
+    Grpc grpc = 4;
+  }
+
+  message Detect { google.protobuf.Duration timeout = 1; }
+
+  message Opaque {
+    // TODO: opaque TLS settings (versions, algorithms, SNI)
+  }
+
+  message Http {
+    // TODO: domains -> routes -> policy
+    // TODO: HTTP version? (and orig-proto upgrades)?
+  }
+
+  message Grpc {
+    // TODO: service -> endpoint -> policy
   }
 }
 
-// === Update ===
-
-message Update {
-  repeated ClientAccess client_access = 1;
-
-  oneof proxyProtocol {
-    UnknownProtocol unknown = 10;
-    OpaqueProtocol opaque = 11;
-    HttpProtocol http = 12;
-    GrpcProtocol grpc = 13;
-  }
-}
-
-// === ClientAccess ===
-
-message ClientAccess {
+message Authorization {
+  // Limits this authorization to client addresses in the provided networks.
+  //
+  // Must have at least one network, otherwise the authorization must be
+  // ignored. An authorization matches all clients by including an explicit
+  // match on, i.e., `[0.0.0.0/0, 0::/0]``.
   repeated Network networks = 1;
 
-  oneof authz {
-    Unauthenticated unauthenticated = 10;
-    Authenticated authenticated = 11;
-    Restricted restricted = 12;
+  // When set, indiciates that TLS must be terminated by the proxy.
+  Tls tls_terminated = 2;
+  message Tls {
+    // If set, requires that the connection is mutually-authetnicated with a
+    // matching client identity.
+    IdMatch client_id = 1;
+
+    // TODO limit versions, algorithms
   }
 
-  // Places no authentication requirements on clients.
-  message Unauthenticated {}
-
-  // Requires that clients are authenticated.
-  message Authenticated {}
-
-  // Requires that clients are authenticated and their identities are in the
-  // provided list.
+  // Descriptive labels to be added to metrics, etc.
   //
-  // If the list is empty, clients are permitted.
-  message Restricted { repeated ClientId ids = 1; }
+  // A control plane SHOULD return the same keys in all authorizations. That is,
+  // we do NOT want to return arbitrary pod labels in this field.
+  map<string, string> labels = 3;
 }
 
-message Network {
-  string ip = 1; // TODO use structured address
-  uint32 mask = 2;
+// Matches identities.
+//
+// To match all identities, a suffix i
+message IdMatch {
+  // A list of literal identities.
+  repeated string identities = 1;
+
+  // A list of identity suffixes.
+  //
+  // If this contains an empty suffix, all identities are matched.
+  repeated Suffix suffixes = 2;
 }
 
-message ClientId { string id = 1; }
+// Encodes a DNS-like name suffix as sequence of parts.
+//
+// An empty list is equivalent to `.` (matching all names); the list `["foo",
+// "bar"]` is equivalent to "foo.bar." (matching `*.foo.bar`), etc.
+message Suffix { repeated string parts = 1; }
 
-// === Protocols ===
-
-message UnknownProtocol {}
-
-message OpaqueProtocol {}
-
-message HttpProtocol {}
-
-message GrpcProtocol {}
+// Describes a network in CIDR-notation.
+//
+// TODO use numeric types rather than a string.
+message Network { string cidr = 1; }

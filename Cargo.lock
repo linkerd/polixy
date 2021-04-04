@@ -690,6 +690,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7fb9b38af92608140b86b693604b9ffcc5824240a484d1ecd4795bacb2fe88f3"
 
 [[package]]
+name = "linkerd-drain"
+version = "0.1.0"
+source = "git+https://github.com/linkerd/linkerd2-proxy?branch=main#07e9249769474f19e11904f9beed29a01dda7fe5"
+dependencies = [
+ "futures",
+ "tokio",
+]
+
+[[package]]
 name = "log"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -941,10 +950,12 @@ checksum = "3831453b3449ceb48b6d9c7ad7c96d5ea673e9b470a1dc578c2ce6521230884c"
 name = "polixy"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "futures",
  "k8s-openapi",
  "kube",
  "kube-runtime",
+ "linkerd-drain",
  "prost",
  "prost-types",
  "schemars",

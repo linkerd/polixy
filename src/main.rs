@@ -1,70 +1,108 @@
 #![allow(warnings)]
 
 use futures::{future, prelude::*};
+use k8s_openapi::api::core::v1::Pod;
 use kube::{
-    api::{ListParams, Resource},
+    api::{DynamicObject, ListParams, Resource},
     Api,
 };
 use kube_runtime::{watcher, watcher::Event};
-use std::{collections::HashMap, sync::Arc};
-use tokio::sync::{watch, Mutex};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{Arc, Weak},
+};
+use tokio::sync::{mpsc, watch, Mutex, Notify};
+use tracing::{debug, error, info, info_span, Instrument};
+
+type Error = Box<dyn std::error::Error + Send + Sync + 'static>;
 
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
 
+    let grpc = tokio::spawn(
+        async move {
+            let addr = ([0, 0, 0, 0], 8090).into();
+            match grpc::start(addr, future::pending()).await {
+                Ok(()) => debug!("shutdown"),
+                Err(error) => error!(%error),
+            }
+        }
+        .instrument(info_span!("grpc")),
+    );
+
     let client = kube::Client::try_default()
         .await
         .expect("Failed to initialize client");
 
-    let authz_api = Api::<authz::Authorization>::all(client.clone());
-    let srv_api = Api::<server::Server>::all(client);
+    // let authz_api = Api::<authz::Authorization>::all(client.clone());
+    // let authz_task = tokio::spawn(
+    //     async move {
+    //         let mut authz = watcher(authz_api, ListParams::default()).boxed();
+    //         while let some(ev) = authz.try_next().await? {
+    //             match ev {
+    //                 event::applied(authz) => {
+    //                     info!(
+    //                         ns = %authz.namespace().unwrap_or_default(),
+    //                         name = %authz.name(),
+    //                         "applied",
+    //                     );
+    //                     debug!("{:#?}", authz);
+    //                 }
+    //                 event::deleted(authz) => {
+    //                     info!(
+    //                         ns = %authz.namespace().unwrap_or_default(),
+    //                         name = %authz.name(),
+    //                         "deleted",
+    //                     );
+    //                     debug!("{:#?}", authz);
+    //                 }
+    //                 event::restarted(authzs) => {
+    //                     info!("restarted");
+    //                     for authz in authzs.into_iter() {
+    //                         info!(
+    //                             ns = %authz.namespace().unwrap_or_default(),
+    //                             name = %authz.name(),
+    //                         );
+    //                         debug!("{:#?}", authz);
+    //                     }
+    //                 }
+    //             }
+    //         }
+    //         ok::<(), kube_runtime::watcher::error>(())
+    //     }
+    //     .instrument(info_span!("authz")),
+    // );
 
-    let authz_task = tokio::spawn(async move {
-        let mut authz = watcher(authz_api, ListParams::default()).boxed();
-        while let Some(ev) = authz.try_next().await? {
-            match ev {
-                Event::Applied(authz) => {
-                    println!("+ {} {}", authz.namespace().unwrap(), authz.name());
-                    println!("{:#?}", authz);
-                }
-                Event::Deleted(authz) => {
-                    println!("- {} {}", authz.namespace().unwrap(), authz.name());
-                    println!("{:#?}", authz);
-                }
-                Event::Restarted(authzs) => {
-                    for authz in authzs.into_iter() {
-                        println!("* {} {}", authz.namespace().unwrap(), authz.name());
-                        println!("{:#?}", authz);
-                    }
-                }
-            }
-        }
-        Ok::<(), kube_runtime::watcher::Error>(())
-    });
+    //let srv_api = Api::<server::Server>::all(client);
+    // let srv_task = tokio::spawn(
+    //     async move {
+    //         let mut srvs = watcher(srv_api, ListParams::default()).boxed();
+    //         while let Some(ev) = srvs.try_next().await? {
+    //             match ev {
+    //                 Event::Applied(srv) => {
+    //                     info!(ns = %srv.namespace().unwrap(), name = %srv.name(), "Applied");
+    //                     debug!("{:#?}", srv);
+    //                 }
+    //                 Event::Deleted(srv) => {
+    //                     info!(ns = %srv.namespace().unwrap(), name = %srv.name(), "Deleted");
+    //                     debug!("{:#?}", srv);
+    //                 }
+    //                 Event::Restarted(srvs) => {
+    //                     info!("Restarted");
+    //                     for srv in srvs.into_iter() {
+    //                         info!(ns = %srv.namespace().unwrap(), name = %srv.name());
+    //                         debug!("{:#?}", srv);
+    //                     }
+    //                 }
+    //             }
+    //         }
+    //         Ok::<(), kube_runtime::watcher::Error>(())
+    //     }
+    //     .instrument(info_span!("srv")),
+    // );
 
-    let srv_task = tokio::spawn(async move {
-        let mut srvs = watcher(srv_api, ListParams::default()).boxed();
-        while let Some(ev) = srvs.try_next().await? {
-            match ev {
-                Event::Applied(srv) => {
-                    println!("+ {} {}", srv.namespace().unwrap(), srv.name());
-                    println!("{:#?}", srv);
-                }
-                Event::Deleted(srv) => {
-                    println!("- {} {}", srv.namespace().unwrap(), srv.name());
-                    println!("{:#?}", srv);
-                }
-                Event::Restarted(srvs) => {
-                    for srv in srvs.into_iter() {
-                        println!("* {} {}", srv.namespace().unwrap(), srv.name());
-                        println!("{:#?}", srv);
-                    }
-                }
-            }
-        }
-        Ok::<(), kube_runtime::watcher::Error>(())
-    });
+    let (drain_tx, drain_rx) = linkerd_drain::channel();
 
     let ctrl_c = tokio::signal::ctrl_c();
     let term = async move {
@@ -75,18 +113,11 @@ async fn main() {
         }
     };
 
-    tokio::select! {
-        res = authz_task => match res.expect("Spawn must succeed") {
-            Ok(()) => eprintln!("authz watch completed"),
-            Err(e) => eprintln!("authz error: {}", e),
-        },
-        res = srv_task => match res.expect("Spawn must succeed") {
-            Ok(()) => eprintln!("srv watch completed"),
-            Err(e) => eprintln!("srv error: {}", e),
-        },
-        _ = ctrl_c => {}
-        _ = term => {}
-    };
+    let _ = drain_rx.signaled();
+
+    tokio::join!(ctrl_c, term);
+    drain_tx.drain().await;
+    grpc.await.expect("Spawn must succeed")
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
@@ -99,6 +130,100 @@ struct WatchKey {
 struct WatchUpdater<T> {
     rx: watch::Receiver<T>,
     tx: watch::Sender<T>,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+struct AuthzKey {
+    ns: String,
+    name: String,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+struct SrvKey {
+    ns: String,
+    name: String,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+struct PodKey {
+    ns: String,
+    name: String,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+struct PortKey {
+    pod: PodKey,
+    port: u16,
+}
+
+struct ServerState {
+    authorizations: HashSet<AuthzKey>,
+    pods: HashSet<PodKey>,
+    tx: watch::Sender<grpc::proto::InboundProxyConfig>,
+    rx: watch::Sender<grpc::proto::InboundProxyConfig>,
+}
+
+struct State {
+    authorizations: HashMap<AuthzKey, Arc<authz::Authorization>>,
+    servers: HashMap<SrvKey, ServerState>,
+    pods: HashMap<PodKey, HashMap<u16, SrvKey>>,
+    lookups: HashMap<PortKey, Vec<Weak<Notify>>>,
+}
+
+mod grpc {
+    use futures::Stream;
+    use std::pin::Pin;
+
+    pub mod proto {
+        tonic::include_proto!("polixy.olix0r.net");
+
+        pub use self::proxy_config_service_server::{
+            ProxyConfigService as Service, ProxyConfigServiceServer as Server,
+        };
+    }
+
+    pub struct Grpc;
+
+    pub async fn start(
+        addr: std::net::SocketAddr,
+        drain: impl std::future::Future<Output = linkerd_drain::ReleaseShutdown> + Unpin,
+    ) -> Result<(), super::Error> {
+        let notify = std::sync::Arc::new(tokio::sync::Notify::new());
+        let notify_rx = notify.clone();
+        tokio::pin! {
+            let srv = tonic::transport::Server::builder()
+                .add_service(Grpc::server())
+                .serve_with_shutdown(addr.into(), notify_rx.notified());
+        }
+        tokio::select! {
+            res = (&mut srv) => res?,
+            handle = drain => {
+                let _ = notify.notify_waiters();
+                handle.release_after(srv).await?;
+            }
+        }
+        Ok::<_, super::Error>(())
+    }
+
+    impl Grpc {
+        pub fn server() -> proto::Server<Self> {
+            proto::Server::new(Self)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl proto::Service for Grpc {
+        type WatchInboundStream = Pin<
+            Box<dyn Stream<Item = Result<proto::InboundProxyConfig, tonic::Status>> + Send + Sync>,
+        >;
+
+        async fn watch_inbound(
+            &self,
+            req: tonic::Request<proto::InboundProxyPort>,
+        ) -> Result<tonic::Response<Self::WatchInboundStream>, tonic::Status> {
+            todo!("Lookup server on pod ")
+        }
+    }
 }
 
 mod server {
@@ -181,9 +306,9 @@ mod authz {
     #[serde(rename_all = "camelCase")]
     pub struct Authenticated {
         /// Indicates a Linkerd identity that is authorized to access a server.
-        identities: Option<String>,
+        identities: Option<Vec<String>>,
         /// Identifies a `ServiceAccount` authorized to access a server.
-        service_accounts: Vec<ServiceAccount>,
+        service_accounts: Option<Vec<ServiceAccount>>,
     }
 
     /// References Kubernetes `ServiceAccount` instances.
@@ -206,7 +331,7 @@ mod authz {
     #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
     pub struct Unauthenticated {
         kubelet: Option<bool>,
-        networks: Vec<String>,
+        networks: Option<Vec<String>>,
     }
 }
 

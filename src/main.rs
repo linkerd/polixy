@@ -20,17 +20,6 @@ type Error = Box<dyn std::error::Error + Send + Sync + 'static>;
 async fn main() {
     tracing_subscriber::fmt::init();
 
-    let grpc = tokio::spawn(
-        async move {
-            let addr = ([0, 0, 0, 0], 8090).into();
-            match grpc::start(addr, future::pending()).await {
-                Ok(()) => debug!("shutdown"),
-                Err(error) => error!(%error),
-            }
-        }
-        .instrument(info_span!("grpc")),
-    );
-
     let client = kube::Client::try_default()
         .await
         .expect("Failed to initialize client");
@@ -104,6 +93,28 @@ async fn main() {
 
     let (drain_tx, drain_rx) = linkerd_drain::channel();
 
+    let addr = ([0, 0, 0, 0], 8090).into();
+    let grpc = tokio::spawn(
+        async move {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            tokio::pin! {
+                let srv = grpc::serve(addr, rx.map(|_| {}));
+            }
+            let res = tokio::select! {
+                res = (&mut srv) => res,
+                handle = drain_rx.signaled() => {
+                    let _ = tx.send(());
+                    handle.release_after(srv).await
+                }
+            };
+            match res {
+                Ok(()) => debug!("shutdown"),
+                Err(error) => error!(%error),
+            }
+        }
+        .instrument(info_span!("grpc")),
+    );
+
     let ctrl_c = tokio::signal::ctrl_c();
     let term = async move {
         use tokio::signal::unix::{signal, SignalKind};
@@ -112,8 +123,6 @@ async fn main() {
             _ => future::pending().await,
         }
     };
-
-    let _ = drain_rx.signaled();
 
     tokio::join!(ctrl_c, term);
     drain_tx.drain().await;
@@ -184,25 +193,14 @@ mod grpc {
 
     pub struct Grpc;
 
-    pub async fn start(
+    pub async fn serve(
         addr: std::net::SocketAddr,
-        drain: impl std::future::Future<Output = linkerd_drain::ReleaseShutdown> + Unpin,
-    ) -> Result<(), super::Error> {
-        let notify = std::sync::Arc::new(tokio::sync::Notify::new());
-        let notify_rx = notify.clone();
-        tokio::pin! {
-            let srv = tonic::transport::Server::builder()
-                .add_service(Grpc::server())
-                .serve_with_shutdown(addr.into(), notify_rx.notified());
-        }
-        tokio::select! {
-            res = (&mut srv) => res?,
-            handle = drain => {
-                let _ = notify.notify_waiters();
-                handle.release_after(srv).await?;
-            }
-        }
-        Ok::<_, super::Error>(())
+        shutdown: impl std::future::Future<Output = ()>,
+    ) -> Result<(), tonic::transport::Error> {
+        tonic::transport::Server::builder()
+            .add_service(Grpc::server())
+            .serve_with_shutdown(addr.into(), shutdown)
+            .await
     }
 
     impl Grpc {

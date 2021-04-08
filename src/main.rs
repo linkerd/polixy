@@ -1,11 +1,6 @@
 #![allow(warnings)]
 
 use futures::{future, prelude::*};
-use kube::{
-    api::{DynamicObject, ListParams, Resource},
-    Api,
-};
-use kube_runtime::{watcher, watcher::Event};
 use std::{
     collections::{HashMap, HashSet},
     sync::{Arc, Weak},
@@ -67,12 +62,18 @@ async fn main() {
 mod state {
     use super::{authz::Authorization, grpc::proto, server::Server};
     use k8s_openapi::api::core::v1::Pod;
+    use kube::{
+        api::{DynamicObject, ListParams, Resource},
+        Api,
+    };
+    use kube_runtime::{watcher, watcher::Event};
     use std::{
         collections::{HashMap, HashSet},
         pin::Pin,
         sync::{Arc, Weak},
     };
     use tokio::sync::{mpsc, watch, Mutex, Notify};
+    use tracing::{debug, info};
 
     #[derive(Clone, Debug, Hash, PartialEq, Eq)]
     struct AuthzKey {
@@ -142,7 +143,6 @@ mod state {
     async fn index(client: kube::Client, state: Arc<Mutex<State>>) {
         // let authz_api = Api::<authz::Authorization>::all(client.clone());
         // let srv_api = Api::<server::Server>::all(client);
-        // let pod_api = Api::<Pod>::all(client);
 
         // let authz_task = tokio::spawn(
         //     async move {
@@ -211,6 +211,47 @@ mod state {
 
         todo!("indexing task")
     }
+
+    async fn index_pods(
+        client: kube::Client,
+        state: Arc<Mutex<State>>,
+    ) -> kube_runtime::watcher::Result<()> {
+        let api = Api::<Pod>::all(client);
+        let mut watch = watcher(api, ListParams::default()).boxed();
+        while let Some(ev) = watch.try_next().await? {
+            match ev {
+                Event::Applied(pod) => {
+                    let ns = pod.namespace().expect("Pods must be namespaced");
+                    let name = pod.name();
+                    info!(%ns, %name, "Applied");
+                    debug!("{:#?}", pod);
+
+                    let key = PodKey { ns, name };
+                    let state = state.lock().await;
+                    state.pods.entry(key)
+                }
+                Event::Deleted(pod) => {
+                    info!(
+                        ns = %pod.namespace().unwrap_or_default(),
+                        name = %pod.name(),
+                        "Deleted",
+                    );
+                    debug!("{:#?}", pod);
+                }
+                Event::Restarted(pods) => {
+                    info!(pods = %pods.len(), "Restarted");
+                    for pod in pods.into_iter() {
+                        info!(
+                            ns = %pod.namespace().unwrap_or_default(),
+                            name = %pod.name(),
+                        );
+                        debug!("{:#?}", pod);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 mod grpc {
@@ -259,8 +300,8 @@ mod grpc {
             req: tonic::Request<proto::InboundProxyPort>,
         ) -> Result<tonic::Response<Self::WatchInboundStream>, tonic::Status> {
             let proto::InboundProxyPort { workload, port } = req.into_inner();
-            // parse a workload name in the form namespace:name.
 
+            // Parse a workload name in the form namespace:name.
             let (ns, name) = {
                 let parts = workload.splitn(2, ':').collect::<Vec<_>>();
                 if parts.len() != 2 {
@@ -272,28 +313,33 @@ mod grpc {
                 (parts[0], parts[1])
             };
 
-            if port > std::u16::MAX as u32 {
-                return Err(tonic::Status::invalid_argument(format!(
-                    "Invalid port: {}",
-                    port
-                )));
-            }
+            // Ensure that the port is in the valid range.
+            let port = {
+                if port == 0 || port > std::u16::MAX as u32 {
+                    return Err(tonic::Status::invalid_argument(format!(
+                        "Invalid port: {}",
+                        port
+                    )));
+                }
+                port as u16
+            };
 
-            let mut watch = self.watcher.watch(ns, name, port as u16).await;
-            Ok(tonic::Response::new(Box::pin(async_stream::try_stream! {
+            let mut watch = self.watcher.watch(ns, name, port).await;
+            let updates = async_stream::try_stream! {
                 loop {
+                    // Send the current config on the stream.
                     let update = (*watch.borrow()).clone();
                     yield update;
 
-                    tokio::select! {
-                        res = watch.changed() => {
-                            if res.is_err() {
-                                return;
-                            }
-                        }
+                    // Wait until the watch is updated before sending another
+                    // update. If the sender is dropped, then end the stream.
+                    if watch.changed().await.is_err() {
+                        return;
                     }
                 }
-            })))
+            };
+
+            Ok(tonic::Response::new(Box::pin(updates)))
         }
     }
 }

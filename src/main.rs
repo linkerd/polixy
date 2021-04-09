@@ -61,6 +61,7 @@ async fn main() {
 
 mod state {
     use super::{authz::Authorization, grpc::proto, server::Server};
+    use futures::{future, prelude::*};
     use k8s_openapi::api::core::v1::Pod;
     use kube::{
         api::{DynamicObject, ListParams, Resource},
@@ -73,7 +74,7 @@ mod state {
         sync::{Arc, Weak},
     };
     use tokio::sync::{mpsc, watch, Mutex, Notify};
-    use tracing::{debug, info};
+    use tracing::{debug, error, info, info_span, Instrument};
 
     #[derive(Clone, Debug, Hash, PartialEq, Eq)]
     struct AuthzKey {
@@ -94,7 +95,7 @@ mod state {
     }
 
     #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-    struct PortKey {
+    struct LookupKey {
         pod: PodKey,
         port: u16,
     }
@@ -107,12 +108,22 @@ mod state {
         rx: watch::Sender<proto::InboundProxyConfig>,
     }
 
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct ContainerPort {
+        container_name: ContainerName,
+        port_name: PortName,
+        server: Option<SrvKey>,
+    }
+
+    type ContainerName = String;
+    type PortName = Option<String>;
+
     #[derive(Debug, Default)]
     pub struct State {
         authorizations: HashMap<AuthzKey, Arc<Authorization>>,
         servers: HashMap<SrvKey, ServerState>,
-        pods: HashMap<PodKey, HashMap<u16, Option<SrvKey>>>,
-        lookups: HashMap<PortKey, Vec<Weak<Notify>>>,
+        pods: HashMap<PodKey, HashMap<u16, ContainerPort>>,
+        lookups: HashMap<LookupKey, Vec<Weak<Notify>>>,
     }
 
     #[derive(Clone, Debug)]
@@ -209,7 +220,7 @@ mod state {
         //     .instrument(info_span!("srv")),
         // );
 
-        todo!("indexing task")
+        tokio::spawn(index_pods(client, state).instrument(info_span!("pods")));
     }
 
     async fn index_pods(
@@ -218,39 +229,63 @@ mod state {
     ) -> kube_runtime::watcher::Result<()> {
         let api = Api::<Pod>::all(client);
         let mut watch = watcher(api, ListParams::default()).boxed();
-        while let Some(ev) = watch.try_next().await? {
-            match ev {
-                Event::Applied(pod) => {
-                    let ns = pod.namespace().expect("Pods must be namespaced");
-                    let name = pod.name();
-                    info!(%ns, %name, "Applied");
-                    debug!("{:#?}", pod);
-
-                    let key = PodKey { ns, name };
-                    let state = state.lock().await;
-                    state.pods.entry(key)
+        loop {
+            match watch.try_next().await? {
+                Some(Event::Applied(pod)) => {
+                    let key = pod_key(&pod);
+                    let ports = ports(&pod);
+                    let mut state = state.lock().await;
+                    // TODO notify lookups. (There shouldn't be any, but...)
+                    state.pods.insert(key, ports);
                 }
-                Event::Deleted(pod) => {
-                    info!(
-                        ns = %pod.namespace().unwrap_or_default(),
-                        name = %pod.name(),
-                        "Deleted",
-                    );
-                    debug!("{:#?}", pod);
+                Some(Event::Deleted(pod)) => {
+                    let key = pod_key(&pod);
+                    let mut state = state.lock().await;
+                    // TODO notify lookups.
+                    state.pods.remove(&key);
                 }
-                Event::Restarted(pods) => {
-                    info!(pods = %pods.len(), "Restarted");
+                Some(Event::Restarted(pods)) => {
+                    let mut state = state.lock().await;
+                    // TODO track deletions and notify lookups.
+                    state.pods.clear();
                     for pod in pods.into_iter() {
-                        info!(
-                            ns = %pod.namespace().unwrap_or_default(),
-                            name = %pod.name(),
-                        );
-                        debug!("{:#?}", pod);
+                        let key = pod_key(&pod);
+                        let ports = ports(&pod);
+                        state.pods.insert(key, ports);
+                    }
+                }
+                None => return Ok(()),
+            }
+        }
+    }
+
+    fn pod_key(pod: &Pod) -> PodKey {
+        let ns = pod.namespace().expect("pods must have a namespace");
+        let name = pod.name();
+        PodKey { ns, name }
+    }
+
+    fn ports(pod: &Pod) -> HashMap<u16, ContainerPort> {
+        let mut ports = HashMap::default();
+
+        if let Some(spec) = pod.spec.as_ref() {
+            for container in &spec.containers {
+                let cname = container.name.clone();
+                if let Some(ps) = container.ports.as_ref() {
+                    for p in ps {
+                        let port = p.container_port as u16;
+                        let cp = ContainerPort {
+                            container_name: cname.clone(),
+                            port_name: p.name.clone(),
+                            server: None,
+                        };
+                        ports.insert(port, cp);
                     }
                 }
             }
         }
-        Ok(())
+
+        ports
     }
 }
 

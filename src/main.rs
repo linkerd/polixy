@@ -232,12 +232,12 @@ mod state {
         //     .instrument(info_span!("srv")),
         // );
 
-        tokio::spawn(index_pods(client, state).instrument(info_span!("pods")))
+        tokio::spawn(index_pod_ports(client, state).instrument(info_span!("pods")))
             .await
             .expect("Spawn must succeed");
     }
 
-    async fn index_pods(
+    async fn index_pod_ports(
         client: kube::Client,
         state: Arc<Mutex<State>>,
     ) -> kube_runtime::watcher::Result<()> {
@@ -251,6 +251,7 @@ mod state {
                     let ports = ports(&pod);
                     debug!(?key, ports = ports.len(), "Applied");
                     let mut state = state.lock().await;
+                    // TODO index against servers.
                     // TODO notify lookups. (There shouldn't be any, but...)
                     state.pods.insert(key, ports);
                 }
@@ -269,6 +270,7 @@ mod state {
                     for pod in pods.into_iter() {
                         let key = pod_key(&pod);
                         let ports = ports(&pod);
+                        // TODO index against servers.
                         debug!(?key, ports = ports.len());
                         state.pods.insert(key, ports);
                     }

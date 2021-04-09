@@ -19,7 +19,7 @@ async fn main() {
     let client = kube::Client::try_default()
         .await
         .expect("Failed to initialize client");
-    let (watcher, indexer) = state::spawn(client);
+    let (watcher, indexer) = state::spawn(client, drain_rx.clone());
 
     let addr = ([0, 0, 0, 0], 8090).into();
     let server = grpc::Grpc::new(watcher, drain_rx.clone());
@@ -53,7 +53,11 @@ async fn main() {
         }
     };
 
-    tokio::join!(ctrl_c, term);
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = term => {}
+    };
+    info!("Shutting down");
     drain_tx.drain().await;
     grpc.await.expect("Spawn must succeed");
     indexer.await.expect("Spawn must succeed");
@@ -144,10 +148,18 @@ mod state {
         }
     }
 
-    pub fn spawn(client: kube::Client) -> (Watcher, tokio::task::JoinHandle<()>) {
+    pub fn spawn(
+        client: kube::Client,
+        drain: linkerd_drain::Watch,
+    ) -> (Watcher, tokio::task::JoinHandle<()>) {
         let state = Arc::new(Mutex::new(State::default()));
         let watcher = Watcher(state.clone());
-        let task = tokio::spawn(index(client, state));
+        let task = tokio::spawn(async move {
+            tokio::select! {
+                _ = index(client, state) => {}
+                _ = drain.signaled() => {}
+            };
+        });
         (watcher, task)
     }
 
@@ -220,7 +232,9 @@ mod state {
         //     .instrument(info_span!("srv")),
         // );
 
-        tokio::spawn(index_pods(client, state).instrument(info_span!("pods")));
+        tokio::spawn(index_pods(client, state).instrument(info_span!("pods")))
+            .await
+            .expect("Spawn must succeed");
     }
 
     async fn index_pods(
@@ -230,27 +244,32 @@ mod state {
         let api = Api::<Pod>::all(client);
         let mut watch = watcher(api, ListParams::default()).boxed();
         loop {
+            debug!("Waiting for pods updates");
             match watch.try_next().await? {
                 Some(Event::Applied(pod)) => {
                     let key = pod_key(&pod);
                     let ports = ports(&pod);
+                    debug!(?key, ports = ports.len(), "Applied");
                     let mut state = state.lock().await;
                     // TODO notify lookups. (There shouldn't be any, but...)
                     state.pods.insert(key, ports);
                 }
                 Some(Event::Deleted(pod)) => {
                     let key = pod_key(&pod);
+                    debug!(?key, "Deleted");
                     let mut state = state.lock().await;
                     // TODO notify lookups.
                     state.pods.remove(&key);
                 }
                 Some(Event::Restarted(pods)) => {
+                    debug!("Restarted");
                     let mut state = state.lock().await;
                     // TODO track deletions and notify lookups.
                     state.pods.clear();
                     for pod in pods.into_iter() {
                         let key = pod_key(&pod);
                         let ports = ports(&pod);
+                        debug!(?key, ports = ports.len());
                         state.pods.insert(key, ports);
                     }
                 }

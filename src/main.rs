@@ -36,8 +36,7 @@ async fn main() {
         .instrument(info_span!("grpc")),
     );
 
-    let ctrl_c = tokio::signal::ctrl_c();
-    let term = async move {
+    let sigterm = async move {
         use tokio::signal::unix::{signal, SignalKind};
         match signal(SignalKind::terminate()) {
             Ok(mut term) => term.recv().await,
@@ -46,11 +45,15 @@ async fn main() {
     };
 
     tokio::select! {
-        _ = ctrl_c => {},
-        _ = term => {}
+        _ = tokio::signal::ctrl_c() => {},
+        _ = sigterm => {}
+        _ = grpc => {
+            error!("gRPC server terminated");
+        }
+        _ = indexer => {
+            error!("indexer terminated");
+        }
     };
     info!("Shutting down");
     drain_tx.drain().await;
-    grpc.await.expect("Spawn must succeed");
-    indexer.await.expect("Spawn must succeed");
 }

@@ -1,4 +1,9 @@
-use super::{authz::Authorization, grpc::proto};
+use super::{
+    authz::Authorization,
+    grpc::proto,
+    labels::{self, Labels},
+    server::Server,
+};
 use futures::prelude::*;
 use k8s_openapi::api::core::v1::Pod;
 use kube::{
@@ -7,7 +12,7 @@ use kube::{
 };
 use kube_runtime::{watcher, watcher::Event};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     sync::{Arc, Weak},
 };
 use tokio::sync::{watch, Mutex, Notify};
@@ -38,12 +43,26 @@ struct LookupKey {
 }
 
 #[derive(Debug)]
-struct ServerState {
+struct SrvState {
     authorizations: HashSet<AuthzKey>,
+    server_labels: Labels,
+    pod_selector: labels::Selector,
     pods: HashSet<PodKey>,
     tx: watch::Receiver<proto::InboundProxyConfig>,
     rx: watch::Sender<proto::InboundProxyConfig>,
 }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PodState {
+    labels: Labels,
+    ports: Ports,
+}
+
+type ContainerName = String;
+type PortName = Option<String>;
+
+#[derive(Clone, Debug, Eq, Default)]
+struct Ports(Arc<BTreeMap<u16, ContainerPort>>);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ContainerPort {
@@ -52,14 +71,11 @@ struct ContainerPort {
     server: Option<SrvKey>,
 }
 
-type ContainerName = String;
-type PortName = Option<String>;
-
 #[derive(Debug, Default)]
-pub struct State {
+struct State {
     authorizations: HashMap<AuthzKey, Arc<Authorization>>,
-    servers: HashMap<SrvKey, ServerState>,
-    pods: HashMap<PodKey, HashMap<u16, ContainerPort>>,
+    servers: HashMap<SrvKey, SrvState>,
+    pods: HashMap<PodKey, PodState>,
     lookups: HashMap<LookupKey, Vec<Weak<Notify>>>,
 }
 
@@ -96,153 +112,150 @@ pub fn spawn(
     (watcher, task)
 }
 
-async fn index(
-    client: kube::Client,
-    state: Arc<Mutex<State>>,
-) -> kube_runtime::watcher::Result<()> {
-    // let authz_api = Api::<authz::Authorization>::all(client.clone());
-    // let srv_api = Api::<server::Server>::all(client);
+async fn index(client: kube::Client, state: Arc<Mutex<State>>) {
+    let pods =
+        tokio::spawn(index_pods(client.clone(), state.clone()).instrument(info_span!("pods")));
 
-    // let authz_task = tokio::spawn(
-    //     async move {
-    //         let mut authz = watcher(authz_api, ListParams::default()).boxed();
-    //         while let some(ev) = authz.try_next().await? {
-    //             match ev {
-    //                 event::applied(authz) => {
-    //                     info!(
-    //                         ns = %authz.namespace().unwrap_or_default(),
-    //                         name = %authz.name(),
-    //                         "applied",
-    //                     );
-    //                     debug!("{:#?}", authz);
-    //                 }
-    //                 event::deleted(authz) => {
-    //                     info!(
-    //                         ns = %authz.namespace().unwrap_or_default(),
-    //                         name = %authz.name(),
-    //                         "deleted",
-    //                     );
-    //                     debug!("{:#?}", authz);
-    //                 }
-    //                 event::restarted(authzs) => {
-    //                     info!("restarted");
-    //                     for authz in authzs.into_iter() {
-    //                         info!(
-    //                             ns = %authz.namespace().unwrap_or_default(),
-    //                             name = %authz.name(),
-    //                         );
-    //                         debug!("{:#?}", authz);
-    //                     }
-    //                 }
-    //             }
-    //         }
-    //         ok::<(), kube_runtime::watcher::error>(())
-    //     }
-    //     .instrument(info_span!("authz")),
-    // );
+    let srvs = tokio::spawn(index_srvs(client, state).instrument(info_span!("servers")));
 
-    // let srv_task = tokio::spawn(
-    //     async move {
-    //         let mut srvs = watcher(srv_api, ListParams::default()).boxed();
-    //         while let Some(ev) = srvs.try_next().await? {
-    //             match ev {
-    //                 Event::Applied(srv) => {
-    //                     info!(ns = %srv.namespace().unwrap(), name = %srv.name(), "Applied");
-    //                     debug!("{:#?}", srv);
-    //                 }
-    //                 Event::Deleted(srv) => {
-    //                     info!(ns = %srv.namespace().unwrap(), name = %srv.name(), "Deleted");
-    //                     debug!("{:#?}", srv);
-    //                 }
-    //                 Event::Restarted(srvs) => {
-    //                     info!("Restarted");
-    //                     for srv in srvs.into_iter() {
-    //                         info!(ns = %srv.namespace().unwrap(), name = %srv.name());
-    //                         debug!("{:#?}", srv);
-    //                     }
-    //                 }
-    //             }
-    //         }
-    //         Ok::<(), kube_runtime::watcher::Error>(())
-    //     }
-    //     .instrument(info_span!("srv")),
-    // );
-
-    tokio::spawn(index_pod_ports(client, state).instrument(info_span!("pods")))
-        .await
-        .expect("Spawn must succeed")?;
-
-    Ok(())
+    tokio::select! {
+        _ = pods => {}
+        _ = srvs => {}
+    }
 }
 
-async fn index_pod_ports(
+async fn index_pods(
     client: kube::Client,
     state: Arc<Mutex<State>>,
 ) -> kube_runtime::watcher::Result<()> {
     let api = Api::<Pod>::all(client);
     let mut watch = watcher(api, ListParams::default()).boxed();
     loop {
-        debug!("Waiting for pods updates");
+        debug!("Waiting for pod updates");
         match watch.try_next().await? {
-            Some(Event::Applied(pod)) => {
-                let key = pod_key(&pod);
-                let ports = ports(&pod);
-                debug!(?key, ports = ports.len(), "Applied");
-                let mut state = state.lock().await;
-                // TODO index against servers.
-                // TODO notify lookups. (There shouldn't be any, but...)
-                state.pods.insert(key, ports);
-            }
-            Some(Event::Deleted(pod)) => {
-                let key = pod_key(&pod);
-                debug!(?key, "Deleted");
-                let mut state = state.lock().await;
-                // TODO notify lookups.
-                state.pods.remove(&key);
-            }
-            Some(Event::Restarted(pods)) => {
-                debug!("Restarted");
-                let mut state = state.lock().await;
-                // TODO track deletions and notify lookups.
-                state.pods.clear();
-                for pod in pods.into_iter() {
-                    let key = pod_key(&pod);
-                    let ports = ports(&pod);
-                    // TODO index against servers.
-                    debug!(?key, ports = ports.len());
-                    state.pods.insert(key, ports);
-                }
-            }
+            Some(Event::Applied(pod)) => state.lock().await.update_pod(pod),
+            Some(Event::Deleted(pod)) => state.lock().await.remove_pod(pod),
+            Some(Event::Restarted(pods)) => state.lock().await.reset_pods(pods),
             None => return Ok(()),
         }
     }
 }
 
-fn pod_key(pod: &Pod) -> PodKey {
-    let ns = pod.namespace().expect("pods must have a namespace");
-    let name = pod.name();
-    PodKey { ns, name }
+async fn index_srvs(
+    client: kube::Client,
+    state: Arc<Mutex<State>>,
+) -> kube_runtime::watcher::Result<()> {
+    let api = Api::<Server>::all(client);
+    let mut watch = watcher(api, ListParams::default()).boxed();
+    loop {
+        debug!("Waiting for server updates");
+        match watch.try_next().await? {
+            Some(Event::Applied(s)) => state.lock().await.update_server(s),
+            Some(Event::Deleted(s)) => state.lock().await.remove_server(s),
+            Some(Event::Restarted(s)) => state.lock().await.reset_servers(s),
+            None => return Ok(()),
+        }
+    }
 }
 
-fn ports(pod: &Pod) -> HashMap<u16, ContainerPort> {
-    let mut ports = HashMap::default();
+impl State {
+    fn update_pod(&mut self, pod: Pod) {
+        let (key, state) = self.mk_pod(&pod);
+        debug!(?key, "Update pod");
+        // TODO index against servers.
+        self.pods.insert(key, state);
+        // TODO notify lookups. (There shouldn't be any, but...)
+    }
 
-    if let Some(spec) = pod.spec.as_ref() {
-        for container in &spec.containers {
-            let cname = container.name.clone();
-            if let Some(ps) = container.ports.as_ref() {
-                for p in ps {
-                    let port = p.container_port as u16;
-                    let cp = ContainerPort {
-                        container_name: cname.clone(),
-                        port_name: p.name.clone(),
-                        server: None,
-                    };
-                    ports.insert(port, cp);
-                }
-            }
+    fn remove_pod(&mut self, pod: Pod) {
+        let key = Self::pod_key(&pod);
+        debug!(?key, "Remove pod");
+        self.pods.remove(&key);
+        // TODO notify lookups
+    }
+
+    fn reset_pods(&mut self, pods: Vec<Pod>) {
+        debug!("Restarted");
+        // TODO track deletions and notify lookups.
+        self.pods.clear();
+        for pod in pods.into_iter() {
+            self.update_pod(pod)
         }
     }
 
-    ports
+    fn pod_key(pod: &Pod) -> PodKey {
+        let ns = pod.namespace().expect("pods must have a namespace");
+        let name = pod.name();
+        PodKey { ns, name }
+    }
+
+    fn mk_pod(&self, pod: &Pod) -> (PodKey, PodState) {
+        let mut ports = BTreeMap::default();
+        if let Some(spec) = pod.spec.as_ref() {
+            for container in &spec.containers {
+                let cname = container.name.clone();
+                if let Some(ps) = container.ports.as_ref() {
+                    for p in ps {
+                        let port = p.container_port as u16;
+                        let cp = ContainerPort {
+                            container_name: cname.clone(),
+                            port_name: p.name.clone(),
+                            server: None,
+                        };
+                        ports.insert(port, cp);
+                    }
+                }
+            }
+        }
+
+        let key = Self::pod_key(&pod);
+        let state = PodState {
+            ports: ports.into(),
+            labels: pod.metadata.labels.clone().into(),
+        };
+
+        (key, state)
+    }
+}
+
+impl State {
+    fn update_server(&mut self, _srv: Server) {
+        todo!();
+        // TODO index against pods.
+        // TODO notify lookups. (There shouldn't be any, but...)
+    }
+
+    fn remove_server(&mut self, _srv: Server) {
+        todo!();
+        // TODO notify lookups
+    }
+
+    fn reset_servers(&mut self, _srvs: Vec<Server>) {
+        debug!("Restarted servers");
+        todo!();
+        // TODO track deletions and notify lookups.
+    }
+}
+
+// === Ports ===
+
+impl From<BTreeMap<u16, ContainerPort>> for Ports {
+    #[inline]
+    fn from(ports: BTreeMap<u16, ContainerPort>) -> Self {
+        Self(ports.into())
+    }
+}
+
+impl AsRef<BTreeMap<u16, ContainerPort>> for Ports {
+    #[inline]
+    fn as_ref(&self) -> &BTreeMap<u16, ContainerPort> {
+        self.0.as_ref()
+    }
+}
+
+impl<T: AsRef<BTreeMap<u16, ContainerPort>>> std::cmp::PartialEq<T> for Ports {
+    #[inline]
+    fn eq(&self, t: &T) -> bool {
+        self.0.as_ref().eq(t.as_ref())
+    }
 }

@@ -102,63 +102,59 @@ pub fn spawn(
     drain: linkerd_drain::Watch,
 ) -> (Watcher, tokio::task::JoinHandle<()>) {
     let state = Arc::new(Mutex::new(State::default()));
-    let watcher = Watcher(state.clone());
+
+    let pods = tokio::spawn(
+        index(client.clone(), state.clone(), |s, ev| s.handle_pod(ev))
+            .instrument(info_span!("pods")),
+    );
+
+    let srvs = tokio::spawn(
+        index(client, state.clone(), |s, ev| s.handle_srv(ev)).instrument(info_span!("servers")),
+    );
+
+    let watcher = Watcher(state);
     let task = tokio::spawn(async move {
         tokio::select! {
-            _ = index(client, state) => {}
+            _ = pods => {}
+            _ = srvs => {}
             _ = drain.signaled() => {}
         };
     });
     (watcher, task)
 }
 
-async fn index(client: kube::Client, state: Arc<Mutex<State>>) {
-    let pods =
-        tokio::spawn(index_pods(client.clone(), state.clone()).instrument(info_span!("pods")));
-
-    let srvs = tokio::spawn(index_srvs(client, state).instrument(info_span!("servers")));
-
-    tokio::select! {
-        _ = pods => {}
-        _ = srvs => {}
-    }
-}
-
-async fn index_pods(
+async fn index<T>(
     client: kube::Client,
     state: Arc<Mutex<State>>,
-) -> kube_runtime::watcher::Result<()> {
-    let api = Api::<Pod>::all(client);
+    idx: impl Fn(&mut State, Event<T>),
+) -> kube_runtime::watcher::Result<()>
+where
+    T: Resource + serde::de::DeserializeOwned + std::fmt::Debug + Clone + Send + 'static,
+    T::DynamicType: Default,
+{
+    let api = Api::<T>::all(client);
     let mut watch = watcher(api, ListParams::default()).boxed();
     loop {
-        debug!("Waiting for pod updates");
+        debug!("Waiting for updates");
         match watch.try_next().await? {
-            Some(Event::Applied(pod)) => state.lock().await.update_pod(pod),
-            Some(Event::Deleted(pod)) => state.lock().await.remove_pod(pod),
-            Some(Event::Restarted(pods)) => state.lock().await.reset_pods(pods),
-            None => return Ok(()),
-        }
-    }
-}
-
-async fn index_srvs(
-    client: kube::Client,
-    state: Arc<Mutex<State>>,
-) -> kube_runtime::watcher::Result<()> {
-    let api = Api::<Server>::all(client);
-    let mut watch = watcher(api, ListParams::default()).boxed();
-    loop {
-        debug!("Waiting for server updates");
-        match watch.try_next().await? {
-            Some(Event::Applied(s)) => state.lock().await.update_server(s),
-            Some(Event::Deleted(s)) => state.lock().await.remove_server(s),
-            Some(Event::Restarted(s)) => state.lock().await.reset_servers(s),
+            Some(ev) => {
+                let mut s = state.lock().await;
+                idx(&mut s, ev);
+            }
             None => return Ok(()),
         }
     }
 }
 
 impl State {
+    fn handle_pod(&mut self, ev: Event<Pod>) {
+        match ev {
+            Event::Applied(p) => self.update_pod(p),
+            Event::Deleted(p) => self.remove_pod(p),
+            Event::Restarted(p) => self.reset_pods(p),
+        }
+    }
+
     fn update_pod(&mut self, pod: Pod) {
         let (key, state) = self.mk_pod(&pod);
         debug!(?key, "Update pod");
@@ -219,6 +215,14 @@ impl State {
 }
 
 impl State {
+    fn handle_srv(&mut self, ev: Event<Server>) {
+        match ev {
+            Event::Applied(s) => self.update_server(s),
+            Event::Deleted(s) => self.remove_server(s),
+            Event::Restarted(s) => self.reset_servers(s),
+        }
+    }
+
     fn update_server(&mut self, _srv: Server) {
         todo!();
         // TODO index against pods.

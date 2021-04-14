@@ -1,4 +1,4 @@
-use super::index::Watcher;
+use super::index::Index;
 use futures::prelude::*;
 
 pub mod proto {
@@ -11,13 +11,13 @@ pub mod proto {
 
 #[derive(Clone, Debug)]
 pub struct Grpc {
-    watcher: Watcher,
+    index: Index,
     drain: linkerd_drain::Watch,
 }
 
 impl Grpc {
-    pub fn new(watcher: Watcher, drain: linkerd_drain::Watch) -> Self {
-        Self { watcher, drain }
+    pub fn new(index: Index, drain: linkerd_drain::Watch) -> Self {
+        Self { index, drain }
     }
 
     pub async fn serve(
@@ -67,7 +67,7 @@ impl proto::Service for Grpc {
             port as u16
         };
 
-        let mut watch = self.watcher.watch(ns, name, port).await;
+        let mut watch = self.index.watch(ns, name, port).await;
         let updates = async_stream::try_stream! {
             loop {
                 // Send the current config on the stream.

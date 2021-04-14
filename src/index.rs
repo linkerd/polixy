@@ -18,6 +18,19 @@ use std::{
 use tokio::sync::{watch, Mutex, Notify};
 use tracing::{debug, info_span, Instrument};
 
+#[derive(Clone, Debug)]
+pub struct Index(Arc<Mutex<State>>);
+
+pub type IndexWatch = watch::Receiver<proto::InboundProxyConfig>;
+
+#[derive(Debug, Default)]
+struct State {
+    authorizations: HashMap<AuthzKey, Arc<Authorization>>,
+    servers: HashMap<SrvKey, SrvState>,
+    pods: HashMap<PodKey, PodState>,
+    lookups: HashMap<LookupKey, Vec<Weak<Notify>>>,
+}
+
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 struct AuthzKey {
     ns: String,
@@ -71,80 +84,72 @@ struct ContainerPort {
     server: Option<SrvKey>,
 }
 
-#[derive(Debug, Default)]
-struct State {
-    authorizations: HashMap<AuthzKey, Arc<Authorization>>,
-    servers: HashMap<SrvKey, SrvState>,
-    pods: HashMap<PodKey, PodState>,
-    lookups: HashMap<LookupKey, Vec<Weak<Notify>>>,
-}
+// === impl Index ===
 
-#[derive(Clone, Debug)]
-pub struct Watcher(Arc<Mutex<State>>);
+impl Index {
+    pub fn spawn(
+        client: kube::Client,
+        drain: linkerd_drain::Watch,
+    ) -> (Self, tokio::task::JoinHandle<()>) {
+        let state = Arc::new(Mutex::new(State::default()));
 
-pub type Watch = watch::Receiver<proto::InboundProxyConfig>;
+        let pods = tokio::spawn(
+            Self::index(client.clone(), state.clone(), |s, ev| s.handle_pod(ev))
+                .instrument(info_span!("pods")),
+        );
 
-impl Watcher {
+        let srvs = tokio::spawn(
+            Self::index(client, state.clone(), |s, ev| s.handle_srv(ev))
+                .instrument(info_span!("servers")),
+        );
+
+        let task = tokio::spawn(async move {
+            tokio::select! {
+                _ = pods => {}
+                _ = srvs => {}
+                _ = drain.signaled() => {}
+            };
+        });
+
+        (Self(state), task)
+    }
+
+    async fn index<T>(
+        client: kube::Client,
+        state: Arc<Mutex<State>>,
+        idx: impl Fn(&mut State, Event<T>),
+    ) -> kube_runtime::watcher::Result<()>
+    where
+        T: Resource + serde::de::DeserializeOwned + std::fmt::Debug + Clone + Send + 'static,
+        T::DynamicType: Default,
+    {
+        let api = Api::<T>::all(client);
+        let mut watch = watcher(api, ListParams::default()).boxed();
+        loop {
+            debug!("Waiting for next update");
+            match watch.try_next().await? {
+                Some(ev) => {
+                    let mut s = state.lock().await;
+                    idx(&mut s, ev);
+                }
+                None => return Ok(()),
+            }
+        }
+    }
+
     pub async fn watch(
         &self,
         _ns: impl Into<String>,
         _name: impl Into<String>,
         _port: u16,
-    ) -> Watch {
+    ) -> IndexWatch {
         // let ns = ns.into();
         // let name = name.into();
         todo!("watch stream")
     }
 }
 
-pub fn spawn(
-    client: kube::Client,
-    drain: linkerd_drain::Watch,
-) -> (Watcher, tokio::task::JoinHandle<()>) {
-    let state = Arc::new(Mutex::new(State::default()));
-
-    let pods = tokio::spawn(
-        index(client.clone(), state.clone(), |s, ev| s.handle_pod(ev))
-            .instrument(info_span!("pods")),
-    );
-
-    let srvs = tokio::spawn(
-        index(client, state.clone(), |s, ev| s.handle_srv(ev)).instrument(info_span!("servers")),
-    );
-
-    let watcher = Watcher(state);
-    let task = tokio::spawn(async move {
-        tokio::select! {
-            _ = pods => {}
-            _ = srvs => {}
-            _ = drain.signaled() => {}
-        };
-    });
-    (watcher, task)
-}
-
-async fn index<T>(
-    client: kube::Client,
-    state: Arc<Mutex<State>>,
-    idx: impl Fn(&mut State, Event<T>),
-) -> kube_runtime::watcher::Result<()>
-where
-    T: Resource + serde::de::DeserializeOwned + std::fmt::Debug + Clone + Send + 'static,
-    T::DynamicType: Default,
-{
-    let api = Api::<T>::all(client);
-    let mut watch = watcher(api, ListParams::default()).boxed();
-    loop {
-        debug!("Waiting for next update");
-        match watch.try_next().await? {
-            Some(ev) => {
-                let mut s = state.lock().await;
-                idx(&mut s, ev);
-            }
-            None => return Ok(()),
-        }
-    }
-}
+// === impl State ===
 
 impl State {
     fn handle_pod(&mut self, ev: Event<Pod>) {
@@ -212,9 +217,7 @@ impl State {
 
         (key, state)
     }
-}
 
-impl State {
     fn handle_srv(&mut self, ev: Event<Server>) {
         match ev {
             Event::Applied(s) => self.update_server(s),

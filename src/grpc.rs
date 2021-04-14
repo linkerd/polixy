@@ -1,4 +1,4 @@
-use super::state::Watcher;
+use super::index::Watcher;
 use futures::prelude::*;
 
 pub mod proto {

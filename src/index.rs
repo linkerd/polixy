@@ -135,7 +135,7 @@ where
     let api = Api::<T>::all(client);
     let mut watch = watcher(api, ListParams::default()).boxed();
     loop {
-        debug!("Waiting for updates");
+        debug!("Waiting for next update");
         match watch.try_next().await? {
             Some(ev) => {
                 let mut s = state.lock().await;

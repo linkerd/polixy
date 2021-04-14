@@ -1,5 +1,5 @@
 use futures::{future, prelude::*};
-use polixy::state;
+use polixy::index;
 use tracing::{debug, error, info, info_span, Instrument};
 
 #[tokio::main]
@@ -11,7 +11,7 @@ async fn main() {
     let client = kube::Client::try_default()
         .await
         .expect("Failed to initialize client");
-    let (watcher, indexer) = state::spawn(client, drain_rx.clone());
+    let (watcher, indexer) = index::spawn(client, drain_rx.clone());
 
     let addr = ([0, 0, 0, 0], 8090).into();
     let server = polixy::Grpc::new(watcher, drain_rx.clone());

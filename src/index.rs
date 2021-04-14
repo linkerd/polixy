@@ -10,7 +10,10 @@ use kube::{
     api::{ListParams, Resource},
     Api,
 };
-use kube_runtime::{watcher, watcher::Event};
+use kube_runtime::{
+    watcher,
+    watcher::{Error as WatchError, Event},
+};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     sync::{Arc, Weak},
@@ -90,51 +93,49 @@ impl Index {
     pub fn spawn(
         client: kube::Client,
         drain: linkerd_drain::Watch,
-    ) -> (Self, tokio::task::JoinHandle<()>) {
+    ) -> (Self, impl std::future::Future<Output = ()>) {
         let state = Arc::new(Mutex::new(State::default()));
 
-        let pods = tokio::spawn(
-            Self::index(client.clone(), state.clone(), |s, ev| s.handle_pod(ev))
-                .instrument(info_span!("pods")),
-        );
-
-        let srvs = tokio::spawn(
-            Self::index(client, state.clone(), |s, ev| s.handle_srv(ev))
-                .instrument(info_span!("servers")),
-        );
-
-        let task = tokio::spawn(async move {
-            tokio::select! {
-                _ = pods => {}
-                _ = srvs => {}
-                _ = drain.signaled() => {}
-            };
-        });
-
-        (Self(state), task)
-    }
-
-    async fn index<T>(
-        client: kube::Client,
-        state: Arc<Mutex<State>>,
-        idx: impl Fn(&mut State, Event<T>),
-    ) -> kube_runtime::watcher::Result<()>
-    where
-        T: Resource + serde::de::DeserializeOwned + std::fmt::Debug + Clone + Send + 'static,
-        T::DynamicType: Default,
-    {
-        let api = Api::<T>::all(client);
-        let mut watch = watcher(api, ListParams::default()).boxed();
-        loop {
-            debug!("Waiting for next update");
-            match watch.try_next().await? {
-                Some(ev) => {
-                    let mut s = state.lock().await;
-                    idx(&mut s, ev);
+        // Update the index from pod updates.
+        let pods = {
+            let state = state.clone();
+            let api = Api::<Pod>::all(client.clone());
+            async move {
+                let mut watch = watcher(api, ListParams::default()).boxed();
+                while let Some(ev) = watch.try_next().await? {
+                    state.lock().await.handle_pod(ev);
                 }
-                None => return Ok(()),
+                Ok::<_, WatchError>(())
             }
-        }
+            .instrument(info_span!("pod"))
+        };
+
+        // Update the index from server updates.
+        let srvs = {
+            let state = state.clone();
+            let api = Api::<Server>::all(client);
+            async move {
+                let mut watch = watcher(api, ListParams::default()).boxed();
+                while let Some(ev) = watch.try_next().await? {
+                    state.lock().await.handle_srv(ev);
+                }
+                Ok::<_, WatchError>(())
+            }
+            .instrument(info_span!("srv"))
+        };
+
+        // Process all index
+        let index_task = async move {
+            tokio::select! {
+                // Stop indexing immediately when the controller is shutdown.
+                _ = drain.signaled() => debug!("Shutdown"),
+                // If any of the index tasks complete, stop processing all indexes,
+                _ = pods => debug!("Pod index terminated"),
+                _ = srvs => debug!("Server index terminated"),
+            }
+        };
+
+        (Self(state), index_task)
     }
 
     pub async fn watch(

@@ -10,52 +10,45 @@ use kube::{
     api::{ListParams, Resource},
     Api,
 };
-use kube_runtime::{
-    watcher,
-    watcher::{Error as WatchError, Event},
-};
+use kube_runtime::watcher::{watcher, Event};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
-    sync::{Arc, Weak},
+    sync::Arc,
 };
-use tokio::sync::{watch, Mutex, Notify};
-use tracing::{debug, info_span, Instrument};
+use tokio::sync::{watch, Mutex};
+use tracing::{debug, info, info_span, warn, Instrument};
 
 #[derive(Clone, Debug)]
 pub struct Index(Arc<Mutex<State>>);
 
-pub type IndexWatch = watch::Receiver<proto::InboundProxyConfig>;
+pub type Lookup = watch::Receiver<proto::InboundProxyConfig>;
 
 #[derive(Debug, Default)]
 struct State {
     authorizations: HashMap<AuthzKey, Arc<Authorization>>,
     servers: HashMap<SrvKey, SrvState>,
     pods: HashMap<PodKey, PodState>,
-    lookups: HashMap<LookupKey, Vec<Weak<Notify>>>,
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
+struct Namespace(String);
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 struct AuthzKey {
-    ns: String,
+    ns: Namespace,
     name: String,
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 struct SrvKey {
-    ns: String,
+    ns: Namespace,
     name: String,
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 struct PodKey {
-    ns: String,
+    ns: Namespace,
     name: String,
-}
-
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
-struct LookupKey {
-    pod: PodKey,
-    port: u16,
 }
 
 #[derive(Debug)]
@@ -90,6 +83,7 @@ struct ContainerPort {
 // === impl Index ===
 
 impl Index {
+    // Returns an index handle and spawns a background task that updates it.
     pub fn spawn(
         client: kube::Client,
         drain: linkerd_drain::Watch,
@@ -102,10 +96,13 @@ impl Index {
             let api = Api::<Pod>::all(client.clone());
             async move {
                 let mut watch = watcher(api, ListParams::default()).boxed();
-                while let Some(ev) = watch.try_next().await? {
-                    state.lock().await.handle_pod(ev);
+                loop {
+                    match watch.next().await {
+                        Some(Ok(ev)) => state.lock().await.handle_pod(ev),
+                        Some(Err(error)) => info!(%error, "Disconnected"),
+                        None => return,
+                    }
                 }
-                Ok::<_, WatchError>(())
             }
             .instrument(info_span!("pod"))
         };
@@ -116,37 +113,46 @@ impl Index {
             let api = Api::<Server>::all(client);
             async move {
                 let mut watch = watcher(api, ListParams::default()).boxed();
-                while let Some(ev) = watch.try_next().await? {
-                    state.lock().await.handle_srv(ev);
+                loop {
+                    match watch.next().await {
+                        Some(Ok(ev)) => state.lock().await.handle_srv(ev),
+                        Some(Err(error)) => info!(%error, "Disconnected"),
+                        None => return,
+                    }
                 }
-                Ok::<_, WatchError>(())
             }
             .instrument(info_span!("srv"))
         };
 
-        // Process all index
-        let index_task = async move {
+        // Process all index updates on a background task
+        let index_task = tokio::spawn(async move {
             tokio::select! {
                 // Stop indexing immediately when the controller is shutdown.
                 _ = drain.signaled() => debug!("Shutdown"),
                 // If any of the index tasks complete, stop processing all indexes,
-                _ = pods => debug!("Pod index terminated"),
-                _ = srvs => debug!("Server index terminated"),
+                _ = pods => warn!("Pod index terminated"),
+                _ = srvs => warn!("Server index terminated"),
             }
-        };
+        });
 
-        (Self(state), index_task)
+        (Self(state), index_task.map(|_| {}))
     }
 
-    pub async fn watch(
+    pub async fn lookup(
         &self,
-        _ns: impl Into<String>,
-        _name: impl Into<String>,
-        _port: u16,
-    ) -> IndexWatch {
-        // let ns = ns.into();
-        // let name = name.into();
-        todo!("watch stream")
+        ns: impl Into<String>,
+        name: impl Into<String>,
+        port: u16,
+    ) -> Option<Lookup> {
+        let key = PodKey {
+            ns: Namespace(ns.into()),
+            name: name.into(),
+        };
+
+        let _state = self.0.lock().await.pods.get(&key)?;
+        let _ = port;
+
+        todo!("Lookup pod->server")
     }
 }
 
@@ -186,7 +192,7 @@ impl State {
     }
 
     fn pod_key(pod: &Pod) -> PodKey {
-        let ns = pod.namespace().expect("pods must have a namespace");
+        let ns = Namespace(pod.namespace().expect("pods must have a namespace"));
         let name = pod.name();
         PodKey { ns, name }
     }

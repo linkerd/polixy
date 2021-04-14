@@ -67,7 +67,18 @@ impl proto::Service for Grpc {
             port as u16
         };
 
-        let mut watch = self.index.watch(ns, name, port).await;
+        // Lookup the configuration for an inbound port.
+        //
+        // If the pod hasn't (yet) been indexed, return a Not Found error.
+        //
+        // XXX Should we try waiting for the pod to be created? Practically, it
+        // seems unlikely for a pod to request its config for the pod's
+        // existence has been observed; but it's certainly possible (especially
+        // if the index is recovering).
+        let mut watch = self.index.lookup(ns, name, port).await.ok_or_else(|| {
+            tonic::Status::not_found(format!("Unknown pod ns={} name={} port={}", ns, name, port))
+        })?;
+
         let updates = async_stream::try_stream! {
             loop {
                 // Send the current config on the stream.

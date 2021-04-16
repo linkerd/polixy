@@ -67,9 +67,8 @@ impl proto::Service for Grpc {
             port as u16
         };
 
-        // Lookup the configuration for an inbound port.
-        //
-        // If the pod hasn't (yet) been indexed, return a Not Found error.
+        // Lookup the configuration for an inbound port. If the pod hasn't (yet)
+        // been indexed, return a Not Found error.
         //
         // XXX Should we try waiting for the pod to be created? Practically, it
         // seems unlikely for a pod to request its config for the pod's
@@ -82,12 +81,13 @@ impl proto::Service for Grpc {
         let updates = async_stream::try_stream! {
             loop {
                 // Send the current config on the stream.
-                let update = (*watch.borrow()).clone();
-                yield update;
+                let config = (*watch.borrow()).clone();
+                yield config;
 
                 // Wait until the watch is updated before sending another
-                // update. If the sender is dropped, then end the stream.
+                // update.
                 if watch.changed().await.is_err() {
+                    // If the sender is dropped, then end the stream.
                     return;
                 }
             }

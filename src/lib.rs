@@ -6,4 +6,4 @@ pub mod server;
 
 pub use self::{grpc::Grpc, index::Index};
 
-//type Error = Box<dyn std::error::Error + Send + Sync + 'static>;
+type Error = Box<dyn std::error::Error + Send + Sync + 'static>;

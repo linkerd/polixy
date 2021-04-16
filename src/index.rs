@@ -185,61 +185,124 @@ impl State {
         }
     }
 
+    fn handle_srv(&mut self, ev: Event<Server>) {
+        let res = match ev {
+            Event::Applied(s) => self.update_server(s),
+            Event::Deleted(s) => self.remove_server(s),
+            Event::Restarted(s) => self.reset_servers(s),
+        };
+
+        if let Err(error) = res {
+            warn!(%error, "Failed to index pod");
+        }
+    }
+
+    // TODO test
     fn update_pod(&mut self, pod: Pod) -> Result<(), Error> {
         let ns_name = NsName(pod.namespace().ok_or(MissingNamespace(()))?.into());
-        let pod_name = PodName(pod.name().into());
-        let mut pod = Self::mk_pod(&pod)?;
-
         let ns = self.namespaces.entry(ns_name.clone()).or_default();
 
+        let pod_name = PodName(pod.name().into());
+        let new_pod = Self::mk_pod(&pod)?;
+
         // If the pod already exists, the update may be changing its labels, so
-        // we may need to re-index.
-        if let Some(old_pod) = ns.pods.remove(&pod_name) {
-            if pod.labels == old_pod.labels {
-                // If the labels are unchanged, don't bother re-indexing; just
-                // restore the pod in the index.
+        // we may need to re-index. We remove the pod initially and, if the
+        // labels are the same, it is re-inserted.
+        if let Some(pod) = ns.pods.get_mut(&pod_name) {
+            if new_pod.labels == pod.labels {
+                // If the labels are unchanged, no part of the pod metadata can
+                // impact our indexing, as the port information is immutable.
                 debug!(?ns_name, ?pod_name, "Ingoring update");
-                ns.pods.insert(pod_name, old_pod);
                 return Ok(());
             }
 
-            // Clear all server refernces to the pod before re-indexing.
-            debug!(?ns_name, ?pod_name, "Updating pod's labels");
-            for (_, srv) in ns.servers.iter_mut() {
-                srv.pods.remove(&pod_name);
+            debug!(?ns_name, ?pod_name, "Labels updated");
+            pod.labels = new_pod.labels;
+            // Clear the pod->server index so that we can recreate it with
+            // updated labels. This allows us to return `AmbiguousServer` errors
+            // when more than one server matches a port.
+            for cp in pod.ports.values_mut() {
+                cp.server = None;
             }
-        }
-        debug!(?ns_name, ?pod_name, "Updating index");
+            for (srv_name, srv) in ns.servers.iter_mut() {
+                // Lookup the container port on the pod. If it exists, match
+                // the pod's labels against the server's pod selector.
+                if let Some(port) = pod.get_port(&srv.port) {
+                    if let Some(cp) = pod.ports.get_mut(&port) {
+                        if srv.pod_selector.matches(&pod.labels) {
+                            // If this container port has already been matched to a
+                            // server, we have overlapping servers.
+                            if cp.server.is_some() {
+                                let e = AmbiguousServer(ns_name, pod_name, srv_name.clone());
+                                return Err(e.into());
+                            }
+                            cp.server = Some(srv_name.clone());
 
-        // Check all servers in the same namespace as the pod.
-        for (srv_name, srv) in ns.servers.iter_mut() {
-            // Get the port number for the server. If the port is named, look it
-            // up
-            let port = match srv.port {
-                SrvPort::Number(p) => p,
-                SrvPort::Name(ref n) => match pod.port_names.get(&n) {
-                    Some(p) => *p,
-                    // This pod does not have a port matching the server's port
-                    // name; check the rest of the srevers.
-                    None => continue,
-                },
-            };
-            // Lookup the container port on the pod. If it exists, match the
-            // pod's labels against the server's pod selector.
-            if let Some(cp) = pod.ports.get_mut(&port) {
-                if srv.pod_selector.matches(&pod.labels) {
-                    // If this container port has already been matched to a
-                    // server, we have overlapping servers.
-                    if cp.server.is_some() {
-                        return Err(AmbiguousServer(ns_name, pod_name, srv_name.clone()).into());
+                            srv.pods.insert(pod_name.clone());
+                        } else {
+                            srv.pods.remove(&pod_name);
+                        }
                     }
-                    cp.server = Some(srv_name.clone());
-                    srv.pods.insert(pod_name.clone());
+                }
+            }
+        } else {
+            // The pod is being added anew, so we don't need to bother clearing
+            // out prior state before updating the index.
+            let mut pod = new_pod;
+
+            for (srv_name, srv) in ns.servers.iter_mut() {
+                // Lookup the container port on the pod. If it exists, match the
+                // pod's labels against the server's pod selector.
+                if let Some(port) = pod.get_port(&srv.port) {
+                    if let Some(cp) = pod.ports.get_mut(&port) {
+                        if srv.pod_selector.matches(&pod.labels) {
+                            // If this container port has already been matched to a
+                            // server, we have overlapping servers.
+                            if cp.server.is_some() {
+                                return Err(
+                                    AmbiguousServer(ns_name, pod_name, srv_name.clone()).into()
+                                );
+                            }
+                            cp.server = Some(srv_name.clone());
+                            srv.pods.insert(pod_name.clone());
+                        }
+                    }
+                }
+            }
+
+            debug!(?ns_name, ?pod_name, "Adding a pod to the index");
+            ns.pods.insert(pod_name, pod);
+        }
+
+        Ok(())
+    }
+
+    fn update_server(&mut self, srv: Server) -> Result<(), Error> {
+        let ns_name = NsName(srv.namespace().ok_or(MissingNamespace(()))?.into());
+        let ns = self.namespaces.entry(ns_name.clone()).or_default();
+
+        let srv_name = SrvName(srv.name().into());
+
+        if let Some(mut old_srv) = ns.servers.remove(&srv_name) {
+            for pod_name in old_srv.pods.drain() {
+                if let Some(pod) = ns.pods.get_mut(&pod_name) {
+                    if let Some(port) = pod.get_port(&old_srv.port) {
+                        if let Some(cp) = pod.ports.get_mut(&port) {
+                            cp.server = None;
+                        }
+                    }
                 }
             }
         }
 
-        ns.pods.insert(pod_name, pod);
+        // TODO index against pods.
+        let srv = Self::mk_srv(&srv)?;
+        for (pod_name, pod) in ns.pods.iter_mut() {
+            todo!()
+        }
+        ns.servers.insert(srv_name, srv);
+
+        // TODO notify lookups. (There shouldn't be any, but...)
 
         Ok(())
     }
@@ -258,8 +321,19 @@ impl State {
         Ok(())
     }
 
+    fn remove_server(&mut self, _srv: Server) -> Result<(), Error> {
+        todo!();
+        // TODO notify lookups
+    }
+
     fn reset_pods(&mut self, _pods: Vec<Pod>) -> Result<(), Error> {
         todo!("Reset pods");
+    }
+
+    fn reset_servers(&mut self, _srvs: Vec<Server>) -> Result<(), Error> {
+        debug!("Restarted servers");
+        todo!();
+        // TODO track deletions and notify lookups.
     }
 
     fn mk_pod(pod: &Pod) -> Result<PodState, DuplicatePort> {
@@ -299,31 +373,25 @@ impl State {
         })
     }
 
-    fn handle_srv(&mut self, ev: Event<Server>) {
-        match ev {
-            Event::Applied(s) => self.update_server(s),
-            Event::Deleted(s) => self.remove_server(s),
-            Event::Restarted(s) => self.reset_servers(s),
-        }
-    }
-
-    fn update_server(&mut self, _srv: Server) {
-        todo!();
-        // TODO index against pods.
-        // TODO notify lookups. (There shouldn't be any, but...)
-    }
-
-    fn remove_server(&mut self, _srv: Server) {
-        todo!();
-        // TODO notify lookups
-    }
-
-    fn reset_servers(&mut self, _srvs: Vec<Server>) {
-        debug!("Restarted servers");
-        todo!();
-        // TODO track deletions and notify lookups.
+    fn mk_srv(srv: &Server) -> Result<SrvState, Error> {
+        todo!()
     }
 }
+
+// === PodState ===
+
+impl PodState {
+    /// Gets the port number for the server. If the server port is named, resolve
+    /// the number from the pod.
+    fn get_port(&self, sp: &SrvPort) -> Option<u16> {
+        match sp {
+            SrvPort::Number(p) => Some(*p),
+            SrvPort::Name(ref n) => self.port_names.get(&n).copied(),
+        }
+    }
+}
+
+// === Names ===
 
 impl std::fmt::Display for NsName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

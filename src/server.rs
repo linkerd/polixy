@@ -13,23 +13,15 @@ use serde::{Deserialize, Serialize};
 #[derive(CustomResource, Deserialize, Serialize, Clone, Debug, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerSpec {
-    pod_selector: PodSelector,
-    container_name: Option<String>,
-    port: Port,
-}
-
-/// Selects a set of pods that expose a server.
-#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct PodSelector {
-    match_labels: Option<labels::Map>,
-    match_expressions: Option<labels::Expressions>,
+    pub pod_selector: labels::Match,
+    pub container_name: Option<String>,
+    pub port: Port,
 }
 
 /// References a pod spec's port by name or number.
 #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
 #[serde(untagged)]
-enum Port {
+pub enum Port {
     Number(u16),
     Name(String),
 }

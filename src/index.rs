@@ -2,7 +2,7 @@ use crate::{
     authz::Authorization,
     grpc::proto,
     labels::{self, Labels},
-    server::Server,
+    server::{self, Server},
     Error,
 };
 use futures::prelude::*;
@@ -325,7 +325,7 @@ impl State {
         let ns = self.namespaces.entry(ns_name.clone()).or_default();
 
         let srv_name = SrvName(srv.name().into());
-        let meta = Self::mk_srv_meta(&srv)?;
+        let meta = Self::mk_srv_meta(&srv);
 
         if let Some(srv) = ns.servers.get_mut(&srv_name) {
             // If the labels have changed, then we should reindex authorizations
@@ -462,8 +462,16 @@ impl State {
         })
     }
 
-    fn mk_srv_meta(srv: &Server) -> Result<SrvMeta, Error> {
-        todo!()
+    fn mk_srv_meta(srv: &Server) -> SrvMeta {
+        let port = match srv.spec.port {
+            server::Port::Number(ref p) => SrvPort::Number(*p),
+            server::Port::Name(ref n) => SrvPort::Name(PortName(Arc::from(n.as_str()))),
+        };
+        SrvMeta {
+            port,
+            labels: srv.metadata.labels.clone().into(),
+            pod_selector: srv.spec.pod_selector.clone().into(),
+        }
     }
 }
 

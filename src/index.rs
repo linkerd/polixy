@@ -16,7 +16,10 @@ use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
 };
-use tokio::sync::{watch, Mutex};
+use tokio::{
+    select_priv_declare_output_enum,
+    sync::{watch, Mutex},
+};
 use tracing::{debug, info, info_span, warn, Instrument};
 
 #[derive(Clone, Debug)]
@@ -24,14 +27,23 @@ pub struct Index(Arc<Mutex<State>>);
 
 pub type Lookup = watch::Receiver<proto::InboundProxyConfig>;
 
+/// Indexes pods, servers, and authorizations.
+///
+/// State is tracked per-namespace, since it's never necessary to correlate data
+/// across namespaces.
+///
+/// TODO This means we could probably establishes watches in namespace-scopes as
+/// well to reduce locking/contention in busy clusters; but this is overly
+/// complicated for now.
 #[derive(Debug, Default)]
 struct State {
     namespaces: HashMap<NsName, NsState>,
 }
 
+///
 #[derive(Debug, Default)]
 struct NsState {
-    authorizations: HashMap<AuthzName, Arc<Authorization>>,
+    //authorizations: HashMap<AuthzName, Arc<Authorization>>,
     servers: HashMap<SrvName, SrvState>,
     pods: HashMap<PodName, PodState>,
 }
@@ -56,13 +68,18 @@ struct PortName(Arc<str>);
 
 #[derive(Debug)]
 struct SrvState {
+    meta: SrvMeta,
+    //authorizations: HashSet<AuthzName>,
+    pods: HashSet<PodName>,
+    rx: watch::Receiver<proto::InboundProxyConfig>,
+    tx: watch::Sender<proto::InboundProxyConfig>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SrvMeta {
     port: SrvPort,
     labels: Labels,
     pod_selector: labels::Selector,
-    authorizations: HashSet<AuthzName>,
-    pods: HashSet<PodName>,
-    tx: watch::Receiver<proto::InboundProxyConfig>,
-    rx: watch::Sender<proto::InboundProxyConfig>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -227,9 +244,9 @@ impl State {
             for (srv_name, srv) in ns.servers.iter_mut() {
                 // Lookup the container port on the pod. If it exists, match
                 // the pod's labels against the server's pod selector.
-                if let Some(port) = pod.get_port(&srv.port) {
+                if let Some(port) = pod.get_port(&srv.meta.port) {
                     if let Some(cp) = pod.ports.get_mut(&port) {
-                        if srv.pod_selector.matches(&pod.labels) {
+                        if srv.meta.pod_selector.matches(&pod.labels) {
                             // If this container port has already been matched to a
                             // server, we have overlapping servers.
                             if cp.server.is_some() {
@@ -253,15 +270,14 @@ impl State {
             for (srv_name, srv) in ns.servers.iter_mut() {
                 // Lookup the container port on the pod. If it exists, match the
                 // pod's labels against the server's pod selector.
-                if let Some(port) = pod.get_port(&srv.port) {
+                if let Some(port) = pod.get_port(&srv.meta.port) {
                     if let Some(cp) = pod.ports.get_mut(&port) {
-                        if srv.pod_selector.matches(&pod.labels) {
+                        if srv.meta.pod_selector.matches(&pod.labels) {
                             // If this container port has already been matched to a
                             // server, we have overlapping servers.
                             if cp.server.is_some() {
-                                return Err(
-                                    AmbiguousServer(ns_name, pod_name, srv_name.clone()).into()
-                                );
+                                let e = AmbiguousServer(ns_name, pod_name, srv_name.clone());
+                                return Err(e.into());
                             }
                             cp.server = Some(srv_name.clone());
                             srv.pods.insert(pod_name.clone());
@@ -282,27 +298,47 @@ impl State {
         let ns = self.namespaces.entry(ns_name.clone()).or_default();
 
         let srv_name = SrvName(srv.name().into());
+        let meta = Self::mk_srv_meta(&srv)?;
 
-        if let Some(mut old_srv) = ns.servers.remove(&srv_name) {
-            for pod_name in old_srv.pods.drain() {
-                if let Some(pod) = ns.pods.get_mut(&pod_name) {
-                    if let Some(port) = pod.get_port(&old_srv.port) {
-                        if let Some(cp) = pod.ports.get_mut(&port) {
-                            cp.server = None;
+        if let Some(srv) = ns.servers.get_mut(&srv_name) {
+            // If the labels have changed, then we should reindex authorizations
+            // against this server.
+            if srv.meta.labels != meta.labels {
+                //srv.authorizations.clear();
+                todo!("Reindex authorizations");
+            }
+
+            // If the port or pod selection is changed, then we should reindex
+            // pod-server relationships.
+            if srv.meta.port != meta.port || srv.meta.pod_selector != meta.pod_selector {
+                todo!("Rebuild pod-server indexes");
+                // TODO remove server from pods.
+            }
+
+            return Ok(());
+        }
+
+        let mut pods = HashSet::new();
+
+        // TODO index against pods.
+        for (pod_name, pod) in ns.pods.iter_mut() {
+            if let Some(port) = pod.get_port(&meta.port) {
+                if let Some(cp) = pod.ports.get_mut(&port) {
+                    if meta.pod_selector.matches(&pod.labels) {
+                        let pod_name = pod_name.clone();
+                        if cp.server.is_some() {
+                            let e = AmbiguousServer(ns_name, pod_name, srv_name.clone());
+                            return Err(e.into());
                         }
+                        cp.server = Some(srv_name.clone());
+                        pods.insert(pod_name.clone());
                     }
                 }
             }
         }
 
-        // TODO index against pods.
-        let srv = Self::mk_srv(&srv)?;
-        for (pod_name, pod) in ns.pods.iter_mut() {
-            todo!()
-        }
-        ns.servers.insert(srv_name, srv);
-
-        // TODO notify lookups. (There shouldn't be any, but...)
+        let (tx, rx) = watch::channel(Default::default()); // FIXXME
+        ns.servers.insert(srv_name, SrvState { meta, pods, tx, rx });
 
         Ok(())
     }
@@ -373,7 +409,7 @@ impl State {
         })
     }
 
-    fn mk_srv(srv: &Server) -> Result<SrvState, Error> {
+    fn mk_srv_meta(srv: &Server) -> Result<SrvMeta, Error> {
         todo!()
     }
 }

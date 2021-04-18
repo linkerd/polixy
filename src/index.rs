@@ -311,23 +311,37 @@ impl State {
             // If the port or pod selection is changed, then we should reindex
             // pod-server relationships.
             if srv.meta.port != meta.port || srv.meta.pod_selector != meta.pod_selector {
-                todo!("Rebuild pod-server indexes");
-                // TODO remove server from pods.
+                srv.pods.clear();
+                for (pod_name, pod) in ns.pods.iter_mut() {
+                    if let Some(port) = pod.get_port(&meta.port) {
+                        if let Some(cp) = pod.ports.get_mut(&port) {
+                            if meta.pod_selector.matches(&pod.labels) {
+                                let pod_name = pod_name.clone();
+                                if cp.server.is_some() {
+                                    let e = AmbiguousServer(ns_name, pod_name, srv_name);
+                                    return Err(e.into());
+                                }
+                                cp.server = Some(srv_name.clone());
+                                srv.pods.insert(pod_name.clone());
+                            }
+                        }
+                    }
+                }
+
+                todo!("Notify lookups");
             }
 
             return Ok(());
         }
 
         let mut pods = HashSet::new();
-
-        // TODO index against pods.
         for (pod_name, pod) in ns.pods.iter_mut() {
             if let Some(port) = pod.get_port(&meta.port) {
                 if let Some(cp) = pod.ports.get_mut(&port) {
                     if meta.pod_selector.matches(&pod.labels) {
                         let pod_name = pod_name.clone();
                         if cp.server.is_some() {
-                            let e = AmbiguousServer(ns_name, pod_name, srv_name.clone());
+                            let e = AmbiguousServer(ns_name, pod_name, srv_name);
                             return Err(e.into());
                         }
                         cp.server = Some(srv_name.clone());
@@ -337,7 +351,9 @@ impl State {
             }
         }
 
-        let (tx, rx) = watch::channel(Default::default()); // FIXXME
+        // TODO index authorizations.
+
+        let (tx, rx) = watch::channel(Default::default()); // FIXME
         ns.servers.insert(srv_name, SrvState { meta, pods, tx, rx });
 
         Ok(())
@@ -358,8 +374,7 @@ impl State {
     }
 
     fn remove_server(&mut self, _srv: Server) -> Result<(), Error> {
-        todo!();
-        // TODO notify lookups
+        todo!("Remove server; notify lookups");
     }
 
     fn reset_pods(&mut self, _pods: Vec<Pod>) -> Result<(), Error> {
@@ -368,8 +383,7 @@ impl State {
 
     fn reset_servers(&mut self, _srvs: Vec<Server>) -> Result<(), Error> {
         debug!("Restarted servers");
-        todo!();
-        // TODO track deletions and notify lookups.
+        todo!("Track deletions and notify lookups");
     }
 
     fn mk_pod(pod: &Pod) -> Result<PodState, DuplicatePort> {

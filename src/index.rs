@@ -50,19 +50,29 @@ struct NsState {
 struct NsName(Arc<str>);
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-struct AuthzName(Arc<str>);
-
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
-struct SrvName(Arc<str>);
-
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 struct PodName(Arc<str>);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PodState {
+    labels: Labels,
+    ports: HashMap<u16, ContainerPort>,
+    port_names: HashMap<PortName, u16>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ContainerPort {
+    container_name: ContainerName,
+    server: Option<SrvName>,
+}
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 struct ContainerName(Arc<str>);
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 struct PortName(Arc<str>);
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+struct SrvName(Arc<str>);
 
 #[derive(Debug)]
 struct SrvState {
@@ -84,19 +94,6 @@ struct SrvMeta {
 enum SrvPort {
     Name(PortName),
     Number(u16),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct PodState {
-    labels: Labels,
-    ports: HashMap<u16, ContainerPort>,
-    port_names: HashMap<PortName, u16>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct ContainerPort {
-    container_name: ContainerName,
-    server: Option<SrvName>,
 }
 
 #[derive(Debug)]
@@ -134,19 +131,18 @@ impl Index {
 
     // Returns an index handle and spawns a background task that updates it.
     pub async fn run(self, client: kube::Client) -> Error {
-        // Update the index from pod updates.
         let pod = self
             .clone()
-            .index::<Pod>(client.clone())
+            .index(Api::<Pod>::all(client.clone()), ListParams::default())
             .instrument(info_span!("pod"));
 
         let srv = self
             .clone()
-            .index::<Server>(client.clone())
+            .index(Api::<Server>::all(client.clone()), ListParams::default())
             .instrument(info_span!("srv"));
 
         let authz = self
-            .index::<Authorization>(client)
+            .index(Api::<Authorization>::all(client), ListParams::default())
             .instrument(info_span!("authz"));
 
         tokio::select! {
@@ -156,14 +152,13 @@ impl Index {
         }
     }
 
-    async fn index<T>(self, client: kube::Client) -> Error
+    async fn index<T>(self, api: Api<T>, params: ListParams) -> Error
     where
         T: Resource + Clone + DeserializeOwned + std::fmt::Debug + Send + 'static,
         T::DynamicType: Default,
         State: IndexResource<T>,
     {
-        let api = Api::<T>::all(client.clone());
-        let mut watch = watcher(api, ListParams::default()).boxed();
+        let mut watch = watcher(api, params).boxed();
         loop {
             match watch.next().await {
                 Some(Ok(ev)) => {
@@ -177,9 +172,11 @@ impl Index {
                         return e;
                     }
                 }
+
                 // Watcher streams surface errors when the response fails, but they
                 // recover automatically.
                 Some(Err(error)) => info!(%error, "Disconnected"),
+
                 // Watcher streams never end.
                 None => unreachable!("Stream must not end"),
             }

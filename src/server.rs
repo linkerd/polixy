@@ -14,8 +14,9 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase")]
 pub struct ServerSpec {
     pub pod_selector: labels::Match,
-    pub container_name: Option<String>,
     pub port: Port,
+    // XXX This is only needed
+    pub container_name: Option<String>,
 }
 
 /// References a pod spec's port by name or number.

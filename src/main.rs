@@ -11,7 +11,8 @@ async fn main() {
     let client = kube::Client::try_default()
         .await
         .expect("Failed to initialize client");
-    let (index, index_task) = Index::spawn(client, drain_rx.clone());
+    let index = Index::new();
+    let index_task = index.clone().run(client);
 
     let addr = ([0, 0, 0, 0], 8090).into();
     let server = polixy::Grpc::new(index, drain_rx.clone());
@@ -50,8 +51,8 @@ async fn main() {
         _ = grpc => {
             error!("gRPC server terminated");
         }
-        _ = index_task => {
-            error!("indexer terminated");
+        error = index_task => {
+            error!(%error, "indexer terminated");
         }
     };
     info!("Shutting down");

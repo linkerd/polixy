@@ -48,6 +48,9 @@ spec:
                             items:
                               type: string
 
+                # XXX We could omit this with an admission controller that
+                # prevents servers/pods from being crated with ambiguous port
+                # references.
                 containerName:
                   description: >-
                     Indicates the name of the container that `port` refers to.

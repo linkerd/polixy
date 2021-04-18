@@ -12,12 +12,13 @@ use kube::{
     Api,
 };
 use kube_runtime::watcher::{watcher, Event};
+use serde::de::DeserializeOwned;
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
 };
 use tokio::sync::{watch, Mutex};
-use tracing::{debug, info, info_span, warn, Instrument};
+use tracing::{debug, info, info_span, Instrument};
 
 #[derive(Clone, Debug)]
 pub struct Index(Arc<Mutex<State>>);
@@ -110,80 +111,79 @@ struct AmbiguousServer(NsName, PodName, SrvName);
 #[derive(Debug)]
 struct MissingNamespace(());
 
+trait IndexResource<T> {
+    fn apply(&mut self, resource: T) -> Result<(), Error>;
+
+    fn remove(&mut self, resource: T) -> Result<(), Error>;
+
+    fn reset(&mut self, resources: Vec<T>) -> Result<(), Error>;
+}
+
 // === impl Index ===
 
+impl Default for Index {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Index {
+    pub fn new() -> Self {
+        Self(Arc::new(Mutex::new(State::default())))
+    }
+
     // Returns an index handle and spawns a background task that updates it.
-    pub fn spawn(
-        client: kube::Client,
-        drain: linkerd_drain::Watch,
-    ) -> (Self, impl std::future::Future<Output = ()>) {
-        let state = Arc::new(Mutex::new(State::default()));
-
+    pub async fn run(self, client: kube::Client) -> Error {
         // Update the index from pod updates.
-        let pods = {
-            let state = state.clone();
-            let api = Api::<Pod>::all(client.clone());
-            async move {
-                let mut watch = watcher(api, ListParams::default()).boxed();
-                loop {
-                    match watch.next().await {
-                        Some(Ok(ev)) => state.lock().await.handle_pod(ev),
-                        Some(Err(error)) => info!(%error, "Disconnected"),
-                        None => return,
+        let pod = self
+            .clone()
+            .index::<Pod>(client.clone())
+            .instrument(info_span!("pod"));
+
+        let srv = self
+            .clone()
+            .index::<Server>(client.clone())
+            .instrument(info_span!("srv"));
+
+        let authz = self
+            .index::<Authorization>(client)
+            .instrument(info_span!("authz"));
+
+        tokio::select! {
+            err = pod => err,
+            err = srv => err,
+            err = authz => err,
+        }
+    }
+
+    async fn index<T>(self, client: kube::Client) -> Error
+    where
+        T: Resource + Clone + DeserializeOwned + std::fmt::Debug + Send + 'static,
+        T::DynamicType: Default,
+        State: IndexResource<T>,
+    {
+        let api = Api::<T>::all(client.clone());
+        let mut watch = watcher(api, ListParams::default()).boxed();
+        loop {
+            match watch.next().await {
+                Some(Ok(ev)) => {
+                    let mut state = self.0.lock().await;
+                    let res = match ev {
+                        Event::Applied(t) => state.apply(t),
+                        Event::Deleted(t) => state.remove(t),
+                        Event::Restarted(ts) => state.reset(ts),
+                    };
+                    if let Err(e) = res {
+                        return e;
                     }
                 }
+                // Watcher streams surface errors when the response fails, but they
+                // recover automatically.
+                Some(Err(error)) => info!(%error, "Disconnected"),
+                // Watcher streams never end.
+                None => unreachable!("Stream must not end"),
             }
-            .instrument(info_span!("pod"))
-        };
-
-        // Update the index from server updates.
-        let srvs = {
-            let state = state.clone();
-            let api = Api::<Server>::all(client.clone());
-            async move {
-                let mut watch = watcher(api, ListParams::default()).boxed();
-                loop {
-                    match watch.next().await {
-                        Some(Ok(ev)) => state.lock().await.handle_srv(ev),
-                        Some(Err(error)) => info!(%error, "Disconnected"),
-                        None => return,
-                    }
-                }
-            }
-            .instrument(info_span!("srv"))
-        };
-
-        // Update the index from authorization updates.
-        let authzs = {
-            let state = state.clone();
-            let api = Api::<Authorization>::all(client);
-            async move {
-                let mut watch = watcher(api, ListParams::default()).boxed();
-                loop {
-                    match watch.next().await {
-                        Some(Ok(ev)) => state.lock().await.handle_authz(ev),
-                        Some(Err(error)) => info!(%error, "Disconnected"),
-                        None => return,
-                    }
-                }
-            }
-            .instrument(info_span!("authz"))
-        };
-
-        // Process all index updates on a background task
-        let index_task = tokio::spawn(async move {
-            tokio::select! {
-                // Stop indexing immediately when the controller is shutdown.
-                _ = drain.signaled() => debug!("Shutdown"),
-                // If any of the index tasks complete, stop processing all indexes,
-                _ = pods => warn!("Pod index terminated"),
-                _ = srvs => warn!("Server index terminated"),
-                _ = authzs => warn!("Authorization index terminated"),
-            }
-        });
-
-        (Self(state), index_task.map(|_| {}))
+        }
     }
 
     pub async fn lookup(
@@ -204,45 +204,8 @@ impl Index {
 
 // === impl State ===
 
-impl State {
-    fn handle_pod(&mut self, ev: Event<Pod>) {
-        let res = match ev {
-            Event::Applied(p) => self.update_pod(p),
-            Event::Deleted(p) => self.remove_pod(p),
-            Event::Restarted(p) => self.reset_pods(p),
-        };
-
-        if let Err(error) = res {
-            warn!(%error, "Failed to index");
-        }
-    }
-
-    fn handle_srv(&mut self, ev: Event<Server>) {
-        let res = match ev {
-            Event::Applied(s) => self.update_server(s),
-            Event::Deleted(s) => self.remove_server(s),
-            Event::Restarted(s) => self.reset_servers(s),
-        };
-
-        if let Err(error) = res {
-            warn!(%error, "Failed to index");
-        }
-    }
-
-    fn handle_authz(&mut self, ev: Event<Authorization>) {
-        let res = match ev {
-            Event::Applied(a) => self.update_authz(a),
-            Event::Deleted(a) => self.remove_authz(a),
-            Event::Restarted(a) => self.reset_authz(a),
-        };
-
-        if let Err(error) = res {
-            warn!(%error, "Failed to index");
-        }
-    }
-
-    // TODO test
-    fn update_pod(&mut self, pod: Pod) -> Result<(), Error> {
+impl IndexResource<Pod> for State {
+    fn apply(&mut self, pod: Pod) -> Result<(), Error> {
         let ns_name = NsName(pod.namespace().ok_or(MissingNamespace(()))?.into());
         let ns = self.namespaces.entry(ns_name.clone()).or_default();
 
@@ -320,13 +283,36 @@ impl State {
         Ok(())
     }
 
-    fn update_server(&mut self, srv: Server) -> Result<(), Error> {
+    fn remove(&mut self, pod: Pod) -> Result<(), Error> {
+        let ns = NsName(pod.namespace().ok_or(MissingNamespace(()))?.into());
+        let name = PodName(pod.name().into());
+        debug!(?ns, ?name, "Remove pod");
+
+        if let Some(ns) = self.namespaces.get_mut(&ns) {
+            ns.pods.remove(&name);
+            for (_, srv) in ns.servers.iter_mut() {
+                srv.pods.remove(&name);
+            }
+            // TODO terminate active lookups.
+        }
+
+        Ok(())
+    }
+
+    fn reset(&mut self, _pods: Vec<Pod>) -> Result<(), Error> {
+        todo!("Reset pods");
+    }
+}
+
+impl IndexResource<Server> for State {
+    fn apply(&mut self, srv: Server) -> Result<(), Error> {
         let ns_name = NsName(srv.namespace().ok_or(MissingNamespace(()))?.into());
         let ns = self.namespaces.entry(ns_name.clone()).or_default();
 
         let srv_name = SrvName(srv.name().into());
         let meta = Self::mk_srv_meta(&srv);
 
+        // If the server already exists, just update its indexes.
         if let Some(srv) = ns.servers.get_mut(&srv_name) {
             // If the labels have changed, then we should reindex authorizations
             // against this server.
@@ -361,6 +347,7 @@ impl State {
             return Ok(());
         }
 
+        // Otherwise, index a new server.
         let mut pods = HashSet::new();
         for (pod_name, pod) in ns.pods.iter_mut() {
             if let Some(port) = pod.get_port(&meta.port) {
@@ -386,45 +373,30 @@ impl State {
         Ok(())
     }
 
-    fn update_authz(&mut self, _authz: Authorization) -> Result<(), Error> {
-        todo!("Update authorization")
-    }
-
-    fn remove_pod(&mut self, pod: Pod) -> Result<(), Error> {
-        let ns = NsName(pod.namespace().ok_or(MissingNamespace(()))?.into());
-        let name = PodName(pod.name().into());
-        debug!(?ns, ?name, "Remove pod");
-        if let Some(ns) = self.namespaces.get_mut(&ns) {
-            ns.pods.remove(&name);
-            for (_, srv) in ns.servers.iter_mut() {
-                srv.pods.remove(&name);
-            }
-            // TODO terminate active lookups.
-        }
-        Ok(())
-    }
-
-    fn remove_server(&mut self, _srv: Server) -> Result<(), Error> {
-        todo!("Remove server; notify lookups");
-    }
-
-    fn remove_authz(&mut self, _authz: Authorization) -> Result<(), Error> {
+    fn remove(&mut self, _srv: Server) -> Result<(), Error> {
         todo!("Remove authorization")
     }
 
-    fn reset_pods(&mut self, _pods: Vec<Pod>) -> Result<(), Error> {
-        todo!("Reset pods");
-    }
-
-    fn reset_servers(&mut self, _srvs: Vec<Server>) -> Result<(), Error> {
-        debug!("Restarted servers");
-        todo!("Track deletions and notify lookups");
-    }
-
-    fn reset_authz(&mut self, _authz: Vec<Authorization>) -> Result<(), Error> {
+    fn reset(&mut self, _srvs: Vec<Server>) -> Result<(), Error> {
         todo!("Reset authorization")
     }
+}
 
+impl IndexResource<Authorization> for State {
+    fn apply(&mut self, _az: Authorization) -> Result<(), Error> {
+        todo!("Index authorization")
+    }
+
+    fn remove(&mut self, _az: Authorization) -> Result<(), Error> {
+        todo!("Remove authorization")
+    }
+
+    fn reset(&mut self, _azs: Vec<Authorization>) -> Result<(), Error> {
+        todo!("Reset authorization")
+    }
+}
+
+impl State {
     fn mk_pod(pod: &Pod) -> Result<PodState, DuplicatePort> {
         let mut ports = HashMap::default();
         let mut port_names = HashMap::default();

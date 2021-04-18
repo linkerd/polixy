@@ -16,10 +16,7 @@ use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
 };
-use tokio::{
-    select_priv_declare_output_enum,
-    sync::{watch, Mutex},
-};
+use tokio::sync::{watch, Mutex};
 use tracing::{debug, info, info_span, warn, Instrument};
 
 #[derive(Clone, Debug)]
@@ -143,7 +140,7 @@ impl Index {
         // Update the index from server updates.
         let srvs = {
             let state = state.clone();
-            let api = Api::<Server>::all(client);
+            let api = Api::<Server>::all(client.clone());
             async move {
                 let mut watch = watcher(api, ListParams::default()).boxed();
                 loop {
@@ -157,6 +154,23 @@ impl Index {
             .instrument(info_span!("srv"))
         };
 
+        // Update the index from authorization updates.
+        let authzs = {
+            let state = state.clone();
+            let api = Api::<Authorization>::all(client);
+            async move {
+                let mut watch = watcher(api, ListParams::default()).boxed();
+                loop {
+                    match watch.next().await {
+                        Some(Ok(ev)) => state.lock().await.handle_authz(ev),
+                        Some(Err(error)) => info!(%error, "Disconnected"),
+                        None => return,
+                    }
+                }
+            }
+            .instrument(info_span!("authz"))
+        };
+
         // Process all index updates on a background task
         let index_task = tokio::spawn(async move {
             tokio::select! {
@@ -165,6 +179,7 @@ impl Index {
                 // If any of the index tasks complete, stop processing all indexes,
                 _ = pods => warn!("Pod index terminated"),
                 _ = srvs => warn!("Server index terminated"),
+                _ = authzs => warn!("Authorization index terminated"),
             }
         });
 
@@ -198,7 +213,7 @@ impl State {
         };
 
         if let Err(error) = res {
-            warn!(%error, "Failed to index pod");
+            warn!(%error, "Failed to index");
         }
     }
 
@@ -210,7 +225,19 @@ impl State {
         };
 
         if let Err(error) = res {
-            warn!(%error, "Failed to index pod");
+            warn!(%error, "Failed to index");
+        }
+    }
+
+    fn handle_authz(&mut self, ev: Event<Authorization>) {
+        let res = match ev {
+            Event::Applied(a) => self.update_authz(a),
+            Event::Deleted(a) => self.remove_authz(a),
+            Event::Restarted(a) => self.reset_authz(a),
+        };
+
+        if let Err(error) = res {
+            warn!(%error, "Failed to index");
         }
     }
 
@@ -359,6 +386,10 @@ impl State {
         Ok(())
     }
 
+    fn update_authz(&mut self, _authz: Authorization) -> Result<(), Error> {
+        todo!("Update authorization")
+    }
+
     fn remove_pod(&mut self, pod: Pod) -> Result<(), Error> {
         let ns = NsName(pod.namespace().ok_or(MissingNamespace(()))?.into());
         let name = PodName(pod.name().into());
@@ -377,6 +408,10 @@ impl State {
         todo!("Remove server; notify lookups");
     }
 
+    fn remove_authz(&mut self, _authz: Authorization) -> Result<(), Error> {
+        todo!("Remove authorization")
+    }
+
     fn reset_pods(&mut self, _pods: Vec<Pod>) -> Result<(), Error> {
         todo!("Reset pods");
     }
@@ -384,6 +419,10 @@ impl State {
     fn reset_servers(&mut self, _srvs: Vec<Server>) -> Result<(), Error> {
         debug!("Restarted servers");
         todo!("Track deletions and notify lookups");
+    }
+
+    fn reset_authz(&mut self, _authz: Vec<Authorization>) -> Result<(), Error> {
+        todo!("Reset authorization")
     }
 
     fn mk_pod(pod: &Pod) -> Result<PodState, DuplicatePort> {

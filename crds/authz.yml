@@ -23,21 +23,17 @@ spec:
               description: >-
                 Authorizes clients to communicate with Linkerd-proxied servers.
               type: object
-              required: [server]
+              required: [selector]
               oneOf:
                 - required: [authenticated]
                 - required: [unauthenticated]
               properties:
 
-                server:
+                serverSelector:
                   description: >-
-                    References `Server` instances in the same namespace.
-
-                    Exactly one of `name`, `matchLabels`, and
-                    `matchExpressions` may be set.
+                    A label query over servers that on which this authentication should apply.
                   type: object
                   oneOf:
-                    - required: [name]
                     - required: [matchLabels]
                     - required: [matchExpressions]
                   properties:

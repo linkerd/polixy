@@ -13,23 +13,9 @@ use serde::{Deserialize, Serialize};
 #[derive(CustomResource, Deserialize, Serialize, Clone, Debug, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct AuthorizationSpec {
-    server: Server,
+    server_selector: labels::Selector,
     authenticated: Option<Authenticated>,
     unauthenticated: Option<Unauthenticated>,
-}
-
-/// Selects one or more server instances in the same namespace as the `Authorization`.
-///
-/// Exactly one of `name`, `match_labels`, and `match_expressions` should be set.
-#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct Server {
-    /// References a server instance by name.
-    name: Option<String>,
-    /// Selects an arbitrary number of `Server` instances by label key-value.
-    match_labels: Option<labels::Map>,
-    /// Selects an arbitrary number of `Server` instances by label expression.
-    match_expressions: Option<labels::Expressions>,
 }
 
 /// Describes an authenticated client.

@@ -5,8 +5,8 @@ use crate::{
     grpc::proto,
     labels::{self, Labels},
     server::{self, Server},
-    Error,
 };
+use anyhow::{anyhow, bail, Error, Result};
 use futures::prelude::*;
 use k8s_openapi::api::core::v1::Pod;
 use kube::{
@@ -104,18 +104,12 @@ enum DuplicatePort {
     Number(u16),
 }
 
-#[derive(Debug)]
-struct AmbiguousServer(NsName, PodName, SrvName);
-
-#[derive(Debug)]
-struct MissingNamespace(());
-
 trait IndexResource<T> {
-    fn apply(&mut self, resource: T) -> Result<(), Error>;
+    fn apply(&mut self, resource: T) -> Result<()>;
 
-    fn remove(&mut self, resource: T) -> Result<(), Error>;
+    fn remove(&mut self, resource: T) -> Result<()>;
 
-    fn reset(&mut self, resources: Vec<T>) -> Result<(), Error>;
+    fn reset(&mut self, resources: Vec<T>) -> Result<()>;
 }
 
 // === impl Index ===
@@ -307,7 +301,11 @@ impl IndexResource<Pod> for State {
 
 impl IndexResource<Server> for State {
     fn apply(&mut self, srv: Server) -> Result<(), Error> {
-        let ns_name = NsName(srv.namespace().ok_or(MissingNamespace(()))?.into());
+        let ns_name = NsName(
+            srv.namespace()
+                .ok_or_else(|| anyhow!("resource must have a namespace"))?
+                .into(),
+        );
         let ns = self.namespaces.entry(ns_name.clone()).or_default();
 
         let srv_name = SrvName(srv.name().into());
@@ -331,9 +329,14 @@ impl IndexResource<Server> for State {
                         if let Some(cp) = pod.ports.get_mut(&port) {
                             if meta.pod_selector.matches(&pod.labels) {
                                 let pod_name = pod_name.clone();
-                                if cp.server.is_some() {
-                                    let e = AmbiguousServer(ns_name, pod_name, srv_name);
-                                    return Err(e.into());
+                                if let Some(srv2) = cp.server.as_ref() {
+                                    bail!(
+                                        "pod {} port {} matched by more than one server: {} and {}",
+                                        pod_name,
+                                        meta.port,
+                                        srv_name,
+                                        srv2
+                                    );
                                 }
                                 cp.server = Some(srv_name.clone());
                                 srv.pods.insert(pod_name.clone());
@@ -355,9 +358,14 @@ impl IndexResource<Server> for State {
                 if let Some(cp) = pod.ports.get_mut(&port) {
                     if meta.pod_selector.matches(&pod.labels) {
                         let pod_name = pod_name.clone();
-                        if cp.server.is_some() {
-                            let e = AmbiguousServer(ns_name, pod_name, srv_name);
-                            return Err(e.into());
+                        if let Some(srv2) = cp.server.as_ref() {
+                            bail!(
+                                "pod {} port {} matched by more than one server: {} and {}",
+                                pod_name,
+                                meta.port,
+                                srv_name,
+                                srv2
+                            );
                         }
                         cp.server = Some(srv_name.clone());
                         pods.insert(pod_name.clone());
@@ -398,27 +406,23 @@ impl IndexResource<Authorization> for State {
 }
 
 impl State {
-    fn mk_pod(pod: &Pod) -> Result<PodState, DuplicatePort> {
+    fn mk_pod(pod: &Pod) -> Result<PodState> {
         let mut ports = HashMap::default();
         let mut port_names = HashMap::default();
 
         if let Some(spec) = pod.spec.as_ref() {
             for container in &spec.containers {
-                let cname = ContainerName(container.name.as_str().into());
                 if let Some(ps) = container.ports.as_ref() {
                     for p in ps {
                         let port = p.container_port as u16;
-                        let cp = ContainerPort {
-                            container_name: cname.clone(),
-                            server: None,
-                        };
+                        let cp = ContainerPort { server: None };
                         if ports.contains_key(&port) {
-                            return Err(DuplicatePort::Number(port));
+                            bail!("duplicate port {}", port);
                         }
                         if let Some(n) = p.name.as_ref() {
                             let name = PortName(n.clone().into());
                             if port_names.contains_key(&name) {
-                                return Err(DuplicatePort::Name(name));
+                                bail!("duplicate port named {}", name);
                             }
                             port_names.insert(name, port);
                         }
@@ -487,39 +491,11 @@ impl std::fmt::Display for PortName {
     }
 }
 
-// === impl AmbiguousServer ===
-
-impl std::fmt::Display for AmbiguousServer {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Pod port matched by more than one server: ns={} pod={} srv={}",
-            self.0, self.1, self.2
-        )
-    }
-}
-
-impl std::error::Error for AmbiguousServer {}
-
-// === impl DuplicatePort ===
-
-impl std::fmt::Display for DuplicatePort {
+impl std::fmt::Display for SrvPort {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Name(p) => write!(f, "Duplicate port named {}", p),
-            Self::Number(p) => write!(f, "Duplicate port {}", p),
+            Self::Name(n) => n.fmt(f),
+            Self::Number(n) => n.fmt(f),
         }
     }
 }
-
-impl std::error::Error for DuplicatePort {}
-
-// === impl MissingNamespace ===
-
-impl std::fmt::Display for MissingNamespace {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        "Resource must have a namespace".fmt(f)
-    }
-}
-
-impl std::error::Error for MissingNamespace {}

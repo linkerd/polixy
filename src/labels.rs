@@ -8,9 +8,6 @@ use std::{
 #[derive(Clone, Debug, Eq, Default)]
 pub struct Labels(Arc<Map>);
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Selector(Arc<Expressions>);
-
 pub type Map = BTreeMap<String, String>;
 
 pub type Expressions = Vec<Expression>;
@@ -29,44 +26,64 @@ pub enum Operator {
 }
 
 /// Selects a set of pods that expose a server.
-#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
+#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema, Eq, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct Match {
+pub struct Selector {
     match_labels: Option<Map>,
     match_expressions: Option<Expressions>,
 }
 
 // === Selector ===
 
-impl From<Match> for Selector {
-    fn from(m: Match) -> Self {
-        let mut exprs = m.match_expressions.unwrap_or_default();
-
-        if let Some(labels) = m.match_labels {
-            for (key, v) in labels.into_iter() {
-                let mut values = BTreeSet::new();
-                values.insert(v);
-                exprs.push(Expression {
-                    key,
-                    operator: Operator::In,
-                    values,
-                })
-            }
-        }
-
-        Self(Arc::new(exprs))
-    }
-}
-
 impl Selector {
+    pub fn from_expressions(exprs: Expressions) -> Self {
+        Self {
+            match_labels: None,
+            match_expressions: Some(exprs),
+        }
+    }
+
+    pub fn from_map(map: Map) -> Self {
+        Self {
+            match_labels: Some(map),
+            match_expressions: None,
+        }
+    }
+
     pub fn matches(&self, labels: &Labels) -> bool {
-        for expr in self.0.iter() {
+        for expr in self.match_expressions.iter().flatten() {
             if !expr.matches(labels.as_ref()) {
                 return false;
             }
         }
 
+        if let Some(match_labels) = self.match_labels.as_ref() {
+            return match_labels == labels.as_ref();
+        }
+
         true
+    }
+}
+
+impl std::iter::FromIterator<(String, String)> for Selector {
+    fn from_iter<T: IntoIterator<Item = (String, String)>>(iter: T) -> Self {
+        Self::from_map(iter.into_iter().collect())
+    }
+}
+
+impl std::iter::FromIterator<(&'static str, &'static str)> for Selector {
+    fn from_iter<T: IntoIterator<Item = (&'static str, &'static str)>>(iter: T) -> Self {
+        Self::from_map(
+            iter.into_iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        )
+    }
+}
+
+impl std::iter::FromIterator<Expression> for Selector {
+    fn from_iter<T: IntoIterator<Item = Expression>>(iter: T) -> Self {
+        Self::from_expressions(iter.into_iter().collect())
     }
 }
 
@@ -93,6 +110,21 @@ impl<T: AsRef<Map>> std::cmp::PartialEq<T> for Labels {
     }
 }
 
+impl std::iter::FromIterator<(String, String)> for Labels {
+    fn from_iter<T: IntoIterator<Item = (String, String)>>(iter: T) -> Self {
+        Self(Arc::new(iter.into_iter().collect()))
+    }
+}
+
+impl std::iter::FromIterator<(&'static str, &'static str)> for Labels {
+    fn from_iter<T: IntoIterator<Item = (&'static str, &'static str)>>(iter: T) -> Self {
+        Self::from_iter(
+            iter.into_iter()
+                .map(|(k, v)| (k.to_string(), v.to_string())),
+        )
+    }
+}
+
 // === Expression ===
 
 impl Expression {
@@ -112,5 +144,42 @@ impl Expression {
         }
 
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::iter::FromIterator;
+
+    #[test]
+    fn test_matches() {
+        for (selector, labels, matches, msg) in &[
+            (Selector::default(), Labels::default(), true, "empty match"),
+            (
+                Selector::from_iter(Some(("foo", "bar"))),
+                Labels::from_iter(Some(("foo", "bar"))),
+                true,
+                "exact label match",
+            ),
+            (
+                Selector::from_iter(Some(("foo", "bar"))),
+                Labels::from_iter(vec![("foo", "bar"), ("bah", "baz")]),
+                false,
+                "insufficient label match",
+            ),
+            (
+                Selector::from_iter(Some(Expression {
+                    key: "foo".into(),
+                    operator: Operator::In,
+                    values: Some("bar".to_string()).into_iter().collect(),
+                })),
+                Labels::from_iter(vec![("foo", "bar"), ("bah", "baz")]),
+                true,
+                "expression match",
+            ),
+        ] {
+            assert_eq!(selector.matches(labels), *matches, "{}", msg);
+        }
     }
 }

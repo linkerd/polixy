@@ -156,9 +156,9 @@ impl Index {
         State: IndexResource<T>,
     {
         let mut watch = watcher(api, params).boxed();
-        loop {
-            match watch.next().await {
-                Some(Ok(ev)) => {
+        while let Some(res) = watch.next().await {
+            match res {
+                Ok(ev) => {
                     let mut state = self.0.lock().await;
                     let res = match ev {
                         Event::Applied(t) => state.apply(t),
@@ -172,12 +172,12 @@ impl Index {
 
                 // Watcher streams surface errors when the response fails, but they
                 // recover automatically.
-                Some(Err(error)) => info!(%error, "Disconnected"),
-
-                // Watcher streams never end.
-                None => unreachable!("Stream must not end"),
+                Err(error) => info!(%error, "Disconnected"),
             }
         }
+
+        // Watcher streams never end.
+        unreachable!("Stream must not end");
     }
 
     pub async fn lookup(

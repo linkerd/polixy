@@ -1,26 +1,20 @@
-#![allow(warnings)]
-
 use crate::{
     authz::Authorization,
     grpc::proto,
     labels::{self, Labels},
     server::{self, Server},
 };
-use anyhow::{anyhow, bail, Error, Result};
+use anyhow::{anyhow, Error, Result};
 use futures::prelude::*;
-use k8s_openapi::api::core::v1::Pod;
 use kube::{
     api::{ListParams, Resource},
     Api,
 };
 use kube_runtime::watcher::{watcher, Event};
 use serde::de::DeserializeOwned;
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{watch, Mutex};
-use tracing::{debug, info, info_span, Instrument};
+use tracing::{info, info_span, Instrument};
 
 #[derive(Clone, Debug)]
 pub struct Index(Arc<Mutex<State>>);
@@ -45,30 +39,10 @@ struct State {
 struct NsState {
     //authorizations: HashMap<AuthzName, Arc<Authorization>>,
     servers: HashMap<SrvName, SrvState>,
-    pods: HashMap<PodName, PodState>,
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-struct NsName(Arc<str>);
-
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
-struct PodName(Arc<str>);
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct PodState {
-    labels: Labels,
-    ports: HashMap<u16, ContainerPort>,
-    port_names: HashMap<PortName, u16>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct ContainerPort {
-    //container_name: ContainerName,
-    server: Option<SrvName>,
-}
-
-// #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-// struct ContainerName(Arc<str>);
+pub struct NsName(Arc<str>);
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 struct PortName(Arc<str>);
@@ -80,7 +54,6 @@ struct SrvName(Arc<str>);
 struct SrvState {
     meta: SrvMeta,
     //authorizations: HashSet<AuthzName>,
-    pods: HashSet<PodName>,
     rx: watch::Receiver<proto::InboundProxyConfig>,
     tx: watch::Sender<proto::InboundProxyConfig>,
 }
@@ -94,12 +67,6 @@ struct SrvMeta {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum SrvPort {
-    Name(PortName),
-    Number(u16),
-}
-
-#[derive(Debug)]
-enum DuplicatePort {
     Name(PortName),
     Number(u16),
 }
@@ -126,14 +93,6 @@ impl Index {
     }
 
     pub async fn run(self, client: kube::Client) -> Error {
-        // let pod = self
-        //     .clone()
-        //     .index(
-        //         Api::<Pod>::all(client.clone()),
-        //         ListParams::default().labels("linkerd.io/control-plane-ns=linkerd"),
-        //     )
-        //     .instrument(info_span!("pod"));
-
         let srv = self
             .clone()
             .index(Api::<Server>::all(client.clone()), ListParams::default())
@@ -144,7 +103,6 @@ impl Index {
             .instrument(info_span!("authz"));
 
         tokio::select! {
-            //err = pod => err,
             err = srv => err,
             err = authz => err,
         }
@@ -182,122 +140,15 @@ impl Index {
 
     pub async fn lookup(
         &self,
-        ns: impl Into<String>,
-        name: impl Into<String>,
-        port: u16,
+        _ns: impl Into<NsName>,
+        _name: impl Into<Arc<str>>,
+        _port: u16,
     ) -> Option<Lookup> {
-        let ns = NsName(Arc::from(ns.into()));
-        let name = PodName(Arc::from(name.into()));
-
-        let _state = self.0.lock().await.namespaces.get(&ns)?.pods.get(&name)?;
-        let _ = port;
-
         todo!("Lookup pod->server")
     }
 }
 
 // === impl State ===
-
-#[cfg(feature = "disabled for now")]
-impl IndexResource<Pod> for State {
-    fn apply(&mut self, pod: Pod) -> Result<(), Error> {
-        let ns_name = NsName(pod.namespace().ok_or(MissingNamespace(()))?.into());
-        let ns = self.namespaces.entry(ns_name.clone()).or_default();
-
-        let pod_name = PodName(pod.name().into());
-        let new_pod = Self::mk_pod(&pod)?;
-
-        // If the pod already exists, the update may be changing its labels, so
-        // we may need to re-index. We remove the pod initially and, if the
-        // labels are the same, it is re-inserted.
-        if let Some(pod) = ns.pods.get_mut(&pod_name) {
-            if new_pod.labels == pod.labels {
-                // If the labels are unchanged, no part of the pod metadata can
-                // impact our indexing, as the port information is immutable.
-                debug!(?ns_name, ?pod_name, "Ingoring update");
-                return Ok(());
-            }
-
-            debug!(?ns_name, ?pod_name, "Labels updated");
-            pod.labels = new_pod.labels;
-            // Clear the pod->server index so that we can recreate it with
-            // updated labels. This allows us to return `AmbiguousServer` errors
-            // when more than one server matches a port.
-            for cp in pod.ports.values_mut() {
-                cp.server = None;
-            }
-            for (srv_name, srv) in ns.servers.iter_mut() {
-                // Lookup the container port on the pod. If it exists, match
-                // the pod's labels against the server's pod selector.
-                if let Some(port) = pod.get_port(&srv.meta.port) {
-                    if let Some(cp) = pod.ports.get_mut(&port) {
-                        if srv.meta.pod_selector.matches(&pod.labels) {
-                            // If this container port has already been matched to a
-                            // server, we have overlapping servers.
-                            if cp.server.is_some() {
-                                let e = AmbiguousServer(ns_name, pod_name, srv_name.clone());
-                                return Err(e.into());
-                            }
-                            cp.server = Some(srv_name.clone());
-
-                            srv.pods.insert(pod_name.clone());
-                        } else {
-                            srv.pods.remove(&pod_name);
-                        }
-                    }
-                }
-            }
-        } else {
-            // The pod is being added anew, so we don't need to bother clearing
-            // out prior state before updating the index.
-            let mut pod = new_pod;
-
-            for (srv_name, srv) in ns.servers.iter_mut() {
-                // Lookup the container port on the pod. If it exists, match the
-                // pod's labels against the server's pod selector.
-                if let Some(port) = pod.get_port(&srv.meta.port) {
-                    if let Some(cp) = pod.ports.get_mut(&port) {
-                        if srv.meta.pod_selector.matches(&pod.labels) {
-                            // If this container port has already been matched to a
-                            // server, we have overlapping servers.
-                            if cp.server.is_some() {
-                                let e = AmbiguousServer(ns_name, pod_name, srv_name.clone());
-                                return Err(e.into());
-                            }
-                            cp.server = Some(srv_name.clone());
-                            srv.pods.insert(pod_name.clone());
-                        }
-                    }
-                }
-            }
-
-            debug!(?ns_name, ?pod_name, "Adding a pod to the index");
-            ns.pods.insert(pod_name, pod);
-        }
-
-        Ok(())
-    }
-
-    fn remove(&mut self, pod: Pod) -> Result<(), Error> {
-        let ns = NsName(pod.namespace().ok_or(MissingNamespace(()))?.into());
-        let name = PodName(pod.name().into());
-        debug!(?ns, ?name, "Remove pod");
-
-        if let Some(ns) = self.namespaces.get_mut(&ns) {
-            ns.pods.remove(&name);
-            for (_, srv) in ns.servers.iter_mut() {
-                srv.pods.remove(&name);
-            }
-            // TODO terminate active lookups.
-        }
-
-        Ok(())
-    }
-
-    fn reset(&mut self, _pods: Vec<Pod>) -> Result<(), Error> {
-        todo!("Reset pods");
-    }
-}
 
 impl IndexResource<Server> for State {
     fn apply(&mut self, srv: Server) -> Result<(), Error> {
@@ -306,78 +157,20 @@ impl IndexResource<Server> for State {
                 .ok_or_else(|| anyhow!("resource must have a namespace"))?
                 .into(),
         );
-        let ns = self.namespaces.entry(ns_name.clone()).or_default();
+        let ns = self.namespaces.entry(ns_name).or_default();
 
         let srv_name = SrvName(srv.name().into());
         let meta = Self::mk_srv_meta(&srv);
 
         // If the server already exists, just update its indexes.
-        if let Some(srv) = ns.servers.get_mut(&srv_name) {
-            // If the labels have changed, then we should reindex authorizations
-            // against this server.
-            if srv.meta.labels != meta.labels {
-                //srv.authorizations.clear();
-                todo!("Reindex authorizations");
-            }
-
-            // If the port or pod selection is changed, then we should reindex
-            // pod-server relationships.
-            if srv.meta.port != meta.port || srv.meta.pod_selector != meta.pod_selector {
-                srv.pods.clear();
-                for (pod_name, pod) in ns.pods.iter_mut() {
-                    if let Some(port) = pod.get_port(&meta.port) {
-                        if let Some(cp) = pod.ports.get_mut(&port) {
-                            if meta.pod_selector.matches(&pod.labels) {
-                                let pod_name = pod_name.clone();
-                                if let Some(srv2) = cp.server.as_ref() {
-                                    bail!(
-                                        "pod {} port {} matched by more than one server: {} and {}",
-                                        pod_name,
-                                        meta.port,
-                                        srv_name,
-                                        srv2
-                                    );
-                                }
-                                cp.server = Some(srv_name.clone());
-                                srv.pods.insert(pod_name.clone());
-                            }
-                        }
-                    }
-                }
-
-                todo!("Notify lookups");
-            }
-
-            return Ok(());
+        if let Some(_srv) = ns.servers.get_mut(&srv_name) {
+            todo!("Update server indexes");
         }
 
         // Otherwise, index a new server.
-        let mut pods = HashSet::new();
-        for (pod_name, pod) in ns.pods.iter_mut() {
-            if let Some(port) = pod.get_port(&meta.port) {
-                if let Some(cp) = pod.ports.get_mut(&port) {
-                    if meta.pod_selector.matches(&pod.labels) {
-                        let pod_name = pod_name.clone();
-                        if let Some(srv2) = cp.server.as_ref() {
-                            bail!(
-                                "pod {} port {} matched by more than one server: {} and {}",
-                                pod_name,
-                                meta.port,
-                                srv_name,
-                                srv2
-                            );
-                        }
-                        cp.server = Some(srv_name.clone());
-                        pods.insert(pod_name.clone());
-                    }
-                }
-            }
-        }
-
-        // TODO index authorizations.
 
         let (tx, rx) = watch::channel(Default::default()); // FIXME
-        ns.servers.insert(srv_name, SrvState { meta, pods, tx, rx });
+        ns.servers.insert(srv_name, SrvState { meta, tx, rx });
 
         Ok(())
     }
@@ -406,39 +199,6 @@ impl IndexResource<Authorization> for State {
 }
 
 impl State {
-    fn mk_pod(pod: &Pod) -> Result<PodState> {
-        let mut ports = HashMap::default();
-        let mut port_names = HashMap::default();
-
-        if let Some(spec) = pod.spec.as_ref() {
-            for container in &spec.containers {
-                if let Some(ps) = container.ports.as_ref() {
-                    for p in ps {
-                        let port = p.container_port as u16;
-                        let cp = ContainerPort { server: None };
-                        if ports.contains_key(&port) {
-                            bail!("duplicate port {}", port);
-                        }
-                        if let Some(n) = p.name.as_ref() {
-                            let name = PortName(n.clone().into());
-                            if port_names.contains_key(&name) {
-                                bail!("duplicate port named {}", name);
-                            }
-                            port_names.insert(name, port);
-                        }
-                        ports.insert(port, cp);
-                    }
-                }
-            }
-        }
-
-        Ok(PodState {
-            labels: pod.metadata.labels.clone().into(),
-            ports,
-            port_names,
-        })
-    }
-
     fn mk_srv_meta(srv: &Server) -> SrvMeta {
         let port = match srv.spec.port {
             server::Port::Number(ref p) => SrvPort::Number(*p),
@@ -447,25 +207,21 @@ impl State {
         SrvMeta {
             port,
             labels: srv.metadata.labels.clone().into(),
-            pod_selector: srv.spec.pod_selector.clone().into(),
+            pod_selector: srv.spec.pod_selector.clone(),
         }
     }
 }
 
-// === PodState ===
+// === NsName ===
 
-impl PodState {
-    /// Gets the port number for the server. If the server port is named, resolve
-    /// the number from the pod.
-    fn get_port(&self, sp: &SrvPort) -> Option<u16> {
-        match sp {
-            SrvPort::Number(p) => Some(*p),
-            SrvPort::Name(ref n) => self.port_names.get(&n).copied(),
-        }
+impl<T> From<T> for NsName
+where
+    Arc<str>: From<T>,
+{
+    fn from(t: T) -> Self {
+        Self(t.into())
     }
 }
-
-// === Names ===
 
 impl std::fmt::Display for NsName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -473,11 +229,15 @@ impl std::fmt::Display for NsName {
     }
 }
 
-impl std::fmt::Display for PodName {
+// === PortName ===
+
+impl std::fmt::Display for PortName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.0.fmt(f)
     }
 }
+
+// === SrvName ===
 
 impl std::fmt::Display for SrvName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -485,11 +245,7 @@ impl std::fmt::Display for SrvName {
     }
 }
 
-impl std::fmt::Display for PortName {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
-    }
-}
+// === SrvPort ===
 
 impl std::fmt::Display for SrvPort {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

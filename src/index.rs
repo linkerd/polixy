@@ -5,38 +5,29 @@ use crate::{
     server::{self, Server},
 };
 use anyhow::{anyhow, Error, Result};
+use dashmap::DashMap;
 use futures::prelude::*;
 use kube::{
     api::{ListParams, Resource},
     Api,
 };
 use kube_runtime::watcher::{watcher, Event};
+use parking_lot::RwLock;
 use serde::de::DeserializeOwned;
 use std::{collections::HashMap, sync::Arc};
-use tokio::sync::{watch, Mutex};
+use tokio::sync::watch;
 use tracing::{info, info_span, Instrument};
 
-#[derive(Clone, Debug)]
-pub struct Index(Arc<Mutex<State>>);
+#[derive(Clone, Debug, Default)]
+pub struct Index {
+    namespaces: Arc<DashMap<NsName, Arc<RwLock<Ns>>>>,
+}
 
 pub type Lookup = watch::Receiver<proto::InboundProxyConfig>;
 
-/// Indexes pods, servers, and authorizations.
-///
-/// State is tracked per-namespace, since it's never necessary to correlate data
-/// across namespaces.
-///
-/// TODO This means we could probably establishes watches in namespace-scopes as
-/// well to reduce locking/contention in busy clusters; but this is overly
-/// complicated for now.
-#[derive(Debug, Default)]
-struct State {
-    namespaces: HashMap<NsName, NsState>,
-}
-
 ///
 #[derive(Debug, Default)]
-struct NsState {
+struct Ns {
     //authorizations: HashMap<AuthzName, Arc<Authorization>>,
     servers: HashMap<SrvName, SrvState>,
 }
@@ -81,15 +72,9 @@ trait IndexResource<T> {
 
 // === impl Index ===
 
-impl Default for Index {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Index {
     pub fn new() -> Self {
-        Self(Arc::new(Mutex::new(State::default())))
+        Self::default()
     }
 
     pub async fn run(self, client: kube::Client) -> Error {
@@ -108,20 +93,19 @@ impl Index {
         }
     }
 
-    async fn index<T>(self, api: Api<T>, params: ListParams) -> Error
+    async fn index<T>(mut self, api: Api<T>, params: ListParams) -> Error
     where
         T: Resource + Clone + DeserializeOwned + std::fmt::Debug + Send + 'static,
-        State: IndexResource<T>,
+        Self: IndexResource<T>,
     {
         let mut watch = watcher(api, params).boxed();
-        while let Some(res) = watch.next().await {
-            match res {
+        loop {
+            match watch.next().await.expect("Stream must not end") {
                 Ok(ev) => {
-                    let mut state = self.0.lock().await;
                     let res = match ev {
-                        Event::Applied(t) => state.apply(t),
-                        Event::Deleted(t) => state.remove(t),
-                        Event::Restarted(ts) => state.reset(ts),
+                        Event::Applied(t) => self.apply(t),
+                        Event::Deleted(t) => self.remove(t),
+                        Event::Restarted(ts) => self.reset(ts),
                     };
                     if let Err(e) = res {
                         return e;
@@ -133,9 +117,6 @@ impl Index {
                 Err(error) => info!(%error, "Disconnected"),
             }
         }
-
-        // Watcher streams never end.
-        unreachable!("Stream must not end");
     }
 
     pub async fn lookup(
@@ -150,14 +131,14 @@ impl Index {
 
 // === impl State ===
 
-impl IndexResource<Server> for State {
-    fn apply(&mut self, srv: Server) -> Result<(), Error> {
-        let ns_name = NsName(
-            srv.namespace()
-                .ok_or_else(|| anyhow!("resource must have a namespace"))?
-                .into(),
-        );
+impl IndexResource<Server> for Index {
+    fn apply(&mut self, srv: Server) -> Result<()> {
+        let ns_name = srv
+            .namespace()
+            .map(NsName::from)
+            .ok_or_else(|| anyhow!("resource must have a namespace"))?;
         let ns = self.namespaces.entry(ns_name).or_default();
+        let mut ns = ns.write();
 
         let srv_name = SrvName(srv.name().into());
         let meta = Self::mk_srv_meta(&srv);
@@ -175,30 +156,30 @@ impl IndexResource<Server> for State {
         Ok(())
     }
 
-    fn remove(&mut self, _srv: Server) -> Result<(), Error> {
+    fn remove(&mut self, _srv: Server) -> Result<()> {
         todo!("Remove authorization")
     }
 
-    fn reset(&mut self, _srvs: Vec<Server>) -> Result<(), Error> {
+    fn reset(&mut self, _srvs: Vec<Server>) -> Result<()> {
         todo!("Reset authorization")
     }
 }
 
-impl IndexResource<Authorization> for State {
-    fn apply(&mut self, _az: Authorization) -> Result<(), Error> {
+impl IndexResource<Authorization> for Index {
+    fn apply(&mut self, _az: Authorization) -> Result<()> {
         todo!("Index authorization")
     }
 
-    fn remove(&mut self, _az: Authorization) -> Result<(), Error> {
+    fn remove(&mut self, _az: Authorization) -> Result<()> {
         todo!("Remove authorization")
     }
 
-    fn reset(&mut self, _azs: Vec<Authorization>) -> Result<(), Error> {
+    fn reset(&mut self, _azs: Vec<Authorization>) -> Result<()> {
         todo!("Reset authorization")
     }
 }
 
-impl State {
+impl Index {
     fn mk_srv_meta(srv: &Server) -> SrvMeta {
         let port = match srv.spec.port {
             server::Port::Number(ref p) => SrvPort::Number(*p),

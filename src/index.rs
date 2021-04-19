@@ -1,3 +1,5 @@
+#![allow(warnings)]
+
 use crate::{
     authz::Authorization,
     grpc::proto,
@@ -61,12 +63,12 @@ struct PodState {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ContainerPort {
-    container_name: ContainerName,
+    //container_name: ContainerName,
     server: Option<SrvName>,
 }
 
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
-struct ContainerName(Arc<str>);
+// #[derive(Clone, Debug, Hash, PartialEq, Eq)]
+// struct ContainerName(Arc<str>);
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 struct PortName(Arc<str>);
@@ -129,12 +131,14 @@ impl Index {
         Self(Arc::new(Mutex::new(State::default())))
     }
 
-    // Returns an index handle and spawns a background task that updates it.
     pub async fn run(self, client: kube::Client) -> Error {
-        let pod = self
-            .clone()
-            .index(Api::<Pod>::all(client.clone()), ListParams::default())
-            .instrument(info_span!("pod"));
+        // let pod = self
+        //     .clone()
+        //     .index(
+        //         Api::<Pod>::all(client.clone()),
+        //         ListParams::default().labels("linkerd.io/control-plane-ns=linkerd"),
+        //     )
+        //     .instrument(info_span!("pod"));
 
         let srv = self
             .clone()
@@ -146,7 +150,7 @@ impl Index {
             .instrument(info_span!("authz"));
 
         tokio::select! {
-            err = pod => err,
+            //err = pod => err,
             err = srv => err,
             err = authz => err,
         }
@@ -155,7 +159,6 @@ impl Index {
     async fn index<T>(self, api: Api<T>, params: ListParams) -> Error
     where
         T: Resource + Clone + DeserializeOwned + std::fmt::Debug + Send + 'static,
-        T::DynamicType: Default,
         State: IndexResource<T>,
     {
         let mut watch = watcher(api, params).boxed();
@@ -201,6 +204,7 @@ impl Index {
 
 // === impl State ===
 
+#[cfg(feature = "disabled for now")]
 impl IndexResource<Pod> for State {
     fn apply(&mut self, pod: Pod) -> Result<(), Error> {
         let ns_name = NsName(pod.namespace().ok_or(MissingNamespace(()))?.into());

@@ -1,6 +1,6 @@
 use futures::{future, prelude::*};
 use polixy::index;
-use tracing::{debug, error, info, info_span, Instrument};
+use tracing::{debug, error, info, instrument};
 
 #[tokio::main]
 async fn main() {
@@ -11,54 +11,65 @@ async fn main() {
     let client = kube::Client::try_default()
         .await
         .expect("Failed to initialize client");
-    let (index, index_task) = index::spawn(client);
+    let (index, index_task) = index::run(client);
 
-    let addr = ([0, 0, 0, 0], 8090).into();
-    let server = polixy::Grpc::new(index, drain_rx.clone());
-    let grpc = tokio::spawn(
-        async move {
-            let (close_tx, close_rx) = tokio::sync::oneshot::channel();
-            tokio::pin! {
-                let srv = server.serve(addr, close_rx.map(|_| {}));
-            }
-            let res = tokio::select! {
-                res = (&mut srv) => res,
-                handle = drain_rx.signaled() => {
-                    let _ = close_tx.send(());
-                    handle.release_after(srv).await
-                }
-            };
-            match res {
-                Ok(()) => debug!("shutdown"),
-                Err(error) => error!(%error),
-            }
-        }
-        .instrument(info_span!("grpc")),
-    );
-
-    let sigterm = async move {
-        use tokio::signal::unix::{signal, SignalKind};
-        match signal(SignalKind::terminate()) {
-            Ok(mut term) => term.recv().await,
-            _ => future::pending().await,
-        }
-    };
+    let index_task = tokio::spawn(index_task);
+    let grpc = tokio::spawn(grpc(8090, index, drain_rx));
 
     tokio::select! {
-        _ = tokio::signal::ctrl_c() => {},
-        _ = sigterm => {}
-        _ = grpc => {
-            error!("gRPC server terminated");
+        _ = shutdown(drain_tx) => {}
+        res = grpc => {
+            if let Err(e) = res {
+                if !e.is_cancelled() {
+                    error!("Server panicked");
+                }
+            }
         }
         res = index_task => match res {
-            Ok(error) =>  error!(%error, "Indexer failed"),
+            Ok(error) => error!(%error, "Indexer failed"),
             Err(e) => {
                 if !e.is_cancelled() {
-                    error!("Indexer failed to spawn")
+                    error!("Indexer panicked")
                 }
             }
         },
     };
+}
+
+#[instrument(skip(index, drain))]
+async fn grpc(port: u16, index: index::Handle, drain: linkerd_drain::Watch) {
+    let addr = ([0, 0, 0, 0], port).into();
+    let server = polixy::Grpc::new(index, drain.clone());
+    let (close_tx, close_rx) = tokio::sync::oneshot::channel();
+    tokio::pin! {
+        let srv = server.serve(addr, close_rx.map(|_| {}));
+    }
+    let res = tokio::select! {
+        res = (&mut srv) => res,
+        handle = drain.signaled() => {
+            let _ = close_tx.send(());
+            handle.release_after(srv).await
+        }
+    };
+    match res {
+        Ok(()) => debug!("shutdown"),
+        Err(error) => error!(%error),
+    }
+}
+
+async fn shutdown(drain: linkerd_drain::Signal) {
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {},
+        _ = sigterm() => {}
+    }
     info!("Shutting down");
-    drain_tx.drain().await;
+    drain.drain().await;
+}
+
+async fn sigterm() {
+    use tokio::signal::unix::{signal, SignalKind};
+    match signal(SignalKind::terminate()) {
+        Ok(mut term) => term.recv().await,
+        _ => future::pending().await,
+    };
 }

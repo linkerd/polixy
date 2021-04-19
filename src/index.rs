@@ -10,7 +10,7 @@ use kube_runtime::{reflector, watcher};
 use serde::de::DeserializeOwned;
 use std::{pin::Pin, sync::Arc};
 use tokio::sync::{watch, Notify};
-use tracing::{info, info_span, Instrument};
+use tracing::{info, instrument};
 
 pub type Lookup = watch::Receiver<proto::InboundProxyConfig>;
 
@@ -36,7 +36,7 @@ pub struct Ns {
 #[derive(Debug)]
 struct Config {}
 
-pub fn spawn(client: kube::Client) -> (Handle, tokio::task::JoinHandle<Error>) {
+pub fn run(client: kube::Client) -> (Handle, impl Future<Output = Error>) {
     let servers = Watch::new(watcher(
         Api::<Server>::all(client.clone()),
         ListParams::default(),
@@ -51,14 +51,11 @@ pub fn spawn(client: kube::Client) -> (Handle, tokio::task::JoinHandle<Error>) {
 
     let handle = Handle {
         configs: configs.clone(),
-        authorizations: authorizations.cache.clone(),
         servers: servers.cache.clone(),
+        authorizations: authorizations.cache.clone(),
     };
 
-    let task =
-        tokio::spawn(index(authorizations, servers, configs).instrument(info_span!("index")));
-
-    (handle, task)
+    (handle, index(authorizations, servers, configs))
 }
 
 struct Watch<T>
@@ -70,6 +67,7 @@ where
     rx: Pin<Box<dyn Stream<Item = watcher::Result<watcher::Event<T>>> + Send + 'static>>,
 }
 
+#[instrument(skip(authorizations, servers, _configs), fields(result))]
 async fn index(
     mut authorizations: Watch<Authorization>,
     mut servers: Watch<Server>,

@@ -1,4 +1,4 @@
-use super::index::Index;
+use crate::index;
 use futures::prelude::*;
 
 pub mod proto {
@@ -11,12 +11,12 @@ pub mod proto {
 
 #[derive(Clone, Debug)]
 pub struct Grpc {
-    index: Index,
+    index: index::Handle,
     drain: linkerd_drain::Watch,
 }
 
 impl Grpc {
-    pub fn new(index: Index, drain: linkerd_drain::Watch) -> Self {
+    pub fn new(index: index::Handle, drain: linkerd_drain::Watch) -> Self {
         Self { index, drain }
     }
 

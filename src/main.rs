@@ -1,5 +1,5 @@
 use futures::{future, prelude::*};
-use polixy::Index;
+use polixy::index;
 use tracing::{debug, error, info, info_span, Instrument};
 
 #[tokio::main]
@@ -11,8 +11,7 @@ async fn main() {
     let client = kube::Client::try_default()
         .await
         .expect("Failed to initialize client");
-    let index = Index::new();
-    let index_task = index.clone().run(client);
+    let (index, index_task) = index::spawn(client);
 
     let addr = ([0, 0, 0, 0], 8090).into();
     let server = polixy::Grpc::new(index, drain_rx.clone());
@@ -51,9 +50,14 @@ async fn main() {
         _ = grpc => {
             error!("gRPC server terminated");
         }
-        error = index_task => {
-            error!(%error, "indexer terminated");
-        }
+        res = index_task => match res {
+            Ok(error) =>  error!(%error, "Indexer failed"),
+            Err(e) => {
+                if !e.is_cancelled() {
+                    error!("Indexer failed to spawn")
+                }
+            }
+        },
     };
     info!("Shutting down");
     drain_tx.drain().await;

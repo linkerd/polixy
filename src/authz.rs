@@ -40,8 +40,9 @@ pub struct Authenticated {
 pub struct ServiceAccount {
     namespace: String,
     name: Option<String>,
-    match_labels: Option<labels::Map>,
-    match_expressions: Option<labels::Expressions>,
+
+    #[serde(flatten)]
+    selector: labels::Selector,
 }
 
 /// Describes an unauthenticated client.
@@ -49,6 +50,5 @@ pub struct ServiceAccount {
 /// Exactly one of `any`, `node`, and `network` should be set.
 #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
 pub struct Unauthenticated {
-    kubelet: Option<bool>,
     networks: Option<Vec<String>>,
 }

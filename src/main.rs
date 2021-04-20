@@ -1,6 +1,6 @@
 use futures::{future, prelude::*};
 use polixy::index;
-use tracing::{debug, error, info, instrument};
+use tracing::{error, info, instrument};
 
 #[tokio::main]
 async fn main() {
@@ -18,13 +18,14 @@ async fn main() {
 
     tokio::select! {
         _ = shutdown(drain_tx) => {}
-        res = grpc => {
-            if let Err(e) = res {
+        res = grpc => match res {
+            Ok(()) => {}
+            Err(e) => {
                 if !e.is_cancelled() {
                     error!("Server panicked");
                 }
             }
-        }
+        },
         res = index_task => match res {
             Ok(error) => error!(%error, "Indexer failed"),
             Err(e) => {
@@ -33,7 +34,7 @@ async fn main() {
                 }
             }
         },
-    };
+    }
 }
 
 #[instrument(skip(index, drain))]
@@ -51,9 +52,8 @@ async fn grpc(port: u16, index: index::Handle, drain: linkerd_drain::Watch) {
             handle.release_after(srv).await
         }
     };
-    match res {
-        Ok(()) => debug!("shutdown"),
-        Err(error) => error!(%error),
+    if let Err(error) = res {
+        error!(%error, "Grpc server failed");
     }
 }
 

@@ -74,25 +74,24 @@ impl proto::Service for Grpc {
         // seems unlikely for a pod to request its config for the pod's
         // existence has been observed; but it's certainly possible (especially
         // if the index is recovering).
-        let mut watch = self.index.lookup(ns, name, port).await.ok_or_else(|| {
-            tonic::Status::not_found(format!("Unknown pod ns={} name={} port={}", ns, name, port))
-        })?;
+        let watch = self
+            .index
+            .lookup(ns, name, port)
+            .await
+            .map(tokio_stream::wrappers::WatchStream::new)
+            .ok_or_else(|| {
+                tonic::Status::not_found(format!(
+                    "unknown pod ns={} name={} port={}",
+                    ns, name, port
+                ))
+            })?
+            .map(tokio_stream::wrappers::WatchStream::new)
+            .flat_map(|updates| updates.map(to_config).map(Ok));
 
-        let updates = async_stream::try_stream! {
-            loop {
-                // Send the current config on the stream.
-                let config = (*watch.borrow()).clone();
-                yield config;
-
-                // Wait until the watch is updated before sending another
-                // update.
-                if watch.changed().await.is_err() {
-                    // If the sender is dropped, then end the stream.
-                    return;
-                }
-            }
-        };
-
-        Ok(tonic::Response::new(Box::pin(updates)))
+        Ok(tonic::Response::new(Box::pin(watch)))
     }
+}
+
+fn to_config(_s: index::Server) -> proto::InboundProxyConfig {
+    todo!("Convert server to config")
 }

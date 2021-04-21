@@ -45,6 +45,7 @@ spec:
                       type: string
                       pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
 
+                    # XXX Can/should this be left out for now?
                     selector:
                       description: >-
                         A label query over servers on which this authorization applies.
@@ -72,6 +73,20 @@ spec:
                                 items:
                                   type: string
 
+                unauthenticated:
+                  description: >-
+                    Authorizes unauthenticated clients to connect to a
+                    server. Unauthenticated requests are ALWAYS permitted
+                    from the local kubelet process.
+                  type: object
+                  required: [networks]
+                  properties:
+                    networks:
+                      description: Authorizes traffic from specified CIDR blocks
+                      type: array
+                      items:
+                        type: string
+
                 authenticated:
                   description: >-
                     Authorizes a clients to connect to a server with Linkerd
@@ -79,7 +94,8 @@ spec:
                   type: object
                   oneOf:
                     - required: [identities]
-                    - required: [serviceAccounts]
+                    - required: [serviceAccountRefs]
+                    #- required: [serviceAccountSelectors]
                   properties:
 
                     identities:
@@ -108,67 +124,56 @@ spec:
                             type: string
                             pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
 
-                    serviceAccountSelectors:
-                      type: array
-                      items:
-                        type: object
-                        oneOf:
-                          - required: [matchLabels]
-                          - required: [matchExpressions]
-                        properties:
-                          matchLabels:
-                            type: object
-                            x-kubernetes-preserve-unknown-fields: true
-                          matchExpressions:
-                            type: array
-                            items:
-                              type: object
-                              required: [key, operator, values]
-                              properties:
-                                key:
-                                  type: string
-                                operator:
-                                  type: string
-                                  enum: [In, NotIn]
-                                values:
-                                  type: array
-                                  items:
-                                    type: string
-
-                          # When unspecified, matches ALL namespaces.
-                          namespaceSelector:
-                            type: object
-                            oneOf:
-                              - required: [matchLabels]
-                              - required: [matchExpressions]
-                            properties:
-                              matchLabels:
-                                type: object
-                                x-kubernetes-preserve-unknown-fields: true
-                              matchExpressions:
-                                type: array
-                                items:
-                                  type: object
-                                  required: [key, operator, values]
-                                  properties:
-                                    key:
-                                      type: string
-                                    operator:
-                                      type: string
-                                      enum: [In, NotIn]
-                                    values:
-                                      type: array
-                                      items:
-                                        type: string
-
-                unauthenticated:
-                  description: >-
-                    Authorizes unauthenticated clients to connect to a server
-                  type: object
-                  required: [networks]
-                  properties:
-                    networks:
-                      description: Authorizes traffic from specified CIDR blocks
-                      type: array
-                      items:
-                        type: string
+                    # TODO
+                    # serviceAccountSelectors:
+                    #   type: array
+                    #   items:
+                    #     type: object
+                    #     oneOf:
+                    #       - required: [matchLabels]
+                    #       - required: [matchExpressions]
+                    #     properties:
+                    #       matchLabels:
+                    #         type: object
+                    #         x-kubernetes-preserve-unknown-fields: true
+                    #       matchExpressions:
+                    #         type: array
+                    #         items:
+                    #           type: object
+                    #           required: [key, operator, values]
+                    #           properties:
+                    #             key:
+                    #               type: string
+                    #             operator:
+                    #               type: string
+                    #               enum: [In, NotIn]
+                    #             values:
+                    #               type: array
+                    #               items:
+                    #                 type: string
+                    #
+                    #       # When unspecified, matches ALL namespaces.
+                    #       namespaceSelector:
+                    #         type: object
+                    #         oneOf:
+                    #           - required: [matchLabels]
+                    #           - required: [matchExpressions]
+                    #         properties:
+                    #           matchLabels:
+                    #             type: object
+                    #             x-kubernetes-preserve-unknown-fields: true
+                    #           matchExpressions:
+                    #             type: array
+                    #             items:
+                    #               type: object
+                    #               required: [key, operator, values]
+                    #               properties:
+                    #                 key:
+                    #                   type: string
+                    #                 operator:
+                    #                   type: string
+                    #                   enum: [In, NotIn]
+                    #                 values:
+                    #                   type: array
+                    #                   items:
+                    #                     type: string

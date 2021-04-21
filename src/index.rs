@@ -1,5 +1,5 @@
 use crate::v1;
-use anyhow::Error;
+use anyhow::{anyhow, Error, Result};
 use dashmap::DashMap;
 use futures::prelude::*;
 use k8s_openapi::api as k8s;
@@ -9,9 +9,16 @@ use kube::{
 };
 use kube_runtime::{reflector, watcher};
 use serde::de::DeserializeOwned;
-use std::{collections::HashMap, fmt, hash::Hash, net::IpAddr, pin::Pin, sync::Arc};
+use std::{
+    collections::{hash_map, HashMap, HashSet},
+    fmt,
+    hash::Hash,
+    net::IpAddr,
+    pin::Pin,
+    sync::Arc,
+};
 use tokio::sync::watch;
-use tracing::{info, instrument};
+use tracing::{info, instrument, warn};
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct NodeName(Arc<str>);
@@ -26,18 +33,20 @@ pub struct PodName(Arc<str>);
 struct SrvName(Arc<str>);
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-struct PodPortKey(NsName, PodName, u16);
+struct KubeletIps(Arc<Vec<IpAddr>>);
 
-type PodPortMap = Arc<DashMap<PodPortKey, PodPort>>;
+type PodPortMap = Arc<DashMap<(NsName, PodName), Pod>>;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Handle {
     pod_ports: PodPortMap,
 }
 
 struct Index {
-    nodes: Reflect<k8s::core::v1::Node>,
-    pods: Reflect<k8s::core::v1::Pod>,
+    nodes: Watch<k8s::core::v1::Node>,
+    node_ips: HashMap<NodeName, KubeletIps>,
+    pods: Watch<k8s::core::v1::Pod>,
+    pod_labels: HashMap<(NsName, PodName), v1::Labels>,
     servers: Reflect<v1::Server>,
     authorizations: Reflect<v1::Authorization>,
 }
@@ -57,13 +66,8 @@ struct ServerChannel {
 }
 
 #[derive(Debug)]
-pub struct Node {
-    kubelet_ips: Vec<IpAddr>,
-}
-
-#[derive(Debug)]
 pub struct Pod {
-    node: Arc<Node>,
+    kubelet: KubeletIps,
     servers: Arc<HashMap<u16, PodPort>>,
 }
 
@@ -79,14 +83,14 @@ where
     T::DynamicType: Eq + Hash,
 {
     cache: reflector::Store<T>,
-    rx: Pin<Box<dyn Stream<Item = watcher::Result<watcher::Event<T>>> + Send + 'static>>,
+    rx: Watch<T>,
 }
 
-pub fn run(client: kube::Client) -> (Handle, impl Future<Output = Error>) {
-    let pod_ports = Arc::new(DashMap::new());
-    let idx = Index::new(client).index(pod_ports.clone());
+struct Watch<T>(Pin<Box<dyn Stream<Item = watcher::Result<watcher::Event<T>>> + Send + 'static>>);
 
-    (Handle { pod_ports }, idx)
+pub fn run(client: kube::Client) -> (Handle, impl Future<Output = Error>) {
+    let h = Handle::default();
+    (h.clone(), Index::new(client).index(h))
 }
 
 // === impl Index ===
@@ -95,10 +99,10 @@ impl Index {
     fn new(client: kube::Client) -> Self {
         // Needed to know the CIDR for each node (so that connections from kubelet
         // may be authorized).
-        let nodes: Reflect<k8s::core::v1::Node> =
+        let nodes: Watch<k8s::core::v1::Node> =
             watcher(Api::all(client.clone()), ListParams::default()).into();
 
-        let pods: Reflect<k8s::core::v1::Pod> =
+        let pods: Watch<k8s::core::v1::Pod> =
             watcher(Api::all(client.clone()), ListParams::default()).into();
 
         let authorizations: Reflect<v1::Authorization> =
@@ -108,48 +112,143 @@ impl Index {
 
         Self {
             nodes,
+            node_ips: HashMap::default(),
             pods,
+            pod_labels: HashMap::default(),
             authorizations,
             servers,
         }
     }
 
-    #[instrument(skip(self, _pod_ports), fields(result))]
-    async fn index(mut self, _pod_ports: PodPortMap) -> Error {
-        // let Self {
-        //     mut nodes,
-        //     mut pods,
-        //     mut servers,
-        //     mut authorizations,
-        // } = self;
+    fn cidr_to_kubelet_ip(cidr: String) -> Option<IpAddr> {
+        cidr.parse::<ipnet::IpNet>().ok()?.hosts().next()
+    }
 
+    fn kubelet_ips(node: k8s::core::v1::Node) -> Option<KubeletIps> {
+        if let Some(spec) = node.spec {
+            if let Some(primary) = spec.pod_cidr.and_then(Self::cidr_to_kubelet_ip) {
+                let addrs = if let Some(secondary) = spec.pod_cidrs {
+                    Some(primary)
+                        .into_iter()
+                        .chain(
+                            secondary
+                                .into_iter()
+                                .map(Self::cidr_to_kubelet_ip)
+                                .flatten(),
+                        )
+                        .collect::<Vec<_>>()
+                } else {
+                    vec![primary]
+                };
+                return Some(KubeletIps(addrs.into()));
+            } else {
+                warn!("Node missing CIDR")
+            }
+        } else {
+            warn!("Node missing spec")
+        }
+
+        None
+    }
+
+    fn update_pod(&mut self, pod: k8s::core::v1::Pod) -> Result<Option<((NsName, PodName), Pod)>> {
+        let ns = NsName::from_resource(&pod);
+        let pn = PodName::new(&pod);
+        let key = (ns, pn);
+        let spec = pod.spec.ok_or_else(|| anyhow!("pod missing spec"))?;
+
+        // Pod label changes may alter a pod's policy at
+        // runtime. Determine whether there are new labels for
+        // this pod before doing any linking.
+        let labels = v1::Labels::from(pod.metadata.labels);
+        let _labels = match self.pod_labels.entry(key.clone()) {
+            hash_map::Entry::Vacant(e) => {
+                e.insert(labels.clone());
+                labels
+            }
+            hash_map::Entry::Occupied(mut e) => {
+                if e.get() == &labels {
+                    return Ok(None);
+                } else {
+                    e.insert(labels.clone());
+                    labels
+                }
+            }
+        };
+
+        let kubelet = {
+            let n = spec
+                .node_name
+                .map(|n| NodeName(n.into()))
+                .ok_or_else(|| anyhow!("pod missing node name"))?;
+            self.node_ips
+                .get(&n)
+                .ok_or_else(|| anyhow!("pod missing node name"))?
+                .clone()
+        };
+
+        let servers = Arc::new(HashMap::default());
+
+        // TODO discover servers for port.
+
+        let pod = Pod { kubelet, servers };
+
+        Ok(Some((key, pod)))
+    }
+
+    #[instrument(skip(self, pod_ports), fields(result))]
+    async fn index(mut self, Handle { pod_ports }: Handle) -> Error {
         loop {
             tokio::select! {
+                // Track the kubelet IPs for all nodes.
                 up = self.nodes.recv() => match up {
-                    watcher::Event::Applied(_node) => {
-                        todo!("Determine kubelet IP for the node")
+                    watcher::Event::Applied(node) => {
+                        let n = NodeName::new(&node);
+                        if let hash_map::Entry::Vacant(entry) = self.node_ips.entry(n)  {
+                            if let Some(ips) = Self::kubelet_ips(node) {
+                                entry.insert(ips);
+                            }
+                        }
                     }
-
-                    watcher::Event::Deleted(_node) => {
-                        todo!("Handle node delete")
+                    watcher::Event::Deleted(node) => {
+                        let n = NodeName::new(&node);
+                        self.node_ips.remove(&n);
                     }
-
                     watcher::Event::Restarted(nodes) => {
-                        for _node in nodes.into_iter() {
-                            todo!("Determine kubelet IPs for all nodes")
+                        let mut old_names = self.node_ips.keys().cloned().collect::<HashSet<_>>();
+                        for node in nodes.into_iter() {
+                            let n = NodeName::new(&node);
+                            if !old_names.remove(&n) {
+                                if let Some(ips) = Self::kubelet_ips(node) {
+                                    self.node_ips.insert(n, ips);
+                                }
+                            }
+                        }
+                        for n in old_names.into_iter() {
+                            self.node_ips.remove(&n);
                         }
                     }
                 },
 
                 up = self.pods.recv() => match up {
                     watcher::Event::Applied(pod) => {
-                        let _n = NsName::from_resource(&pod);
-                        todo!("Handle pod apply")
+                        match self.update_pod(pod) {
+                            Ok(None) => {}
+                            Ok(Some((key, pod))) => {
+                                pod_ports.insert(key, pod);
+                            }
+                            Err(error) => warn!(%error, "Could not update pod"),
+                        }
                     }
 
                     watcher::Event::Deleted(pod) => {
-                        let _n = NsName::from_resource(&pod);
-                        todo!("Handle pod delete")
+                        let ns = NsName::from_resource(&pod);
+                        let pn = PodName::new(&pod);
+                        let key = (ns, pn);
+                        self.pod_labels.remove(&key);
+                        pod_ports.remove(&key);
+                        // Dropping the pod port should indicate to all watchers
+                        // that no further updates are possible.
                     }
 
                     watcher::Event::Restarted(pods) => {
@@ -160,26 +259,7 @@ impl Index {
                     }
                 },
 
-                up = self.authorizations.recv() => match up {
-                    watcher::Event::Applied(authz) => {
-                        let _n = NsName::from_resource(&authz);
-                        todo!("Handle authz apply")
-                    }
-
-                    watcher::Event::Deleted(authz) => {
-                        let _n = NsName::from_resource(&authz);
-                        todo!("Handle authz delete")
-                    }
-
-                    watcher::Event::Restarted(authzs) => {
-                        for authz in authzs.into_iter() {
-                            let _n = NsName::from_resource(&authz);
-                            todo!("Handle authz delete")
-                        }
-                    }
-                },
-
-                up = self.servers.recv() => match up {
+                up = self.servers.rx.recv() => match up {
                     watcher::Event::Applied(srv) => {
                         let _n = NsName::from_resource(&srv);
                         todo!("Handle srv apply")
@@ -194,6 +274,25 @@ impl Index {
                         for srv in srvs.into_iter() {
                             let _n = NsName::from_resource(&srv);
                             todo!("Handle srv delete")
+                        }
+                    }
+                },
+
+                up = self.authorizations.rx.recv() => match up {
+                    watcher::Event::Applied(authz) => {
+                        let _n = NsName::from_resource(&authz);
+                        todo!("Handle authz apply")
+                    }
+
+                    watcher::Event::Deleted(authz) => {
+                        let _n = NsName::from_resource(&authz);
+                        todo!("Handle authz delete")
+                    }
+
+                    watcher::Event::Restarted(authzs) => {
+                        for authz in authzs.into_iter() {
+                            let _n = NsName::from_resource(&authz);
+                            todo!("Handle authz delete")
                         }
                     }
                 },
@@ -213,12 +312,23 @@ where
     fn from(watch: W) -> Self {
         let store = reflector::store::Writer::<T>::default();
         let cache = store.as_reader();
-        let rx = reflector(store, watch).boxed();
+        let rx = Watch(reflector(store, watch).boxed());
         Self { cache, rx }
     }
 }
 
-impl<T> Reflect<T>
+// === impl Watch ===
+
+impl<T, W> From<W> for Watch<T>
+where
+    W: Stream<Item = watcher::Result<watcher::Event<T>>> + Send + 'static,
+{
+    fn from(watch: W) -> Self {
+        Watch(watch.boxed())
+    }
+}
+
+impl<T> Watch<T>
 where
     T: Resource + Clone + DeserializeOwned + fmt::Debug + Send + Sync + 'static,
     T::DynamicType: Clone + Eq + Hash + Default,
@@ -226,10 +336,10 @@ where
     async fn recv(&mut self) -> watcher::Event<T> {
         loop {
             match self
-                .rx
+                .0
                 .next()
                 .await
-                .expect("Reflect stream must not terminate")
+                .expect("watch stream must not terminate")
             {
                 Ok(ev) => return ev,
                 Err(error) => info!(%error, "Disconnected"),

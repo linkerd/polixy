@@ -120,35 +120,30 @@ impl Index {
         }
     }
 
-    fn cidr_to_kubelet_ip(cidr: String) -> Option<IpAddr> {
-        cidr.parse::<ipnet::IpNet>().ok()?.hosts().next()
+    fn cidr_to_kubelet_ip(cidr: String) -> Result<IpAddr> {
+        cidr.parse::<ipnet::IpNet>()?
+            .hosts()
+            .next()
+            .ok_or_else(|| anyhow!("pod CIDR network is empty"))
     }
 
-    fn kubelet_ips(node: k8s::core::v1::Node) -> Option<KubeletIps> {
-        if let Some(spec) = node.spec {
-            if let Some(primary) = spec.pod_cidr.and_then(Self::cidr_to_kubelet_ip) {
-                let addrs = if let Some(secondary) = spec.pod_cidrs {
-                    Some(primary)
-                        .into_iter()
-                        .chain(
-                            secondary
-                                .into_iter()
-                                .map(Self::cidr_to_kubelet_ip)
-                                .flatten(),
-                        )
-                        .collect::<Vec<_>>()
-                } else {
-                    vec![primary]
-                };
-                return Some(KubeletIps(addrs.into()));
-            } else {
-                warn!("Node missing CIDR")
+    fn kubelet_ips(node: k8s::core::v1::Node) -> Result<KubeletIps> {
+        let spec = node.spec.ok_or_else(|| anyhow!("node missing spec"))?;
+        let cidr = spec
+            .pod_cidr
+            .ok_or_else(|| anyhow!("node missing pod_cidr"))?;
+        let mut addrs = Vec::new();
+
+        let ip = Self::cidr_to_kubelet_ip(cidr)?;
+        addrs.push(ip);
+        if let Some(cidrs) = spec.pod_cidrs {
+            for cidr in cidrs.into_iter() {
+                let ip = Self::cidr_to_kubelet_ip(cidr)?;
+                addrs.push(ip);
             }
-        } else {
-            warn!("Node missing spec")
         }
 
-        None
+        Ok(KubeletIps(addrs.into()))
     }
 
     fn update_pod(&mut self, pod: k8s::core::v1::Pod) -> Result<Option<((NsName, PodName), Pod)>> {
@@ -183,7 +178,7 @@ impl Index {
                 .ok_or_else(|| anyhow!("pod missing node name"))?;
             self.node_ips
                 .get(&n)
-                .ok_or_else(|| anyhow!("pod missing node name"))?
+                .ok_or_else(|| anyhow!("node IP does not exist for node {}", n))?
                 .clone()
         };
 
@@ -205,8 +200,11 @@ impl Index {
                     watcher::Event::Applied(node) => {
                         let n = NodeName::new(&node);
                         if let hash_map::Entry::Vacant(entry) = self.node_ips.entry(n)  {
-                            if let Some(ips) = Self::kubelet_ips(node) {
-                                entry.insert(ips);
+                            match Self::kubelet_ips(node) {
+                                Ok(ips) => {
+                                    entry.insert(ips);
+                                }
+                                Err(error) => warn!(%error, "Failed to load kubelet IPs"),
                             }
                         }
                     }
@@ -219,8 +217,11 @@ impl Index {
                         for node in nodes.into_iter() {
                             let n = NodeName::new(&node);
                             if !old_names.remove(&n) {
-                                if let Some(ips) = Self::kubelet_ips(node) {
-                                    self.node_ips.insert(n, ips);
+                                match Self::kubelet_ips(node) {
+                                    Ok(ips) => {
+                                        self.node_ips.insert(n, ips);
+                                    }
+                                    Err(error) => warn!(node = %n, %error, "Failed to load kubelet IPs"),
                                 }
                             }
                         }

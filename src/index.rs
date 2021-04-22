@@ -36,7 +36,7 @@ struct SrvName(Arc<str>);
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 struct KubeletIps(Arc<Vec<IpAddr>>);
 
-type PodPortMap = Arc<DashMap<(NsName, PodName), Pod>>;
+type PodPortMap = Arc<DashMap<NsName, DashMap<PodName, Pod>>>;
 
 #[derive(Clone, Debug, Default)]
 pub struct Handle {
@@ -47,7 +47,7 @@ struct Index {
     nodes: Watch<k8s::core::v1::Node>,
     node_ips: HashMap<NodeName, KubeletIps>,
     pods: Watch<k8s::core::v1::Pod>,
-    pod_labels: HashMap<(NsName, PodName), v1::Labels>,
+    pod_labels: HashMap<NsName, HashMap<PodName, v1::Labels>>,
     servers: Reflect<v1::Server>,
     authorizations: Reflect<v1::Authorization>,
 }
@@ -170,17 +170,21 @@ impl Index {
         Ok(KubeletIps(addrs.into()))
     }
 
-    fn update_pod(&mut self, pod: k8s::core::v1::Pod) -> Result<Option<((NsName, PodName), Pod)>> {
-        let ns = NsName::from_resource(&pod);
-        let pn = PodName::new(&pod);
-        let key = (ns, pn);
+    fn update_pod(&mut self, pod: k8s::core::v1::Pod) -> Result<Option<(NsName, PodName, Pod)>> {
+        let ns_name = NsName::from_resource(&pod);
+        let pod_name = PodName::new(&pod);
         let spec = pod.spec.ok_or_else(|| anyhow!("pod missing spec"))?;
 
         // Pod label changes may alter a pod's policy at
         // runtime. Determine whether there are new labels for
         // this pod before doing any linking.
         let labels = v1::Labels::from(pod.metadata.labels);
-        let _labels = match self.pod_labels.entry(key.clone()) {
+        let _labels = match self
+            .pod_labels
+            .entry(ns_name.clone())
+            .or_default()
+            .entry(pod_name.clone())
+        {
             hash_map::Entry::Vacant(e) => {
                 e.insert(labels.clone());
                 labels
@@ -212,7 +216,7 @@ impl Index {
 
         let pod = Pod { kubelet, servers };
 
-        Ok(Some((key, pod)))
+        Ok(Some((ns_name, pod_name, pod)))
     }
 
     #[instrument(skip(self, pod_ports), fields(result))]
@@ -259,8 +263,8 @@ impl Index {
                     watcher::Event::Applied(pod) => {
                         match self.update_pod(pod) {
                             Ok(None) => {}
-                            Ok(Some((key, pod))) => {
-                                pod_ports.insert(key, pod);
+                            Ok(Some((ns, pn, pod))) => {
+                                pod_ports.entry(ns).or_default().insert(pn, pod);
                             }
                             Err(error) => warn!(%error, "Could not update pod"),
                         }
@@ -269,9 +273,12 @@ impl Index {
                     watcher::Event::Deleted(pod) => {
                         let ns = NsName::from_resource(&pod);
                         let pn = PodName::new(&pod);
-                        let key = (ns, pn);
-                        self.pod_labels.remove(&key);
-                        pod_ports.remove(&key);
+                        if let Some(pods) = self.pod_labels.get_mut(&ns) {
+                            pods.remove(&pn);
+                        }
+                        if let Some(pods) = pod_ports.get_mut(&ns) {
+                            pods.remove(&pn);
+                        }
                         // Dropping the pod port should indicate to all watchers
                         // that no further updates are possible.
                     }

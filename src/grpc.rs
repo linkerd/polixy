@@ -92,6 +92,6 @@ impl proto::Service for Grpc {
     }
 }
 
-fn to_config(_s: index::Server) -> proto::InboundProxyConfig {
+fn to_config(_s: index::ServerConfig) -> proto::InboundProxyConfig {
     todo!("Convert server to config")
 }

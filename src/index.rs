@@ -2,6 +2,7 @@ use crate::v1;
 use anyhow::{anyhow, Error, Result};
 use dashmap::DashMap;
 use futures::prelude::*;
+use ipnet::IpNet;
 use k8s_openapi::api as k8s;
 use kube::{
     api::{ListParams, Resource},
@@ -17,7 +18,7 @@ use std::{
     pin::Pin,
     sync::Arc,
 };
-use tokio::sync::watch;
+use tokio::{sync::watch, time};
 use tracing::{info, instrument, warn};
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
@@ -57,12 +58,35 @@ struct NsPods {
 }
 
 #[derive(Clone, Debug)]
-pub struct Server {}
+pub struct ServerConfig {
+    pub protocol: ProxyProtocol,
+    pub authorizations: Vec<Arc<Authz>>,
+}
+
+#[derive(Clone, Debug)]
+pub enum ProxyProtocol {
+    Detect { timeout: time::Duration },
+    Opaque,
+    Http,
+    Grpc,
+}
+
+#[derive(Debug)]
+pub struct Authz {
+    pub networks: Vec<IpNet>,
+    pub tls: Option<Tls>,
+}
+
+#[derive(Debug)]
+pub struct Tls {
+    pub identities: Vec<Vec<String>>,
+    pub suffixes: Vec<Vec<String>>,
+}
 
 #[derive(Debug)]
 struct ServerChannel {
-    rx: watch::Receiver<Server>,
-    tx: watch::Sender<Server>,
+    rx: watch::Receiver<ServerConfig>,
+    tx: watch::Sender<ServerConfig>,
 }
 
 #[derive(Debug)]
@@ -73,8 +97,8 @@ pub struct Pod {
 
 #[derive(Debug)]
 pub struct PodPort {
-    rx: watch::Receiver<watch::Receiver<Server>>,
-    tx: watch::Sender<watch::Receiver<Server>>,
+    rx: watch::Receiver<watch::Receiver<ServerConfig>>,
+    tx: watch::Sender<watch::Receiver<ServerConfig>>,
 }
 
 struct Reflect<T>
@@ -121,7 +145,7 @@ impl Index {
     }
 
     fn cidr_to_kubelet_ip(cidr: String) -> Result<IpAddr> {
-        cidr.parse::<ipnet::IpNet>()?
+        cidr.parse::<IpNet>()?
             .hosts()
             .next()
             .ok_or_else(|| anyhow!("pod CIDR network is empty"))
@@ -357,7 +381,7 @@ impl Handle {
         _ns: &str,
         _name: &str,
         _port: u16,
-    ) -> Option<watch::Receiver<watch::Receiver<Server>>> {
+    ) -> Option<watch::Receiver<watch::Receiver<ServerConfig>>> {
         todo!("Support lookup")
     }
 }

@@ -395,124 +395,68 @@ impl Index {
     fn delete_pod(&mut self, pod: k8s::core::v1::Pod) -> Result<()> {
         let ns_name = NsName::from_resource(&pod);
         let pod_name = PodName::from_resource(&pod);
+        self.rm_pod(&ns_name, &pod_name)
+    }
 
+    fn rm_pod(&mut self, ns: &NsName, pod: &PodName) -> Result<()> {
         self.pod_states
-            .get_mut(&ns_name)
-            .ok_or_else(|| anyhow!("namespace {} doesn't exist", ns_name))?
-            .remove(&pod_name)
-            .ok_or_else(|| anyhow!("pod {} doesn't exist", pod_name))?;
+            .get_mut(&ns)
+            .ok_or_else(|| anyhow!("namespace {} doesn't exist", ns))?
+            .remove(&pod)
+            .ok_or_else(|| anyhow!("pod {} doesn't exist", pod))?;
 
         self.namespaces
-            .get_mut(&ns_name)
-            .ok_or_else(|| anyhow!("namespace {} doesn't exist", ns_name))?
+            .get_mut(&ns)
+            .ok_or_else(|| anyhow!("namespace {} doesn't exist", ns))?
             .pod_info
-            .remove(&pod_name)
-            .ok_or_else(|| anyhow!("pod {} doesn't exist", pod_name))?;
+            .remove(&pod)
+            .ok_or_else(|| anyhow!("pod {} doesn't exist", pod))?;
 
         Ok(())
     }
 
-    fn reset_pods(&mut self, _pods: Vec<k8s::core::v1::Pod>) -> Result<()> {
-        // for pod in pods.into_iter() {
-        //     let ns_name = NsName::from_resource(&pod);
-        //     let pod_name = NsName::from_resource(&pod);
-        //}
-        todo!("Handle pod reset")
-    }
+    fn reset_pods(&mut self, pods: Vec<k8s::core::v1::Pod>) -> Result<()> {
+        let mut prior_pod_labels = self
+            .namespaces
+            .iter()
+            .map(|(n, ns)| {
+                let pods = ns
+                    .pod_info
+                    .iter()
+                    .map(|(n, p)| (n.clone(), p.labels.clone()))
+                    .collect::<HashMap<_, _>>();
+                (n.clone(), pods)
+            })
+            .collect::<HashMap<_, _>>();
 
-    /*
-    fn update_pod(&mut self, pod: k8s::core::v1::Pod) -> Result<Option<(NsName, PodName, Pod)>> {
-        let ns_name = NsName::from_resource(&pod);
-        let pod_name = PodName::from_resource(&pod);
-        let spec = pod.spec.ok_or_else(|| anyhow!("pod missing spec"))?;
+        let mut result = Ok(());
+        for pod in pods.into_iter() {
+            let ns_name = NsName::from_resource(&pod);
+            let pod_name = PodName::from_resource(&pod);
 
-        let ns = self.namespaces.entry(ns_name.clone()).or_default();
-
-        // Pod label changes may alter a pod's policy at
-        // runtime. Determine whether there are new labels for
-        // this pod before doing any linking.
-        let labels = v1::Labels::from(pod.metadata.labels);
-        match ns.pod_labels.entry(pod_name.clone()) {
-            HashEntry::Vacant(e) => {
-                e.insert(labels.clone());
-
-                let kubelet = {
-                    let n = spec
-                        .node_name
-                        .map(|n| NodeName(n.into()))
-                        .ok_or_else(|| anyhow!("pod missing node name"))?;
-                    self.node_ips
-                        .get(&n)
-                        .ok_or_else(|| anyhow!("node IP does not exist for node {}", n))?
-                        .clone()
-                };
-
-                // Enumerate all ports on this pod.
-                let mut ports = HashSet::<u16>::new();
-                let mut port_names = HashMap::new();
-                for container in spec.containers.into_iter() {
-                    if let Some(ps) = container.ports {
-                        for port in ps.into_iter() {
-                            if port.protocol.map(|p| p == "TCP").unwrap_or(true) {
-                                let name = port.name;
-                                let port = port.container_port as u16;
-                                if !ports.insert(port) {
-                                    debug!(port, "Port duplicated");
-                                }
-                                if let Some(name) = name {
-                                    match port_names.entry(name.clone()) {
-                                        HashEntry::Occupied(_) => {
-                                            debug!(%name, "Port duplicated");
-                                        }
-                                        HashEntry::Vacant(entry) => {
-                                            entry.insert(port);
-                                        }
-                                    }
-                                }
-                            }
-                        }
+            if let Some(prior) = prior_pod_labels.get_mut(&ns_name) {
+                if let Some(prior_labels) = prior.remove(&pod_name) {
+                    let labels = v1::Labels::from(pod.metadata.labels.clone());
+                    if prior_labels == labels {
+                        continue;
                     }
                 }
-
-                // Find server configs that
-                let mut servers = HashMap::with_capacity(ports.len());
-                for server in ns.servers.values() {
-                    if server.pod_selector.matches(&labels) {
-                        let port = match server.port {
-                            v1::server::Port::Name(ref n) => port_names.get(n).copied(),
-                            v1::server::Port::Number(ref p) => {
-                                if ports.contains(p) {
-                                    Some(*p)
-                                } else {
-                                    None
-                                }
-                            }
-                        };
-                        if let Some(port) = port {
-                            servers.insert(port, server.rx.clone());
-                        }
-                    }
-                }
-
-                let pod = Pod {
-                    kubelet,
-                    servers: Arc::new(servers),
-                };
             }
-            HashEntry::Occupied(mut e) => {
-                if e.get() == &pl {
-                    // The pod is unchanged so don't bother computing updated information.
-                    return Ok(None);
-                } else {
-                    e.insert(pl.clone());
-                    pl
+            if let Err(error) = self.apply_pod(pod) {
+                result = Err(error);
+            }
+        }
+
+        for (ns, pods) in prior_pod_labels.into_iter() {
+            for (pod, _) in pods.into_iter() {
+                if let Err(error) = self.rm_pod(&ns, &pod) {
+                    result = Err(error);
                 }
             }
-        };
+        }
 
-        Ok(Some((ns_name, pod_name, pod)))
+        result
     }
-    */
 
     #[instrument(skip(self), fields(result))]
     async fn index(mut self) -> Error {

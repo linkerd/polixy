@@ -8,8 +8,7 @@ use kube::{
     api::{ListParams, Resource},
     Api,
 };
-use kube_runtime::{reflector, watcher};
-use reflector::ObjectRef;
+use kube_runtime::watcher;
 use serde::de::DeserializeOwned;
 use std::{
     collections::{hash_map::Entry as HashEntry, HashMap, HashSet},
@@ -536,7 +535,7 @@ impl Index {
             ref pods,
             ref authzs,
             ref mut servers,
-        } = self.namespaces.entry(ns_name.clone()).or_default();
+        } = self.namespaces.entry(ns_name).or_default();
 
         let port = match srv.spec.port {
             v1::server::Port::Number(n) => ServerPort::Number(n),

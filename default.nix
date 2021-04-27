@@ -2,11 +2,12 @@
 with pkgs;
 
 buildEnv {
-  name = "linkerd2-proxy-env";
+  name = "polixy-env";
   paths =  [
       binutils
       cacert
       clang
+      cowsay
       docker
       git
       (glibcLocales.override { locales = [ "en_US.UTF-8" ]; })

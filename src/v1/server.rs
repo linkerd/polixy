@@ -10,17 +10,26 @@ use serde::{Deserialize, Serialize};
     kind = "Server",
     namespaced
 )]
-#[derive(CustomResource, Deserialize, Serialize, Clone, Debug, JsonSchema)]
+#[derive(Clone, Debug, CustomResource, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerSpec {
     pub pod_selector: labels::Selector,
     pub port: Port,
+    pub proxy_protocol: Option<ProxyProtocol>,
 }
 
 /// References a pod spec's port by name or number.
-#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(untagged)]
 pub enum Port {
     Number(u16),
     Name(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+pub enum ProxyProtocol {
+    Detect,
+    Opaque,
+    Http,
+    Grpc,
 }

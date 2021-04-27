@@ -12,21 +12,21 @@ pub type Map = BTreeMap<String, String>;
 
 pub type Expressions = Vec<Expression>;
 
-#[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 pub struct Expression {
     key: String,
     operator: Operator,
     values: BTreeSet<String>,
 }
 
-#[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 pub enum Operator {
     In,
     NotIn,
 }
 
 /// Selects a set of pods that expose a server.
-#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema, Eq, PartialEq, Default)]
+#[derive(Clone, Debug, Eq, PartialEq, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Selector {
     match_labels: Option<Map>,

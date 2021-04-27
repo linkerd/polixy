@@ -80,7 +80,7 @@ pub struct ServerConfig {
     pub authorizations: Vec<Arc<Authz>>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProxyProtocol {
     Detect { timeout: time::Duration },
     Opaque,
@@ -104,6 +104,7 @@ pub struct Tls {
 struct Server {
     port: v1::server::Port,
     pod_selector: v1::labels::Selector,
+    protocol: ProxyProtocol,
     labels: v1::Labels,
     rx: watch::Receiver<ServerConfig>,
     tx: watch::Sender<ServerConfig>,
@@ -181,6 +182,70 @@ impl Index {
         }
     }
 
+    #[instrument(skip(self), fields(result))]
+    async fn index(mut self) -> Error {
+        loop {
+            tokio::select! {
+                // Track the kubelet IPs for all nodes.
+                up = self.nodes.recv() => {
+                    let res = match up {
+                        watcher::Event::Applied(node) => self.apply_node(node),
+                        watcher::Event::Deleted(node) => self.delete_node(node),
+                        watcher::Event::Restarted(nodes) => self.reset_nodes(nodes),
+                    };
+                    if let Err(error) = res {
+                        debug!(%error);
+                    }
+                }
+
+                up = self.pods.recv() => {
+                    let res = match up {
+                        watcher::Event::Applied(pod) => self.apply_pod(pod),
+                        watcher::Event::Deleted(pod) => self.delete_pod(pod),
+                        watcher::Event::Restarted(pods) => self.reset_pods(pods),
+                    };
+                    if let Err(error) = res {
+                        debug!(%error);
+                    }
+                }
+
+                up = self.servers.rx.recv() => match up {
+                    watcher::Event::Applied(srv) => self.apply_server(srv),
+
+                    watcher::Event::Deleted(srv) => {
+                        let _n = NsName::from_resource(&srv);
+                        todo!("Handle srv delete")
+                    }
+
+                    watcher::Event::Restarted(srvs) => {
+                        for srv in srvs.into_iter() {
+                            let _n = NsName::from_resource(&srv);
+                            todo!("Handle srv delete")
+                        }
+                    }
+                },
+
+                up = self.authorizations.rx.recv() => match up {
+                    watcher::Event::Applied(authz) => {
+                        let _n = NsName::from_resource(&authz);
+                        todo!("Handle authz apply")
+                    }
+
+                    watcher::Event::Deleted(authz) => {
+                        let _n = NsName::from_resource(&authz);
+                        todo!("Handle authz delete")
+                    }
+
+                    watcher::Event::Restarted(authzs) => {
+                        for authz in authzs.into_iter() {
+                            let _n = NsName::from_resource(&authz);
+                            todo!("Handle authz delete")
+                        }
+                    }
+                },
+            }
+        }
+    }
     // === Node->IP indexing ===
 
     fn apply_node(&mut self, node: k8s::core::v1::Node) -> Result<()> {
@@ -458,94 +523,67 @@ impl Index {
         result
     }
 
-    #[instrument(skip(self), fields(result))]
-    async fn index(mut self) -> Error {
-        loop {
-            tokio::select! {
-                // Track the kubelet IPs for all nodes.
-                up = self.nodes.recv() => {
-                    let res = match up {
-                        watcher::Event::Applied(node) => self.apply_node(node),
-                        watcher::Event::Deleted(node) => self.delete_node(node),
-                        watcher::Event::Restarted(nodes) => self.reset_nodes(nodes),
-                    };
-                    if let Err(error) = res {
-                        debug!(%error);
+    // === Server indexing ===
+
+    fn apply_server(&mut self, srv: v1::Server) {
+        let ns_name = NsName::from_resource(&srv);
+        let srv_name = SrvName::from_resource(&srv);
+        let labels = v1::Labels::from(srv.metadata.labels);
+
+        let namespace = self.namespaces.entry(ns_name).or_default();
+        match namespace.servers.entry(srv_name) {
+            HashEntry::Occupied(mut entry) => {
+                let s = entry.get_mut();
+                let protocol = Self::mk_protocol(srv.spec.proxy_protocol.as_ref());
+
+                if s.labels != labels || s.port != srv.spec.port || s.protocol != protocol {
+                    if s.labels != labels {
+                        s.labels = labels;
+                        todo!("Update authorizations")
                     }
+
+                    s.port = srv.spec.port;
+                    s.protocol = protocol;
+
+                    let config = s.rx.borrow().clone();
+                    s.tx.send(config).expect("server update must succeed");
                 }
 
-                up = self.pods.recv() => {
-                    let res = match up {
-                        watcher::Event::Applied(pod) => self.apply_pod(pod),
-                        watcher::Event::Deleted(pod) => self.delete_pod(pod),
-                        watcher::Event::Restarted(pods) => self.reset_pods(pods),
-                    };
-                    if let Err(error) = res {
-                        debug!(%error);
-                    }
+                if s.pod_selector == srv.spec.pod_selector {
+                    s.pod_selector = srv.spec.pod_selector;
                 }
-
-                up = self.servers.rx.recv() => match up {
-                    watcher::Event::Applied(srv) => {
-                        let ns_name = NsName::from_resource(&srv);
-                        let srv_name = SrvName::from_resource(&srv);
-                        let labels = v1::Labels::from(srv.metadata.labels);
-                        let ns = self.namespaces.entry(ns_name).or_default();
-                        match ns.servers.entry(srv_name) {
-                            HashEntry::Occupied(mut entry) => {
-                                entry.get_mut().labels = labels;
-                                todo!("Update pods");
-                            }
-                            HashEntry::Vacant(entry) => {
-                                fn new_server_config() -> ServerConfig {
-                                    todo!("build a server config");
-                                }
-                                let (tx, rx) = watch::channel(new_server_config());
-                                entry.insert(Server {
-                                    port: srv.spec.port,
-                                    pod_selector: srv.spec.pod_selector,
-                                    labels,
-                                    tx,
-                                    rx,
-                                });
-                                todo!("Update pods");
-                            }
-                        }
-
-                    }
-
-                    watcher::Event::Deleted(srv) => {
-                        let _n = NsName::from_resource(&srv);
-                        todo!("Handle srv delete")
-                    }
-
-                    watcher::Event::Restarted(srvs) => {
-                        for srv in srvs.into_iter() {
-                            let _n = NsName::from_resource(&srv);
-                            todo!("Handle srv delete")
-                        }
-                    }
-                },
-
-                up = self.authorizations.rx.recv() => match up {
-                    watcher::Event::Applied(authz) => {
-                        let _n = NsName::from_resource(&authz);
-                        todo!("Handle authz apply")
-                    }
-
-                    watcher::Event::Deleted(authz) => {
-                        let _n = NsName::from_resource(&authz);
-                        todo!("Handle authz delete")
-                    }
-
-                    watcher::Event::Restarted(authzs) => {
-                        for authz in authzs.into_iter() {
-                            let _n = NsName::from_resource(&authz);
-                            todo!("Handle authz delete")
-                        }
-                    }
-                },
             }
+
+            HashEntry::Vacant(entry) => {
+                let protocol = Self::mk_protocol(srv.spec.proxy_protocol.as_ref());
+                fn authzs() -> Vec<Arc<Authz>> {
+                    todo!()
+                }
+                let (tx, rx) = watch::channel(ServerConfig {
+                    protocol: protocol.clone(),
+                    authorizations: authzs(),
+                });
+                let _s = entry.insert(Server {
+                    port: srv.spec.port,
+                    pod_selector: srv.spec.pod_selector,
+                    protocol,
+                    labels,
+                    tx,
+                    rx,
+                });
+                todo!("Update pods")
+            }
+        }
+    }
+
+    fn mk_protocol(p: Option<&v1::server::ProxyProtocol>) -> ProxyProtocol {
+        match p {
+            Some(v1::server::ProxyProtocol::Detect) | None => ProxyProtocol::Detect {
+                timeout: time::Duration::from_secs(5),
+            },
+            Some(v1::server::ProxyProtocol::Opaque) => ProxyProtocol::Opaque,
+            Some(v1::server::ProxyProtocol::Http) => ProxyProtocol::Http,
+            Some(v1::server::ProxyProtocol::Grpc) => ProxyProtocol::Grpc,
         }
     }
 }

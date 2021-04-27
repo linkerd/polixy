@@ -13,27 +13,27 @@ use serde::{Deserialize, Serialize};
 #[derive(CustomResource, Deserialize, Serialize, Clone, Debug, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct AuthorizationSpec {
-    sever: Server,
-    authenticated: Option<Authenticated>,
-    unauthenticated: Option<Unauthenticated>,
+    pub server: Server,
+    pub authenticated: Option<Authenticated>,
+    pub unauthenticated: Option<Unauthenticated>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
 pub struct Server {
-    name: Option<String>,
-    selector: Option<labels::Selector>,
+    pub name: Option<String>,
+    pub selector: Option<labels::Selector>,
 }
 
 /// Describes an authenticated client.
 ///
-/// Exactly one of `any`, `identity`, and `service_account` should be set.
+/// Exactly one of `identities` and `service_account_refs` should be set.
 #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Authenticated {
     /// Indicates a Linkerd identity that is authorized to access a server.
-    identities: Option<Vec<String>>,
+    pub identities: Option<Vec<String>>,
     /// Identifies a `ServiceAccount` authorized to access a server.
-    service_account_refs: Option<Vec<ServiceAccountRef>>,
+    pub service_account_refs: Option<Vec<ServiceAccountRef>>,
 }
 
 /// References a Kubernetes `ServiceAccount` instance.
@@ -42,14 +42,12 @@ pub struct Authenticated {
 #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ServiceAccountRef {
-    namespace: Option<String>,
-    name: String,
+    pub namespace: Option<String>,
+    pub name: String,
 }
 
 /// Describes an unauthenticated client.
-///
-/// Exactly one of `any`, `node`, and `network` should be set.
 #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
 pub struct Unauthenticated {
-    networks: Option<Vec<String>>,
+    pub networks: Vec<String>,
 }

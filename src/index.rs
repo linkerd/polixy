@@ -1,5 +1,5 @@
 use crate::v1;
-use anyhow::{anyhow, Context, Error, Result};
+use anyhow::{anyhow, bail, Context, Error, Result};
 use dashmap::{mapref::entry::Entry as DashEntry, DashMap};
 use futures::prelude::*;
 use ipnet::IpNet;
@@ -100,31 +100,34 @@ pub enum ProxyProtocol {
     Grpc,
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub struct AuthzMeta {
-    pub server_selector: v1::labels::Selector,
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AuthzMeta {
+    pub servers: ServerSelector,
     pub authz: Arc<Authz>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub struct Authz {
-    pub networks: Vec<IpNet>,
-    pub tls: Option<Tls>,
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ServerSelector {
+    Name(SrvName),
+    Selector(Arc<v1::labels::Selector>),
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct Tls {
-    pub identities: Vec<Vec<String>>,
-    pub suffixes: Vec<Vec<String>>,
+pub enum Authz {
+    Unauthenticated(Vec<IpNet>),
+    Authenticated {
+        identities: Vec<String>,
+        suffixes: Vec<Vec<String>>,
+    },
 }
 
 #[derive(Debug)]
 struct Server {
-    port: ServerPort,
-    pod_selector: v1::labels::Selector,
-    protocol: ProxyProtocol,
     labels: v1::Labels,
-    //authorizations: HashMap<AuthzName, Arc<Authz>>,
+    port: ServerPort,
+    pod_selector: Arc<v1::labels::Selector>,
+    protocol: ProxyProtocol,
+    authorizations: HashMap<AuthzName, Arc<Authz>>,
     rx: watch::Receiver<ServerConfig>,
     tx: watch::Sender<ServerConfig>,
 }
@@ -132,11 +135,6 @@ struct Server {
 #[derive(Debug)]
 pub struct PodLookups {
     servers: Arc<HashMap<u16, Lookup>>,
-}
-
-#[derive(Debug)]
-pub struct PodPort {
-    lookup: Lookup,
 }
 
 #[derive(Clone, Debug)]
@@ -194,64 +192,37 @@ impl Index {
     #[instrument(skip(self), fields(result))]
     async fn index(mut self) -> Error {
         loop {
-            tokio::select! {
+            let res = tokio::select! {
                 // Track the kubelet IPs for all nodes.
-                up = self.nodes.recv() => {
-                    let res = match up {
+                up = self.nodes.recv() => match up {
                         watcher::Event::Applied(node) => self.apply_node(node),
                         watcher::Event::Deleted(node) => self.delete_node(node),
                         watcher::Event::Restarted(nodes) => self.reset_nodes(nodes),
-                    };
-                    if let Err(error) = res {
-                        debug!(%error);
-                    }
-                }
+                },
 
-                up = self.pods.recv() => {
-                    let res = match up {
+                up = self.pods.recv() => match up {
                         watcher::Event::Applied(pod) => self.apply_pod(pod),
                         watcher::Event::Deleted(pod) => self.delete_pod(pod),
                         watcher::Event::Restarted(pods) => self.reset_pods(pods),
-                    };
-                    if let Err(error) = res {
-                        debug!(%error);
-                    }
-                }
+                },
 
                 up = self.servers.recv() => match up {
-                    watcher::Event::Applied(srv) => self.apply_server(srv),
-
-                    watcher::Event::Deleted(srv) => {
-                        let _n = NsName::from_resource(&srv);
-                        todo!("Handle srv delete")
+                    watcher::Event::Applied(srv) => {
+                        self.apply_server(srv);
+                        Ok(())
                     }
-
-                    watcher::Event::Restarted(srvs) => {
-                        for srv in srvs.into_iter() {
-                            let _n = NsName::from_resource(&srv);
-                            todo!("Handle srv delete")
-                        }
-                    }
+                    watcher::Event::Deleted(_srv) => todo!("Handle srv delete"),
+                    watcher::Event::Restarted(_srvs) => todo!("Handle srv delete"),
                 },
 
                 up = self.authorizations.recv() => match up {
-                    watcher::Event::Applied(authz) => {
-                        let _n = NsName::from_resource(&authz);
-                        todo!("Handle authz apply")
-                    }
-
-                    watcher::Event::Deleted(authz) => {
-                        let _n = NsName::from_resource(&authz);
-                        todo!("Handle authz delete")
-                    }
-
-                    watcher::Event::Restarted(authzs) => {
-                        for authz in authzs.into_iter() {
-                            let _n = NsName::from_resource(&authz);
-                            todo!("Handle authz delete")
-                        }
-                    }
+                    watcher::Event::Applied(authz) => self.apply_authz(authz),
+                    watcher::Event::Deleted(_authz) => todo!("Handle authz delete"),
+                    watcher::Event::Restarted(_authzs) => todo!("Handle authz delete"),
                 },
+            };
+            if let Err(error) = res {
+                debug!(%error);
             }
         }
     }
@@ -534,7 +505,7 @@ impl Index {
 
         let NsIndex {
             ref pods,
-            ref authzs,
+            authzs: ref ns_authzs,
             ref mut servers,
         } = self.namespaces.entry(ns_name).or_default();
 
@@ -545,61 +516,77 @@ impl Index {
 
         match servers.entry(srv_name) {
             HashEntry::Occupied(mut entry) => {
-                let s = entry.get_mut();
                 let protocol = Self::mk_protocol(srv.spec.proxy_protocol.as_ref());
 
                 // If something about the server changed, we need to update the
                 // config to reflect the change.
-                if s.labels != labels || s.protocol != protocol {
+                if entry.get().labels != labels || entry.get().protocol == protocol {
                     // NB: Only a single task applies server updates, so it's
                     // okay to borrow a version, modify, and send it.  We don't
                     // need a lock because serialization is guaranteed.
-                    let mut config = s.rx.borrow().clone();
+                    let mut config = entry.get().rx.borrow().clone();
 
-                    if s.labels != labels {
-                        config.authorizations = authzs
-                            .values()
-                            .filter_map(|a| {
-                                if a.server_selector.matches(&labels) {
-                                    Some(a.authz.clone())
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect::<Vec<_>>();
-                        s.labels = labels;
+                    if entry.get().labels != labels {
+                        let mut authorizations = HashMap::with_capacity(ns_authzs.len());
+                        for (authz_name, a) in ns_authzs.iter() {
+                            let matches = match a.servers {
+                                ServerSelector::Name(ref n) => n == entry.key(),
+                                ServerSelector::Selector(ref s) => s.matches(&labels),
+                            };
+                            if matches {
+                                authorizations.insert(authz_name.clone(), a.authz.clone());
+                            }
+                        }
+
+                        config.authorizations = authorizations.values().cloned().collect();
+                        entry.get_mut().labels = labels;
+                        entry.get_mut().authorizations = authorizations;
                     }
 
                     config.protocol = protocol.clone();
-                    s.protocol = protocol;
+                    entry.get_mut().protocol = protocol;
 
-                    s.tx.send(config).expect("server update must succeed");
+                    entry
+                        .get()
+                        .tx
+                        .send(config)
+                        .expect("server update must succeed");
                 }
 
                 // If the pod/port selector didn't change, we don't need to
                 // refresh the index.
-                if s.pod_selector == srv.spec.pod_selector && s.port == port {
+                if *entry.get().pod_selector == srv.spec.pod_selector && entry.get().port == port {
                     return;
                 }
 
-                s.pod_selector = srv.spec.pod_selector;
-                s.port = port;
+                entry.get_mut().pod_selector = srv.spec.pod_selector.into();
+                entry.get_mut().port = port;
             }
 
             HashEntry::Vacant(entry) => {
                 let protocol = Self::mk_protocol(srv.spec.proxy_protocol.as_ref());
-                fn authzs() -> Vec<Arc<Authz>> {
-                    todo!()
+
+                let mut authorizations = HashMap::with_capacity(ns_authzs.len());
+                for (authz_name, a) in ns_authzs.iter() {
+                    let matches = match a.servers {
+                        ServerSelector::Name(ref n) => n == entry.key(),
+                        ServerSelector::Selector(ref s) => s.matches(&labels),
+                    };
+                    if matches {
+                        authorizations.insert(authz_name.clone(), a.authz.clone());
+                    }
                 }
+
                 let (tx, rx) = watch::channel(ServerConfig {
                     protocol: protocol.clone(),
-                    authorizations: authzs(),
+                    authorizations: authorizations.values().cloned().collect(),
                 });
                 entry.insert(Server {
-                    port,
-                    pod_selector: srv.spec.pod_selector,
-                    protocol,
                     labels,
+                    port,
+                    pod_selector: srv.spec.pod_selector.into(),
+                    protocol,
+                    authorizations,
                     tx,
                     rx,
                 });
@@ -641,22 +628,123 @@ impl Index {
 
     // === Authorization indexing ===
 
-    fn apply_authz(&mut self, authz: v1::Authorization) {
-        let ns_name = NsName::from_resource(&authz);
-        let authz_name = AuthzName::from_resource(&authz);
+    fn apply_authz(&mut self, authorization: v1::Authorization) -> Result<()> {
+        let ns_name = NsName::from_resource(&authorization);
+        let authz_name = AuthzName::from_resource(&authorization);
+        let spec = authorization.spec;
 
-        let NsIndex { ref mut authzs, .. } = self.namespaces.entry(ns_name).or_default();
-
-        match authzs.entry(authz_name) {
-            HashEntry::Vacant(entry) => {
-                entry.insert(AuthzMeta {
-                    server_selector: authz.spec.server_selector,
-                    authz: Arc::new(Authz {
-                        networks: authz.spec.
-                    })
-                });
+        let servers = {
+            let v1::authz::Server { name, selector } = spec.server;
+            match (name, selector) {
+                (Some(n), None) => ServerSelector::Name(SrvName(n.into())),
+                (None, Some(sel)) => ServerSelector::Selector(sel.into()),
+                (Some(_), Some(_)) => bail!("authorization selection is ambiguous"),
+                (None, None) => bail!("authorization selects no servers"),
             }
-            HashEntry::Occupied(_) => todo!("update authz"),
+        };
+
+        let authz = match (spec.authenticated, spec.unauthenticated) {
+            (Some(auth), None) => {
+                let mut identities = Vec::new();
+                let mut suffixes = Vec::new();
+
+                if let Some(ids) = auth.identities {
+                    for id in ids.into_iter() {
+                        if id == "*" {
+                            suffixes.push(Vec::new());
+                        } else if id.starts_with("*.") {
+                            let mut parts = id.split('.');
+                            let star = parts.next();
+                            debug_assert_eq!(star, Some("*"));
+                            suffixes.push(parts.map(|p| p.to_string()).collect());
+                        } else {
+                            identities.push(id);
+                        }
+                    }
+                }
+
+                if let Some(sas) = auth.service_account_refs {
+                    for sa in sas.into_iter() {
+                        let ns = sa.namespace.unwrap_or_else(|| ns_name.to_string());
+                        let name = sa.name;
+                        // FIXME configurable cluster domain
+                        identities.push(format!(
+                            "{}.{}.serviceaccount.linkerd.cluster.local",
+                            ns, name
+                        ));
+                    }
+                }
+
+                if identities.is_empty() && suffixes.is_empty() {
+                    bail!("authorization authorizes no clients");
+                }
+
+                Authz::Authenticated {
+                    identities,
+                    suffixes,
+                }
+            }
+
+            (None, Some(unauth)) if !unauth.networks.is_empty() => {
+                let mut nets = Vec::with_capacity(unauth.networks.len());
+                for s in unauth.networks.into_iter() {
+                    let net = s.parse::<IpNet>()?;
+                    nets.push(net);
+                }
+                Authz::Unauthenticated(nets)
+            }
+
+            (Some(_), Some(_)) => {
+                bail!("authorization allows both authenticated and unauthenticated clients");
+            }
+            _ => bail!("authorization authorizes no clients"),
+        };
+
+        let NsIndex {
+            ref mut authzs,
+            servers: ref mut ns_servers,
+            ..
+        } = self.namespaces.entry(ns_name).or_default();
+
+        match authzs.entry(authz_name.clone()) {
+            HashEntry::Vacant(entry) => {
+                let meta = AuthzMeta {
+                    servers,
+                    authz: Arc::new(authz),
+                };
+                Self::add_authz(authz_name, &meta, ns_servers);
+                entry.insert(meta);
+            }
+
+            HashEntry::Occupied(mut entry) => {
+                if entry.get().servers != servers || *entry.get().authz != authz {
+                    let meta = AuthzMeta {
+                        authz: Arc::new(authz),
+                        servers,
+                    };
+                    Self::add_authz(authz_name, &meta, ns_servers);
+                    entry.insert(meta);
+                }
+            }
+        };
+
+        Ok(())
+    }
+
+    fn add_authz(
+        authz_name: AuthzName,
+        authz: &AuthzMeta,
+        ns_servers: &mut HashMap<SrvName, Server>,
+    ) {
+        for (srv_name, srv) in ns_servers.iter_mut() {
+            match authz.servers {
+                ServerSelector::Name(ref n) if n == srv_name => {}
+                ServerSelector::Selector(ref s) if s.matches(&srv.labels) => {
+                    srv.authorizations
+                        .insert(authz_name.clone(), authz.authz.clone());
+                }
+                _ => {}
+            }
         }
     }
 }

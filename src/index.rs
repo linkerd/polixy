@@ -1,6 +1,6 @@
 use crate::v1;
-use anyhow::{anyhow, Error, Result};
-use dashmap::DashMap;
+use anyhow::{anyhow, Context, Error, Result};
+use dashmap::{mapref::entry::Entry as DashEntry, DashMap};
 use futures::prelude::*;
 use ipnet::IpNet;
 use k8s_openapi::api as k8s;
@@ -9,9 +9,10 @@ use kube::{
     Api,
 };
 use kube_runtime::{reflector, watcher};
+use reflector::ObjectRef;
 use serde::de::DeserializeOwned;
 use std::{
-    collections::{hash_map, HashMap, HashSet},
+    collections::{hash_map::Entry as HashEntry, HashMap, HashSet},
     fmt,
     hash::Hash,
     net::IpAddr,
@@ -19,10 +20,10 @@ use std::{
     sync::Arc,
 };
 use tokio::{sync::watch, time};
-use tracing::{info, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct NodeName(Arc<str>);
+struct NodeName(Arc<str>);
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct NsName(Arc<str>);
@@ -31,30 +32,46 @@ pub struct NsName(Arc<str>);
 pub struct PodName(Arc<str>);
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct PortName(Arc<str>);
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 struct SrvName(Arc<str>);
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-struct KubeletIps(Arc<Vec<IpAddr>>);
+pub struct KubeletIps(Arc<Vec<IpAddr>>);
 
-type PodPortMap = Arc<DashMap<NsName, DashMap<PodName, Pod>>>;
+type SharedPodMap = Arc<DashMap<NsName, DashMap<PodName, Pod>>>;
 
-#[derive(Clone, Debug, Default)]
-pub struct Handle {
-    pod_ports: PodPortMap,
-}
+#[derive(Clone, Debug)]
+pub struct Handle(SharedPodMap);
 
 struct Index {
     nodes: Watch<k8s::core::v1::Node>,
-    node_ips: HashMap<NodeName, KubeletIps>,
     pods: Watch<k8s::core::v1::Pod>,
-    pod_labels: HashMap<NsName, HashMap<PodName, v1::Labels>>,
     servers: Reflect<v1::Server>,
     authorizations: Reflect<v1::Authorization>,
+    node_ips: HashMap<NodeName, KubeletIps>,
+    namespaces: HashMap<NsName, NsIndex>,
+    pod_states: SharedPodMap,
+
+    default_config_rx: watch::Receiver<ServerConfig>,
+    _default_config_tx: watch::Sender<ServerConfig>,
+}
+
+#[derive(Debug, Default)]
+struct NsIndex {
+    /// Caches pod labels so we can differentiate innocuous updates (like status
+    /// changes) from label changes that could impact server indexing.
+    pod_info: HashMap<PodName, PodInfo>,
+
+    /// Caches a watch for each server.
+    servers: HashMap<SrvName, Server>,
 }
 
 #[derive(Debug)]
-struct NsPods {
-    pods: DashMap<PodName, Pod>,
+struct PodInfo {
+    port_names: Arc<HashMap<PortName, u16>>,
+    labels: v1::Labels,
 }
 
 #[derive(Clone, Debug)]
@@ -84,21 +101,30 @@ pub struct Tls {
 }
 
 #[derive(Debug)]
-struct ServerChannel {
+struct Server {
+    port: v1::server::Port,
+    pod_selector: v1::labels::Selector,
+    labels: v1::Labels,
     rx: watch::Receiver<ServerConfig>,
     tx: watch::Sender<ServerConfig>,
 }
 
 #[derive(Debug)]
 pub struct Pod {
-    kubelet: KubeletIps,
     servers: Arc<HashMap<u16, PodPort>>,
 }
 
 #[derive(Debug)]
 pub struct PodPort {
-    rx: watch::Receiver<watch::Receiver<ServerConfig>>,
+    lookup: Lookup,
     tx: watch::Sender<watch::Receiver<ServerConfig>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Lookup {
+    pub name: Option<PortName>,
+    pub kubelet_ips: KubeletIps,
+    pub server: watch::Receiver<watch::Receiver<ServerConfig>>,
 }
 
 struct Reflect<T>
@@ -113,8 +139,9 @@ where
 struct Watch<T>(Pin<Box<dyn Stream<Item = watcher::Result<watcher::Event<T>>> + Send + 'static>>);
 
 pub fn run(client: kube::Client) -> (Handle, impl Future<Output = Error>) {
-    let h = Handle::default();
-    (h.clone(), Index::new(client).index(h))
+    let idx = Index::new(client);
+    let h = Handle(idx.pod_states.clone());
+    (h, idx.index())
 }
 
 // === impl Index ===
@@ -134,21 +161,78 @@ impl Index {
 
         let servers: Reflect<v1::Server> = watcher(Api::all(client), ListParams::default()).into();
 
+        let (_default_config_tx, default_config_rx) = watch::channel(ServerConfig {
+            protocol: ProxyProtocol::Detect {
+                timeout: time::Duration::from_secs(5),
+            },
+            authorizations: Vec::default(),
+        });
+
         Self {
             nodes,
-            node_ips: HashMap::default(),
             pods,
-            pod_labels: HashMap::default(),
             authorizations,
             servers,
+            node_ips: HashMap::default(),
+            namespaces: HashMap::default(),
+            pod_states: Default::default(),
+            default_config_rx,
+            _default_config_tx,
         }
     }
 
-    fn cidr_to_kubelet_ip(cidr: String) -> Result<IpAddr> {
-        cidr.parse::<IpNet>()?
-            .hosts()
-            .next()
-            .ok_or_else(|| anyhow!("pod CIDR network is empty"))
+    // === Node->IP indexing ===
+
+    fn apply_node(&mut self, node: k8s::core::v1::Node) -> Result<()> {
+        let name = NodeName::from_resource(&node);
+        if let HashEntry::Vacant(entry) = self.node_ips.entry(name) {
+            let ips = Self::kubelet_ips(node)
+                .with_context(|| format!("failed to load kubelet IPs for {}", entry.key()))?;
+            debug!(name = %entry.key(), ?ips, "Adding node");
+            entry.insert(ips);
+        } else {
+            debug!(?node.metadata, "Node already existed");
+        }
+        Ok(())
+    }
+
+    fn delete_node(&mut self, node: k8s::core::v1::Node) -> Result<()> {
+        let name = NodeName::from_resource(&node);
+        if self.node_ips.remove(&name).is_some() {
+            debug!(%name, "Node deleted");
+            Ok(())
+        } else {
+            Err(anyhow!("node {} already deleted", name))
+        }
+    }
+
+    fn reset_nodes(&mut self, nodes: Vec<k8s::core::v1::Node>) -> Result<()> {
+        // Avoid rebuilding data for nodes that have not changed.
+        let mut prior_names = self.node_ips.keys().cloned().collect::<HashSet<_>>();
+
+        let mut result = Ok(());
+        for node in nodes.into_iter() {
+            let name = NodeName::from_resource(&node);
+            if !prior_names.remove(&name) {
+                if let Err(error) = self.apply_node(node) {
+                    warn!(%name, %error, "Failed to apply node");
+                    result = Err(error);
+                }
+            } else {
+                debug!(%name, "Node already existed");
+            }
+        }
+
+        debug!(?prior_names, "Removing defunct nodes");
+        for name in prior_names.into_iter() {
+            let removed = self.node_ips.remove(&name).is_some();
+            debug_assert!(removed, "node must be removable");
+            if !removed {
+                result = Err(anyhow!("node {} already removed", name));
+            }
+        }
+
+        result
     }
 
     fn kubelet_ips(node: k8s::core::v1::Node) -> Result<KubeletIps> {
@@ -170,131 +254,320 @@ impl Index {
         Ok(KubeletIps(addrs.into()))
     }
 
+    fn cidr_to_kubelet_ip(cidr: String) -> Result<IpAddr> {
+        cidr.parse::<IpNet>()
+            .with_context(|| format!("invalid CIDR {}", cidr))?
+            .hosts()
+            .next()
+            .ok_or_else(|| anyhow!("pod CIDR network is empty"))
+    }
+
+    // === Pod->Port->Server indexing ===
+
+    fn apply_pod(&mut self, pod: k8s::core::v1::Pod) -> Result<()> {
+        let ns_name = NsName::from_resource(&pod);
+        let pod_name = PodName::from_resource(&pod);
+        let spec = pod.spec.ok_or_else(|| anyhow!("pod missing spec"))?;
+
+        let NsIndex {
+            ref mut pod_info,
+            ref mut servers,
+        } = self.namespaces.entry(ns_name.clone()).or_default();
+        let pod_states = self.pod_states.entry(ns_name).or_default();
+
+        let info_entry = pod_info.entry(pod_name.clone());
+        let state_entry = pod_states.entry(pod_name);
+        match (info_entry, state_entry) {
+            (HashEntry::Vacant(info_entry), DashEntry::Vacant(pod_entry)) => {
+                let labels = v1::Labels::from(pod.metadata.labels);
+
+                let kubelet = {
+                    let name = spec
+                        .node_name
+                        .map(|n| NodeName(n.into()))
+                        .ok_or_else(|| anyhow!("pod missing node name"))?;
+                    self.node_ips
+                        .get(&name)
+                        .ok_or_else(|| anyhow!("node IP does not exist for node {}", name))?
+                        .clone()
+                };
+
+                let mut port_names = HashMap::<PortName, u16>::new();
+                let mut pod_ports = HashMap::new();
+                for container in spec.containers.into_iter() {
+                    if let Some(ps) = container.ports {
+                        for p in ps.into_iter() {
+                            if p.protocol.map(|p| p == "TCP").unwrap_or(true) {
+                                let port = p.container_port as u16;
+                                if pod_ports.contains_key(&port) {
+                                    debug!(port, "Port duplicated");
+                                    continue;
+                                }
+
+                                let name = p.name.map(Into::into);
+                                if let Some(name) = name.clone() {
+                                    match port_names.entry(name) {
+                                        HashEntry::Occupied(entry) => {
+                                            debug!(name = %entry.key(), "Port name duplicated");
+                                            continue;
+                                        }
+                                        HashEntry::Vacant(entry) => {
+                                            entry.insert(port);
+                                        }
+                                    }
+                                }
+
+                                let (tx, server) = watch::channel(self.default_config_rx.clone());
+                                let lookup = Lookup {
+                                    name,
+                                    server,
+                                    kubelet_ips: kubelet.clone(),
+                                };
+                                pod_ports.insert(port, PodPort { tx, lookup });
+                            }
+                        }
+                    }
+                }
+
+                for server in servers.values() {
+                    let pod_port = match server.port.clone() {
+                        v1::server::Port::Number(p) => pod_ports.get(&p),
+                        v1::server::Port::Name(n) => {
+                            let name: PortName = n.into();
+                            port_names.get(&name).and_then(|p| pod_ports.get(p))
+                        }
+                    };
+                    if let Some(pod_port) = pod_port {
+                        if server.pod_selector.matches(&labels) {
+                            pod_port
+                                .tx
+                                .send(server.rx.clone())
+                                .expect("pod config receiver must be set");
+                        }
+                    }
+                }
+
+                pod_entry.insert(Pod {
+                    servers: pod_ports.into(),
+                });
+                info_entry.insert(PodInfo {
+                    labels,
+                    port_names: port_names.into(),
+                });
+            }
+
+            (HashEntry::Occupied(mut info_entry), DashEntry::Occupied(pod_entry)) => {
+                let labels = v1::Labels::from(pod.metadata.labels);
+
+                if info_entry.get().labels != labels {
+                    for server in servers.values() {
+                        let pod_port = match server.port.clone() {
+                            v1::server::Port::Number(p) => pod_entry.get().servers.get(&p),
+                            v1::server::Port::Name(n) => {
+                                let name: PortName = n.into();
+                                info_entry
+                                    .get()
+                                    .port_names
+                                    .get(&name)
+                                    .and_then(|p| pod_entry.get().servers.get(p))
+                            }
+                        };
+                        if let Some(pod_port) = pod_port {
+                            if server.pod_selector.matches(&labels) {
+                                pod_port
+                                    .tx
+                                    .send(server.rx.clone())
+                                    .expect("pod config receiver must be set");
+                            }
+                        }
+                    }
+
+                    info_entry.get_mut().labels = labels;
+                }
+            }
+
+            _ => unreachable!("pod label and server indexes must be consistent"),
+        }
+
+        Ok(())
+    }
+
+    fn delete_pod(&mut self, pod: k8s::core::v1::Pod) -> Result<()> {
+        let ns_name = NsName::from_resource(&pod);
+        let pod_name = PodName::from_resource(&pod);
+
+        self.pod_states
+            .get_mut(&ns_name)
+            .ok_or_else(|| anyhow!("namespace {} doesn't exist", ns_name))?
+            .remove(&pod_name)
+            .ok_or_else(|| anyhow!("pod {} doesn't exist", pod_name))?;
+
+        self.namespaces
+            .get_mut(&ns_name)
+            .ok_or_else(|| anyhow!("namespace {} doesn't exist", ns_name))?
+            .pod_info
+            .remove(&pod_name)
+            .ok_or_else(|| anyhow!("pod {} doesn't exist", pod_name))?;
+
+        Ok(())
+    }
+
+    fn reset_pods(&mut self, _pods: Vec<k8s::core::v1::Pod>) -> Result<()> {
+        // for pod in pods.into_iter() {
+        //     let ns_name = NsName::from_resource(&pod);
+        //     let pod_name = NsName::from_resource(&pod);
+        //}
+        todo!("Handle pod reset")
+    }
+
+    /*
     fn update_pod(&mut self, pod: k8s::core::v1::Pod) -> Result<Option<(NsName, PodName, Pod)>> {
         let ns_name = NsName::from_resource(&pod);
-        let pod_name = PodName::new(&pod);
+        let pod_name = PodName::from_resource(&pod);
         let spec = pod.spec.ok_or_else(|| anyhow!("pod missing spec"))?;
+
+        let ns = self.namespaces.entry(ns_name.clone()).or_default();
 
         // Pod label changes may alter a pod's policy at
         // runtime. Determine whether there are new labels for
         // this pod before doing any linking.
         let labels = v1::Labels::from(pod.metadata.labels);
-        let _labels = match self
-            .pod_labels
-            .entry(ns_name.clone())
-            .or_default()
-            .entry(pod_name.clone())
-        {
-            hash_map::Entry::Vacant(e) => {
+        match ns.pod_labels.entry(pod_name.clone()) {
+            HashEntry::Vacant(e) => {
                 e.insert(labels.clone());
-                labels
+
+                let kubelet = {
+                    let n = spec
+                        .node_name
+                        .map(|n| NodeName(n.into()))
+                        .ok_or_else(|| anyhow!("pod missing node name"))?;
+                    self.node_ips
+                        .get(&n)
+                        .ok_or_else(|| anyhow!("node IP does not exist for node {}", n))?
+                        .clone()
+                };
+
+                // Enumerate all ports on this pod.
+                let mut ports = HashSet::<u16>::new();
+                let mut port_names = HashMap::new();
+                for container in spec.containers.into_iter() {
+                    if let Some(ps) = container.ports {
+                        for port in ps.into_iter() {
+                            if port.protocol.map(|p| p == "TCP").unwrap_or(true) {
+                                let name = port.name;
+                                let port = port.container_port as u16;
+                                if !ports.insert(port) {
+                                    debug!(port, "Port duplicated");
+                                }
+                                if let Some(name) = name {
+                                    match port_names.entry(name.clone()) {
+                                        HashEntry::Occupied(_) => {
+                                            debug!(%name, "Port duplicated");
+                                        }
+                                        HashEntry::Vacant(entry) => {
+                                            entry.insert(port);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Find server configs that
+                let mut servers = HashMap::with_capacity(ports.len());
+                for server in ns.servers.values() {
+                    if server.pod_selector.matches(&labels) {
+                        let port = match server.port {
+                            v1::server::Port::Name(ref n) => port_names.get(n).copied(),
+                            v1::server::Port::Number(ref p) => {
+                                if ports.contains(p) {
+                                    Some(*p)
+                                } else {
+                                    None
+                                }
+                            }
+                        };
+                        if let Some(port) = port {
+                            servers.insert(port, server.rx.clone());
+                        }
+                    }
+                }
+
+                let pod = Pod {
+                    kubelet,
+                    servers: Arc::new(servers),
+                };
             }
-            hash_map::Entry::Occupied(mut e) => {
-                if e.get() == &labels {
+            HashEntry::Occupied(mut e) => {
+                if e.get() == &pl {
+                    // The pod is unchanged so don't bother computing updated information.
                     return Ok(None);
                 } else {
-                    e.insert(labels.clone());
-                    labels
+                    e.insert(pl.clone());
+                    pl
                 }
             }
         };
 
-        let kubelet = {
-            let n = spec
-                .node_name
-                .map(|n| NodeName(n.into()))
-                .ok_or_else(|| anyhow!("pod missing node name"))?;
-            self.node_ips
-                .get(&n)
-                .ok_or_else(|| anyhow!("node IP does not exist for node {}", n))?
-                .clone()
-        };
-
-        let servers = Arc::new(HashMap::default());
-
-        // TODO discover servers for port.
-
-        let pod = Pod { kubelet, servers };
-
         Ok(Some((ns_name, pod_name, pod)))
     }
+    */
 
-    #[instrument(skip(self, pod_ports), fields(result))]
-    async fn index(mut self, Handle { pod_ports }: Handle) -> Error {
+    #[instrument(skip(self), fields(result))]
+    async fn index(mut self) -> Error {
         loop {
             tokio::select! {
                 // Track the kubelet IPs for all nodes.
-                up = self.nodes.recv() => match up {
-                    watcher::Event::Applied(node) => {
-                        let n = NodeName::new(&node);
-                        if let hash_map::Entry::Vacant(entry) = self.node_ips.entry(n)  {
-                            match Self::kubelet_ips(node) {
-                                Ok(ips) => {
-                                    entry.insert(ips);
-                                }
-                                Err(error) => warn!(%error, "Failed to load kubelet IPs"),
-                            }
-                        }
+                up = self.nodes.recv() => {
+                    let res = match up {
+                        watcher::Event::Applied(node) => self.apply_node(node),
+                        watcher::Event::Deleted(node) => self.delete_node(node),
+                        watcher::Event::Restarted(nodes) => self.reset_nodes(nodes),
+                    };
+                    if let Err(error) = res {
+                        debug!(%error);
                     }
-                    watcher::Event::Deleted(node) => {
-                        let n = NodeName::new(&node);
-                        self.node_ips.remove(&n);
-                    }
-                    watcher::Event::Restarted(nodes) => {
-                        let mut old_names = self.node_ips.keys().cloned().collect::<HashSet<_>>();
-                        for node in nodes.into_iter() {
-                            let n = NodeName::new(&node);
-                            if !old_names.remove(&n) {
-                                match Self::kubelet_ips(node) {
-                                    Ok(ips) => {
-                                        self.node_ips.insert(n, ips);
-                                    }
-                                    Err(error) => warn!(node = %n, %error, "Failed to load kubelet IPs"),
-                                }
-                            }
-                        }
-                        for n in old_names.into_iter() {
-                            self.node_ips.remove(&n);
-                        }
-                    }
-                },
+                }
 
-                up = self.pods.recv() => match up {
-                    watcher::Event::Applied(pod) => {
-                        match self.update_pod(pod) {
-                            Ok(None) => {}
-                            Ok(Some((ns, pn, pod))) => {
-                                pod_ports.entry(ns).or_default().insert(pn, pod);
-                            }
-                            Err(error) => warn!(%error, "Could not update pod"),
-                        }
+                up = self.pods.recv() => {
+                    let res = match up {
+                        watcher::Event::Applied(pod) => self.apply_pod(pod),
+                        watcher::Event::Deleted(pod) => self.delete_pod(pod),
+                        watcher::Event::Restarted(pods) => self.reset_pods(pods),
+                    };
+                    if let Err(error) = res {
+                        debug!(%error);
                     }
-
-                    watcher::Event::Deleted(pod) => {
-                        let ns = NsName::from_resource(&pod);
-                        let pn = PodName::new(&pod);
-                        if let Some(pods) = self.pod_labels.get_mut(&ns) {
-                            pods.remove(&pn);
-                        }
-                        if let Some(pods) = pod_ports.get_mut(&ns) {
-                            pods.remove(&pn);
-                        }
-                        // Dropping the pod port should indicate to all watchers
-                        // that no further updates are possible.
-                    }
-
-                    watcher::Event::Restarted(pods) => {
-                        for pod in pods.into_iter() {
-                            let _n = NsName::from_resource(&pod);
-                            todo!("Handle ns delete")
-                        }
-                    }
-                },
+                }
 
                 up = self.servers.rx.recv() => match up {
                     watcher::Event::Applied(srv) => {
-                        let _n = NsName::from_resource(&srv);
-                        todo!("Handle srv apply")
+                        let ns_name = NsName::from_resource(&srv);
+                        let srv_name = SrvName::from_resource(&srv);
+                        let labels = v1::Labels::from(srv.metadata.labels);
+                        let ns = self.namespaces.entry(ns_name).or_default();
+                        match ns.servers.entry(srv_name) {
+                            HashEntry::Occupied(mut entry) => {
+                                entry.get_mut().labels = labels;
+                                todo!("Update pods");
+                            }
+                            HashEntry::Vacant(entry) => {
+                                fn new_server_config() -> ServerConfig {
+                                    todo!("build a server config");
+                                }
+                                let (tx, rx) = watch::channel(new_server_config());
+                                entry.insert(Server {
+                                    port: srv.spec.port,
+                                    pod_selector: srv.spec.pod_selector,
+                                    labels,
+                                    tx,
+                                    rx,
+                                });
+                                todo!("Update pods");
+                            }
+                        }
+
                     }
 
                     watcher::Event::Deleted(srv) => {
@@ -383,20 +656,22 @@ where
 // === impl Handle ===
 
 impl Handle {
-    pub async fn lookup(
-        &self,
-        _ns: &str,
-        _name: &str,
-        _port: u16,
-    ) -> Option<watch::Receiver<watch::Receiver<ServerConfig>>> {
-        todo!("Support lookup")
+    pub fn lookup(&self, ns: NsName, name: PodName, port: u16) -> Option<Lookup> {
+        let ns = self.0.get(&ns)?;
+        let pod = ns.get(&name)?;
+        let server = pod.servers.get(&port)?;
+        Some(server.lookup.clone())
     }
+}
+
+trait FromResource<T> {
+    fn from_resource(resource: &T) -> Self;
 }
 
 // === NodeName ===
 
-impl NodeName {
-    fn new(n: &k8s::core::v1::Node) -> Self {
+impl FromResource<k8s::core::v1::Node> for NodeName {
+    fn from_resource(n: &k8s::core::v1::Node) -> Self {
         Self(n.name().into())
     }
 }
@@ -409,9 +684,14 @@ impl fmt::Display for NodeName {
 
 // === NsName ===
 
-impl NsName {
-    fn from_resource<T: Resource>(t: &T) -> Self {
-        let ns = t.namespace().unwrap_or_else(|| "default".into());
+impl<T: Resource> FromResource<T> for NsName {
+    fn from_resource(t: &T) -> Self {
+        t.namespace().unwrap_or_else(|| "default".into()).into()
+    }
+}
+
+impl<T: Into<Arc<str>>> From<T> for NsName {
+    fn from(ns: T) -> Self {
         Self(ns.into())
     }
 }
@@ -424,9 +704,15 @@ impl fmt::Display for NsName {
 
 // === PodName ===
 
-impl PodName {
-    fn new(p: &k8s::core::v1::Pod) -> Self {
+impl FromResource<k8s::core::v1::Pod> for PodName {
+    fn from_resource(p: &k8s::core::v1::Pod) -> Self {
         Self(p.name().into())
+    }
+}
+
+impl<T: Into<Arc<str>>> From<T> for PodName {
+    fn from(pod: T) -> Self {
+        Self(pod.into())
     }
 }
 
@@ -436,7 +722,27 @@ impl fmt::Display for PodName {
     }
 }
 
+// === PortName ===
+
+impl<T: Into<Arc<str>>> From<T> for PortName {
+    fn from(p: T) -> Self {
+        Self(p.into())
+    }
+}
+
+impl fmt::Display for PortName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 // === SrvName ===
+
+impl FromResource<v1::Server> for SrvName {
+    fn from_resource(s: &v1::Server) -> Self {
+        Self(s.name().into())
+    }
+}
 
 impl fmt::Display for SrvName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

@@ -1,5 +1,6 @@
-use crate::index;
+use crate::index::{Handle, KubeletIps, Lookup, NsName, PodName, ServerConfig};
 use futures::prelude::*;
+use tokio_stream::wrappers::WatchStream;
 
 pub mod proto {
     tonic::include_proto!("polixy.olix0r.net");
@@ -11,12 +12,12 @@ pub mod proto {
 
 #[derive(Clone, Debug)]
 pub struct Grpc {
-    index: index::Handle,
+    index: Handle,
     drain: linkerd_drain::Watch,
 }
 
 impl Grpc {
-    pub fn new(index: index::Handle, drain: linkerd_drain::Watch) -> Self {
+    pub fn new(index: Handle, drain: linkerd_drain::Watch) -> Self {
         Self { index, drain }
     }
 
@@ -53,7 +54,7 @@ impl proto::Service for Grpc {
                     workload
                 )));
             }
-            (parts[0], parts[1])
+            (NsName::from(parts[0]), PodName::from(parts[1]))
         };
 
         // Ensure that the port is in the valid range.
@@ -74,24 +75,31 @@ impl proto::Service for Grpc {
         // seems unlikely for a pod to request its config for the pod's
         // existence has been observed; but it's certainly possible (especially
         // if the index is recovering).
-        let watch = self
+        let Lookup {
+            name: _,
+            kubelet_ips,
+            server,
+        } = self
             .index
-            .lookup(ns, name, port)
-            .await
-            .map(tokio_stream::wrappers::WatchStream::new)
+            .lookup(ns.clone(), name.clone(), port)
             .ok_or_else(|| {
                 tonic::Status::not_found(format!(
                     "unknown pod ns={} name={} port={}",
                     ns, name, port
                 ))
-            })?
-            .map(tokio_stream::wrappers::WatchStream::new)
-            .flat_map(|updates| updates.map(to_config).map(Ok));
+            })?;
+
+        let watch = WatchStream::new(server)
+            .map(WatchStream::new)
+            .flat_map(move |updates| {
+                let ips = kubelet_ips.clone();
+                updates.map(move |c| to_config(&ips, c)).map(Ok)
+            });
 
         Ok(tonic::Response::new(Box::pin(watch)))
     }
 }
 
-fn to_config(_s: index::ServerConfig) -> proto::InboundProxyConfig {
+fn to_config(_k: &KubeletIps, _s: ServerConfig) -> proto::InboundProxyConfig {
     todo!("Convert server to config")
 }

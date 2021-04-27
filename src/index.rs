@@ -35,24 +35,34 @@ pub struct PodName(Arc<str>);
 pub struct PortName(Arc<str>);
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub enum ServerPort {
+    Number(u16),
+    Name(PortName),
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 struct SrvName(Arc<str>);
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+struct AuthzName(Arc<str>);
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct KubeletIps(Arc<Vec<IpAddr>>);
 
-type SharedPodMap = Arc<DashMap<NsName, DashMap<PodName, Pod>>>;
+type SharedLookupMap = Arc<DashMap<NsName, DashMap<PodName, Arc<HashMap<u16, Lookup>>>>>;
 
 #[derive(Clone, Debug)]
-pub struct Handle(SharedPodMap);
+pub struct Handle(SharedLookupMap);
 
 struct Index {
     nodes: Watch<k8s::core::v1::Node>,
     pods: Watch<k8s::core::v1::Pod>,
-    servers: Reflect<v1::Server>,
-    authorizations: Reflect<v1::Authorization>,
+    servers: Watch<v1::Server>,
+    authorizations: Watch<v1::Authorization>,
+
     node_ips: HashMap<NodeName, KubeletIps>,
     namespaces: HashMap<NsName, NsIndex>,
-    pod_states: SharedPodMap,
+    lookups: SharedLookupMap,
 
     default_config_rx: watch::Receiver<ServerConfig>,
     _default_config_tx: watch::Sender<ServerConfig>,
@@ -62,15 +72,18 @@ struct Index {
 struct NsIndex {
     /// Caches pod labels so we can differentiate innocuous updates (like status
     /// changes) from label changes that could impact server indexing.
-    pod_info: HashMap<PodName, PodInfo>,
+    pods: HashMap<PodName, Pod>,
 
     /// Caches a watch for each server.
     servers: HashMap<SrvName, Server>,
+
+    authzs: HashMap<AuthzName, AuthzMeta>,
 }
 
 #[derive(Debug)]
-struct PodInfo {
+struct Pod {
     port_names: Arc<HashMap<PortName, u16>>,
+    port_lookups: Arc<HashMap<u16, watch::Sender<watch::Receiver<ServerConfig>>>>,
     labels: v1::Labels,
 }
 
@@ -88,13 +101,19 @@ pub enum ProxyProtocol {
     Grpc,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
+pub struct AuthzMeta {
+    pub server_selector: v1::labels::Selector,
+    pub authz: Arc<Authz>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
 pub struct Authz {
     pub networks: Vec<IpNet>,
     pub tls: Option<Tls>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Tls {
     pub identities: Vec<Vec<String>>,
     pub suffixes: Vec<Vec<String>>,
@@ -102,7 +121,7 @@ pub struct Tls {
 
 #[derive(Debug)]
 struct Server {
-    port: v1::server::Port,
+    port: ServerPort,
     pod_selector: v1::labels::Selector,
     protocol: ProxyProtocol,
     labels: v1::Labels,
@@ -111,14 +130,13 @@ struct Server {
 }
 
 #[derive(Debug)]
-pub struct Pod {
-    servers: Arc<HashMap<u16, PodPort>>,
+pub struct PodLookups {
+    servers: Arc<HashMap<u16, Lookup>>,
 }
 
 #[derive(Debug)]
 pub struct PodPort {
     lookup: Lookup,
-    tx: watch::Sender<watch::Receiver<ServerConfig>>,
 }
 
 #[derive(Clone, Debug)]
@@ -128,20 +146,11 @@ pub struct Lookup {
     pub server: watch::Receiver<watch::Receiver<ServerConfig>>,
 }
 
-struct Reflect<T>
-where
-    T: Resource + 'static,
-    T::DynamicType: Eq + Hash,
-{
-    cache: reflector::Store<T>,
-    rx: Watch<T>,
-}
-
 struct Watch<T>(Pin<Box<dyn Stream<Item = watcher::Result<watcher::Event<T>>> + Send + 'static>>);
 
 pub fn run(client: kube::Client) -> (Handle, impl Future<Output = Error>) {
     let idx = Index::new(client);
-    let h = Handle(idx.pod_states.clone());
+    let h = Handle(idx.lookups.clone());
     (h, idx.index())
 }
 
@@ -157,10 +166,10 @@ impl Index {
         let pods: Watch<k8s::core::v1::Pod> =
             watcher(Api::all(client.clone()), ListParams::default()).into();
 
-        let authorizations: Reflect<v1::Authorization> =
+        let authorizations: Watch<v1::Authorization> =
             watcher(Api::all(client.clone()), ListParams::default()).into();
 
-        let servers: Reflect<v1::Server> = watcher(Api::all(client), ListParams::default()).into();
+        let servers: Watch<v1::Server> = watcher(Api::all(client), ListParams::default()).into();
 
         let (_default_config_tx, default_config_rx) = watch::channel(ServerConfig {
             protocol: ProxyProtocol::Detect {
@@ -176,7 +185,7 @@ impl Index {
             servers,
             node_ips: HashMap::default(),
             namespaces: HashMap::default(),
-            pod_states: Default::default(),
+            lookups: Default::default(),
             default_config_rx,
             _default_config_tx,
         }
@@ -209,7 +218,7 @@ impl Index {
                     }
                 }
 
-                up = self.servers.rx.recv() => match up {
+                up = self.servers.recv() => match up {
                     watcher::Event::Applied(srv) => self.apply_server(srv),
 
                     watcher::Event::Deleted(srv) => {
@@ -225,7 +234,7 @@ impl Index {
                     }
                 },
 
-                up = self.authorizations.rx.recv() => match up {
+                up = self.authorizations.recv() => match up {
                     watcher::Event::Applied(authz) => {
                         let _n = NsName::from_resource(&authz);
                         todo!("Handle authz apply")
@@ -246,6 +255,7 @@ impl Index {
             }
         }
     }
+
     // === Node->IP indexing ===
 
     fn apply_node(&mut self, node: k8s::core::v1::Node) -> Result<()> {
@@ -335,15 +345,14 @@ impl Index {
         let spec = pod.spec.ok_or_else(|| anyhow!("pod missing spec"))?;
 
         let NsIndex {
-            ref mut pod_info,
+            ref mut pods,
             ref mut servers,
+            ..
         } = self.namespaces.entry(ns_name.clone()).or_default();
-        let pod_states = self.pod_states.entry(ns_name).or_default();
+        let lookups = self.lookups.entry(ns_name).or_default();
 
-        let info_entry = pod_info.entry(pod_name.clone());
-        let state_entry = pod_states.entry(pod_name);
-        match (info_entry, state_entry) {
-            (HashEntry::Vacant(info_entry), DashEntry::Vacant(pod_entry)) => {
+        match (pods.entry(pod_name.clone()), lookups.entry(pod_name)) {
+            (HashEntry::Vacant(pod_entry), DashEntry::Vacant(lookups_entry)) => {
                 let labels = v1::Labels::from(pod.metadata.labels);
 
                 let kubelet = {
@@ -357,14 +366,15 @@ impl Index {
                         .clone()
                 };
 
-                let mut port_names = HashMap::<PortName, u16>::new();
-                let mut pod_ports = HashMap::new();
+                let mut port_names = HashMap::new();
+                let mut port_txs = HashMap::new();
+                let mut lookups = HashMap::new();
                 for container in spec.containers.into_iter() {
                     if let Some(ps) = container.ports {
                         for p in ps.into_iter() {
                             if p.protocol.map(|p| p == "TCP").unwrap_or(true) {
                                 let port = p.container_port as u16;
-                                if pod_ports.contains_key(&port) {
+                                if port_txs.contains_key(&port) {
                                     debug!(port, "Port duplicated");
                                     continue;
                                 }
@@ -388,66 +398,57 @@ impl Index {
                                     server,
                                     kubelet_ips: kubelet.clone(),
                                 };
-                                pod_ports.insert(port, PodPort { tx, lookup });
+                                port_txs.insert(port, tx);
+                                lookups.insert(port, lookup);
                             }
                         }
                     }
                 }
 
                 for server in servers.values() {
-                    let pod_port = match server.port.clone() {
-                        v1::server::Port::Number(p) => pod_ports.get(&p),
-                        v1::server::Port::Name(n) => {
-                            let name: PortName = n.into();
-                            port_names.get(&name).and_then(|p| pod_ports.get(p))
-                        }
+                    let tx = match server.port {
+                        ServerPort::Number(ref p) => port_txs.get(p),
+                        ServerPort::Name(ref n) => port_names.get(n).and_then(|p| port_txs.get(p)),
                     };
-                    if let Some(pod_port) = pod_port {
+                    if let Some(tx) = tx {
                         if server.pod_selector.matches(&labels) {
-                            pod_port
-                                .tx
-                                .send(server.rx.clone())
+                            tx.send(server.rx.clone())
                                 .expect("pod config receiver must be set");
                         }
                     }
                 }
 
+                lookups_entry.insert(Arc::new(lookups));
                 pod_entry.insert(Pod {
-                    servers: pod_ports.into(),
-                });
-                info_entry.insert(PodInfo {
-                    labels,
                     port_names: port_names.into(),
+                    port_lookups: port_txs.into(),
+                    labels,
                 });
             }
 
-            (HashEntry::Occupied(mut info_entry), DashEntry::Occupied(pod_entry)) => {
+            (HashEntry::Occupied(mut pod_entry), DashEntry::Occupied(_)) => {
                 let labels = v1::Labels::from(pod.metadata.labels);
 
-                if info_entry.get().labels != labels {
+                if pod_entry.get().labels != labels {
                     for server in servers.values() {
-                        let pod_port = match server.port.clone() {
-                            v1::server::Port::Number(p) => pod_entry.get().servers.get(&p),
-                            v1::server::Port::Name(n) => {
-                                let name: PortName = n.into();
-                                info_entry
-                                    .get()
-                                    .port_names
-                                    .get(&name)
-                                    .and_then(|p| pod_entry.get().servers.get(p))
-                            }
+                        let tx = match server.port {
+                            ServerPort::Number(ref p) => pod_entry.get().port_lookups.get(p),
+                            ServerPort::Name(ref n) => pod_entry
+                                .get()
+                                .port_names
+                                .get(n)
+                                .and_then(|p| pod_entry.get().port_lookups.get(p)),
                         };
-                        if let Some(pod_port) = pod_port {
+
+                        if let Some(tx) = tx {
                             if server.pod_selector.matches(&labels) {
-                                pod_port
-                                    .tx
-                                    .send(server.rx.clone())
+                                tx.send(server.rx.clone())
                                     .expect("pod config receiver must be set");
                             }
                         }
                     }
 
-                    info_entry.get_mut().labels = labels;
+                    pod_entry.get_mut().labels = labels;
                 }
             }
 
@@ -464,16 +465,16 @@ impl Index {
     }
 
     fn rm_pod(&mut self, ns: &NsName, pod: &PodName) -> Result<()> {
-        self.pod_states
-            .get_mut(&ns)
-            .ok_or_else(|| anyhow!("namespace {} doesn't exist", ns))?
-            .remove(&pod)
-            .ok_or_else(|| anyhow!("pod {} doesn't exist", pod))?;
-
         self.namespaces
             .get_mut(&ns)
             .ok_or_else(|| anyhow!("namespace {} doesn't exist", ns))?
-            .pod_info
+            .pods
+            .remove(&pod)
+            .ok_or_else(|| anyhow!("pod {} doesn't exist", pod))?;
+
+        self.lookups
+            .get_mut(&ns)
+            .ok_or_else(|| anyhow!("namespace {} doesn't exist", ns))?
             .remove(&pod)
             .ok_or_else(|| anyhow!("pod {} doesn't exist", pod))?;
 
@@ -486,7 +487,7 @@ impl Index {
             .iter()
             .map(|(n, ns)| {
                 let pods = ns
-                    .pod_info
+                    .pods
                     .iter()
                     .map(|(n, p)| (n.clone(), p.labels.clone()))
                     .collect::<HashMap<_, _>>();
@@ -507,6 +508,7 @@ impl Index {
                     }
                 }
             }
+
             if let Err(error) = self.apply_pod(pod) {
                 result = Err(error);
             }
@@ -530,28 +532,58 @@ impl Index {
         let srv_name = SrvName::from_resource(&srv);
         let labels = v1::Labels::from(srv.metadata.labels);
 
-        let namespace = self.namespaces.entry(ns_name).or_default();
-        match namespace.servers.entry(srv_name) {
+        let NsIndex {
+            ref pods,
+            ref authzs,
+            ref mut servers,
+        } = self.namespaces.entry(ns_name.clone()).or_default();
+
+        let port = match srv.spec.port {
+            v1::server::Port::Number(n) => ServerPort::Number(n),
+            v1::server::Port::Name(n) => ServerPort::Name(n.into()),
+        };
+
+        match servers.entry(srv_name) {
             HashEntry::Occupied(mut entry) => {
                 let s = entry.get_mut();
                 let protocol = Self::mk_protocol(srv.spec.proxy_protocol.as_ref());
 
-                if s.labels != labels || s.port != srv.spec.port || s.protocol != protocol {
+                // If something about the server changed, we need to update the
+                // config to reflect the change.
+                if s.labels != labels || s.protocol != protocol {
+                    // NB: Only a single task applies server updates, so it's
+                    // okay to borrow a version, modify, and send it.  We don't
+                    // need a lock because serialization is guaranteed.
+                    let mut config = s.rx.borrow().clone();
+
                     if s.labels != labels {
+                        config.authorizations = authzs
+                            .values()
+                            .filter_map(|a| {
+                                if a.server_selector.matches(&labels) {
+                                    Some(a.authz.clone())
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect::<Vec<_>>();
                         s.labels = labels;
-                        todo!("Update authorizations")
                     }
 
-                    s.port = srv.spec.port;
+                    config.protocol = protocol.clone();
                     s.protocol = protocol;
 
-                    let config = s.rx.borrow().clone();
                     s.tx.send(config).expect("server update must succeed");
                 }
 
-                if s.pod_selector == srv.spec.pod_selector {
-                    s.pod_selector = srv.spec.pod_selector;
+                // If the pod/port selector didn't change, we don't need to
+                // refresh the index.
+                if s.pod_selector == srv.spec.pod_selector && s.port == port {
+                    return;
                 }
+
+                s.pod_selector = srv.spec.pod_selector;
+                s.port = port;
             }
 
             HashEntry::Vacant(entry) => {
@@ -563,15 +595,35 @@ impl Index {
                     protocol: protocol.clone(),
                     authorizations: authzs(),
                 });
-                let _s = entry.insert(Server {
-                    port: srv.spec.port,
+                entry.insert(Server {
+                    port,
                     pod_selector: srv.spec.pod_selector,
                     protocol,
                     labels,
                     tx,
                     rx,
                 });
-                todo!("Update pods")
+            }
+        }
+
+        // If we've updated the server->pod selection, then we need to reindex
+        // all pods and servers.
+        for pod in pods.values() {
+            for srv in servers.values() {
+                let tx = match srv.port {
+                    ServerPort::Number(ref p) => pod.port_lookups.get(p),
+                    ServerPort::Name(ref n) => {
+                        pod.port_names.get(&n).and_then(|p| pod.port_lookups.get(p))
+                    }
+                };
+
+                if let Some(tx) = tx {
+                    if srv.pod_selector.matches(&pod.labels) {
+                        // It's up to the lookup stream to de-duplicate updates.
+                        tx.send(srv.rx.clone())
+                            .expect("pod config receiver is held");
+                    }
+                }
             }
         }
     }
@@ -585,22 +637,6 @@ impl Index {
             Some(v1::server::ProxyProtocol::Http) => ProxyProtocol::Http,
             Some(v1::server::ProxyProtocol::Grpc) => ProxyProtocol::Grpc,
         }
-    }
-}
-
-// === impl Reflect ===
-
-impl<T, W> From<W> for Reflect<T>
-where
-    T: Resource + Clone + DeserializeOwned + fmt::Debug + Send + Sync + 'static,
-    T::DynamicType: Clone + Eq + Hash + Default,
-    W: Stream<Item = watcher::Result<watcher::Event<T>>> + Send + 'static,
-{
-    fn from(watch: W) -> Self {
-        let store = reflector::store::Writer::<T>::default();
-        let cache = store.as_reader();
-        let rx = Watch(reflector(store, watch).boxed());
-        Self { cache, rx }
     }
 }
 
@@ -641,8 +677,8 @@ impl Handle {
     pub fn lookup(&self, ns: NsName, name: PodName, port: u16) -> Option<Lookup> {
         let ns = self.0.get(&ns)?;
         let pod = ns.get(&name)?;
-        let server = pod.servers.get(&port)?;
-        Some(server.lookup.clone())
+        let lookup = pod.get(&port)?;
+        Some(lookup.clone())
     }
 }
 

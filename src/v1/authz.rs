@@ -13,9 +13,15 @@ use serde::{Deserialize, Serialize};
 #[derive(CustomResource, Deserialize, Serialize, Clone, Debug, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct AuthorizationSpec {
-    server_selector: labels::Selector,
+    sever: Server,
     authenticated: Option<Authenticated>,
     unauthenticated: Option<Unauthenticated>,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
+pub struct Server {
+    name: Option<String>,
+    selector: Option<labels::Selector>,
 }
 
 /// Describes an authenticated client.
@@ -27,22 +33,17 @@ pub struct Authenticated {
     /// Indicates a Linkerd identity that is authorized to access a server.
     identities: Option<Vec<String>>,
     /// Identifies a `ServiceAccount` authorized to access a server.
-    service_accounts: Option<Vec<ServiceAccount>>,
+    service_account_refs: Option<Vec<ServiceAccountRef>>,
 }
 
-/// References Kubernetes `ServiceAccount` instances.
+/// References a Kubernetes `ServiceAccount` instance.
 ///
 /// If no namespace is specified, the `Authorization`'s namespace is used.
-///
-/// Exactly one of `name`, `match_labels`, or `match_expressions` should be set.
 #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct ServiceAccount {
-    namespace: String,
-    name: Option<String>,
-
-    #[serde(flatten)]
-    selector: labels::Selector,
+pub struct ServiceAccountRef {
+    namespace: Option<String>,
+    name: String,
 }
 
 /// Describes an unauthenticated client.

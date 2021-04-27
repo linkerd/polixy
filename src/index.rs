@@ -124,6 +124,7 @@ struct Server {
     pod_selector: v1::labels::Selector,
     protocol: ProxyProtocol,
     labels: v1::Labels,
+    //authorizations: HashMap<AuthzName, Arc<Authz>>,
     rx: watch::Receiver<ServerConfig>,
     tx: watch::Sender<ServerConfig>,
 }
@@ -637,6 +638,27 @@ impl Index {
             Some(v1::server::ProxyProtocol::Grpc) => ProxyProtocol::Grpc,
         }
     }
+
+    // === Authorization indexing ===
+
+    fn apply_authz(&mut self, authz: v1::Authorization) {
+        let ns_name = NsName::from_resource(&authz);
+        let authz_name = AuthzName::from_resource(&authz);
+
+        let NsIndex { ref mut authzs, .. } = self.namespaces.entry(ns_name).or_default();
+
+        match authzs.entry(authz_name) {
+            HashEntry::Vacant(entry) => {
+                entry.insert(AuthzMeta {
+                    server_selector: authz.spec.server_selector,
+                    authz: Arc::new(Authz {
+                        networks: authz.spec.
+                    })
+                });
+            }
+            HashEntry::Occupied(_) => todo!("update authz"),
+        }
+    }
 }
 
 // === impl Watch ===
@@ -762,6 +784,20 @@ impl FromResource<v1::Server> for SrvName {
 }
 
 impl fmt::Display for SrvName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+// === AuthzName ===
+
+impl FromResource<v1::Authorization> for AuthzName {
+    fn from_resource(s: &v1::Authorization) -> Self {
+        Self(s.name().into())
+    }
+}
+
+impl fmt::Display for AuthzName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
     }

@@ -47,10 +47,20 @@ struct AuthzName(Arc<str>);
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct KubeletIps(Arc<Vec<IpAddr>>);
 
+#[derive(Clone, Debug)]
+pub struct Handle(SharedLookupMap);
+
 type SharedLookupMap = Arc<DashMap<NsName, DashMap<PodName, Arc<HashMap<u16, Lookup>>>>>;
 
 #[derive(Clone, Debug)]
-pub struct Handle(SharedLookupMap);
+pub struct Lookup {
+    pub name: Option<PortName>,
+    pub kubelet_ips: KubeletIps,
+
+    /// Each pod-port has a watch for servers; and then the server config can be
+    /// updated as its authorizations change.
+    pub server: watch::Receiver<watch::Receiver<ServerConfig>>,
+}
 
 struct Index {
     /// Cached Node IPs.
@@ -157,41 +167,46 @@ pub struct PodLookups {
     servers: Arc<HashMap<u16, Lookup>>,
 }
 
-#[derive(Clone, Debug)]
-pub struct Lookup {
-    pub name: Option<PortName>,
-    pub kubelet_ips: KubeletIps,
-    pub server: watch::Receiver<watch::Receiver<ServerConfig>>,
-}
-
 pub fn run(client: kube::Client) -> (Handle, impl Future<Output = Error>) {
-    let idx = Index::new(client);
-    let h = Handle(idx.lookups.clone());
-    (h, idx.index())
+    let lookups = SharedLookupMap::default();
+
+    // Watches Nodes, Pods, Servers, and Authorizations to update the lookup map
+    // with an entry for each linkerd-injected pod.
+    let idx = Index::new(
+        watcher(Api::all(client.clone()), ListParams::default()).into(),
+        watcher(
+            Api::all(client.clone()),
+            ListParams::default().labels("linkerd.io/control-plane-ns"),
+        )
+        .into(),
+        watcher(Api::all(client.clone()), ListParams::default()).into(),
+        watcher(Api::all(client), ListParams::default()).into(),
+        lookups.clone(),
+    );
+
+    (Handle(lookups), idx.index())
 }
 
 // === impl Index ===
 
 impl Index {
-    fn new(client: kube::Client) -> Self {
-        // Needed to know the CIDR for each node (so that connections from kubelet
-        // may be authorized).
-        let nodes: Watch<k8s::core::v1::Node> =
-            watcher(Api::all(client.clone()), ListParams::default()).into();
-
-        let pods: Watch<k8s::core::v1::Pod> =
-            watcher(Api::all(client.clone()), ListParams::default()).into();
-
-        let authorizations: Watch<v1::Authorization> =
-            watcher(Api::all(client.clone()), ListParams::default()).into();
-
-        let servers: Watch<v1::Server> = watcher(Api::all(client), ListParams::default()).into();
-
+    fn new(
+        nodes: Watch<k8s::core::v1::Node>,
+        pods: Watch<k8s::core::v1::Pod>,
+        servers: Watch<v1::Server>,
+        authorizations: Watch<v1::Authorization>,
+        lookups: SharedLookupMap,
+    ) -> Self {
+        // A default config to be provided to pods when no matching server
+        // exists.
         let (_default_config_tx, default_config_rx) = watch::channel(ServerConfig {
             protocol: ProxyProtocol::Detect {
                 timeout: time::Duration::from_secs(5),
             },
-            authorizations: Vec::default(),
+            authorizations: vec![
+                // Permit all traffic when a `Server` instance is not present.
+                Arc::new(Authz::Unauthenticated(vec!["0.0.0.0/0".parse().unwrap()])),
+            ],
         });
 
         Self {
@@ -199,14 +214,22 @@ impl Index {
             pods,
             authorizations,
             servers,
+            lookups,
             node_ips: HashMap::default(),
             namespaces: HashMap::default(),
-            lookups: Default::default(),
+
             default_config_rx,
             _default_config_tx,
         }
     }
 
+    /// Drives indexing for all resource types.
+    ///
+    /// This is all driven on a single task, so it's not necessary for any of the
+    /// indexing logic to worry about concurrent access for the internal indexing
+    /// structures.  All updates are published to the shared `lookups` map after
+    /// indexing ocrurs; but the indexing task is soley responsible for mutating
+    /// it. The associated `Handle` is used for reads against this.
     #[instrument(skip(self), fields(result))]
     async fn index(mut self) -> Error {
         loop {
@@ -709,12 +732,17 @@ impl Index {
         if ns.servers.remove(&srv_name).is_none() {
             bail!("removing non-existent server {}", srv_name);
         }
+
+        // Reset the server config for all pods that were using this server.
         for pod in ns.pods.values_mut() {
             for port in pod.port_lookups.values() {
-                *port.server_name.lock() = None;
-                port.tx
-                    .send(self.default_config_rx.clone())
-                    .expect("pod config receiver must still be held")
+                let mut sn = port.server_name.lock();
+                if sn.as_ref() == Some(&srv_name) {
+                    *sn = None;
+                    port.tx
+                        .send(self.default_config_rx.clone())
+                        .expect("pod config receiver must still be held");
+                }
             }
         }
 

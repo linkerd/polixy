@@ -9,6 +9,7 @@ use kube::{
     Api,
 };
 use kube_runtime::watcher;
+use parking_lot::Mutex;
 use serde::de::DeserializeOwned;
 use std::{
     collections::{hash_map::Entry as HashEntry, HashMap, HashSet},
@@ -54,17 +55,26 @@ type SharedLookupMap = Arc<DashMap<NsName, DashMap<PodName, Arc<HashMap<u16, Loo
 pub struct Handle(SharedLookupMap);
 
 struct Index {
+    /// Cached Node IPs.
+    node_ips: HashMap<NodeName, KubeletIps>,
+
+    /// Holds per-namespace pod/server/authorization indexes.
+    namespaces: HashMap<NsName, NsIndex>,
+
+    /// A shared map containing watches for all pods.  API clients simply
+    /// retrieve watches from this pre-populated map.
+    lookups: SharedLookupMap,
+
+    /// A default server config to use when no server matches.
+    default_config_rx: watch::Receiver<ServerConfig>,
+    /// Keeps the above server config receiver alive. Never updated.
+    _default_config_tx: watch::Sender<ServerConfig>,
+
+    // Resource watches.
     nodes: Watch<k8s::core::v1::Node>,
     pods: Watch<k8s::core::v1::Pod>,
     servers: Watch<v1::Server>,
     authorizations: Watch<v1::Authorization>,
-
-    node_ips: HashMap<NodeName, KubeletIps>,
-    namespaces: HashMap<NsName, NsIndex>,
-    lookups: SharedLookupMap,
-
-    default_config_rx: watch::Receiver<ServerConfig>,
-    _default_config_tx: watch::Sender<ServerConfig>,
 }
 
 #[derive(Debug, Default)]
@@ -82,8 +92,14 @@ struct NsIndex {
 #[derive(Debug)]
 struct Pod {
     port_names: Arc<HashMap<PortName, u16>>,
-    port_lookups: Arc<HashMap<u16, watch::Sender<watch::Receiver<ServerConfig>>>>,
+    port_lookups: Arc<HashMap<u16, PodPort>>,
     labels: v1::Labels,
+}
+
+#[derive(Debug)]
+struct PodPort {
+    server_name: Mutex<Option<SrvName>>,
+    tx: watch::Sender<watch::Receiver<ServerConfig>>,
 }
 
 #[derive(Clone, Debug)]
@@ -106,12 +122,6 @@ struct AuthzMeta {
     pub authz: Arc<Authz>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum ServerSelector {
-    Name(SrvName),
-    Selector(Arc<v1::labels::Selector>),
-}
-
 #[derive(Debug, PartialEq, Eq)]
 pub enum Authz {
     Unauthenticated(Vec<IpNet>),
@@ -119,6 +129,13 @@ pub enum Authz {
         identities: Vec<String>,
         suffixes: Vec<Vec<String>>,
     },
+}
+
+/// Selects servers for an authorization.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ServerSelector {
+    Name(SrvName),
+    Selector(Arc<v1::labels::Selector>),
 }
 
 #[derive(Debug)]
@@ -211,14 +228,14 @@ impl Index {
                         self.apply_server(srv);
                         Ok(())
                     }
-                    watcher::Event::Deleted(_srv) => todo!("Handle srv delete"),
-                    watcher::Event::Restarted(_srvs) => todo!("Handle srv delete"),
+                    watcher::Event::Deleted(srv) => self.delete_server(srv),
+                    watcher::Event::Restarted(srvs) => self.reset_servers(srvs),
                 },
 
                 up = self.authorizations.recv() => match up {
                     watcher::Event::Applied(authz) => self.apply_authz(authz),
-                    watcher::Event::Deleted(_authz) => todo!("Handle authz delete"),
-                    watcher::Event::Restarted(_authzs) => todo!("Handle authz delete"),
+                    watcher::Event::Deleted(authz) => self.delete_authz(authz),
+                    watcher::Event::Restarted(authzs) => self.reset_authzs(authzs),
                 },
             };
             if let Err(error) = res {
@@ -338,14 +355,14 @@ impl Index {
                 };
 
                 let mut port_names = HashMap::new();
-                let mut port_txs = HashMap::new();
+                let mut pod_ports = HashMap::new();
                 let mut lookups = HashMap::new();
                 for container in spec.containers.into_iter() {
                     if let Some(ps) = container.ports {
                         for p in ps.into_iter() {
                             if p.protocol.map(|p| p == "TCP").unwrap_or(true) {
                                 let port = p.container_port as u16;
-                                if port_txs.contains_key(&port) {
+                                if pod_ports.contains_key(&port) {
                                     debug!(port, "Port duplicated");
                                     continue;
                                 }
@@ -364,26 +381,36 @@ impl Index {
                                 }
 
                                 let (tx, server) = watch::channel(self.default_config_rx.clone());
+
+                                let pp = PodPort {
+                                    server_name: Mutex::new(None),
+                                    tx,
+                                };
+                                pod_ports.insert(port, pp);
+
                                 let lookup = Lookup {
                                     name,
                                     server,
                                     kubelet_ips: kubelet.clone(),
                                 };
-                                port_txs.insert(port, tx);
                                 lookups.insert(port, lookup);
                             }
                         }
                     }
                 }
 
-                for server in servers.values() {
-                    let tx = match server.port {
-                        ServerPort::Number(ref p) => port_txs.get(p),
-                        ServerPort::Name(ref n) => port_names.get(n).and_then(|p| port_txs.get(p)),
+                for (srv_name, server) in servers.iter() {
+                    let pod_port = match server.port {
+                        ServerPort::Number(ref p) => pod_ports.get(p),
+                        ServerPort::Name(ref n) => port_names.get(n).and_then(|p| pod_ports.get(p)),
                     };
-                    if let Some(tx) = tx {
+                    if let Some(pod_port) = pod_port {
                         if server.pod_selector.matches(&labels) {
-                            tx.send(server.rx.clone())
+                            // TODO handle conflicts
+                            *pod_port.server_name.lock() = Some(srv_name.clone());
+                            pod_port
+                                .tx
+                                .send(server.rx.clone())
                                 .expect("pod config receiver must be set");
                         }
                     }
@@ -392,7 +419,7 @@ impl Index {
                 lookups_entry.insert(Arc::new(lookups));
                 pod_entry.insert(Pod {
                     port_names: port_names.into(),
-                    port_lookups: port_txs.into(),
+                    port_lookups: pod_ports.into(),
                     labels,
                 });
             }
@@ -401,8 +428,8 @@ impl Index {
                 let labels = v1::Labels::from(pod.metadata.labels);
 
                 if pod_entry.get().labels != labels {
-                    for server in servers.values() {
-                        let tx = match server.port {
+                    for (srv_name, server) in servers.iter() {
+                        let pod_port = match server.port {
                             ServerPort::Number(ref p) => pod_entry.get().port_lookups.get(p),
                             ServerPort::Name(ref n) => pod_entry
                                 .get()
@@ -411,9 +438,13 @@ impl Index {
                                 .and_then(|p| pod_entry.get().port_lookups.get(p)),
                         };
 
-                        if let Some(tx) = tx {
+                        if let Some(pod_port) = pod_port {
                             if server.pod_selector.matches(&labels) {
-                                tx.send(server.rx.clone())
+                                // TODO handle conflicts
+                                *pod_port.server_name.lock() = Some(srv_name.clone());
+                                pod_port
+                                    .tx
+                                    .send(server.rx.clone())
                                     .expect("pod config receiver must be set");
                             }
                         }
@@ -596,18 +627,25 @@ impl Index {
         // If we've updated the server->pod selection, then we need to reindex
         // all pods and servers.
         for pod in pods.values() {
-            for srv in servers.values() {
-                let tx = match srv.port {
+            for (srv_name, srv) in servers.iter() {
+                let pod_port = match srv.port {
                     ServerPort::Number(ref p) => pod.port_lookups.get(p),
                     ServerPort::Name(ref n) => {
                         pod.port_names.get(&n).and_then(|p| pod.port_lookups.get(p))
                     }
                 };
 
-                if let Some(tx) = tx {
+                if let Some(pod_port) = pod_port {
                     if srv.pod_selector.matches(&pod.labels) {
+                        // TODO handle conflicts
+                        let mut sn = pod_port.server_name.lock();
+                        debug_assert!(sn.is_none(), "pod port matches multiple servers");
+                        *sn = Some(srv_name.clone());
+
                         // It's up to the lookup stream to de-duplicate updates.
-                        tx.send(srv.rx.clone())
+                        pod_port
+                            .tx
+                            .send(srv.rx.clone())
                             .expect("pod config receiver is held");
                     }
                 }
@@ -624,6 +662,33 @@ impl Index {
             Some(v1::server::ProxyProtocol::Http) => ProxyProtocol::Http,
             Some(v1::server::ProxyProtocol::Grpc) => ProxyProtocol::Grpc,
         }
+    }
+
+    fn delete_server(&mut self, srv: v1::Server) -> Result<()> {
+        let ns_name = NsName::from_resource(&srv);
+        let ns = self
+            .namespaces
+            .get_mut(&ns_name)
+            .ok_or_else(|| anyhow!("removing server from non-existent namespace {}", ns_name))?;
+
+        let srv_name = SrvName::from_resource(&srv);
+        if ns.servers.remove(&srv_name).is_none() {
+            bail!("removing non-existent server {}", srv_name);
+        }
+        for pod in ns.pods.values_mut() {
+            for port in pod.port_lookups.values() {
+                *port.server_name.lock() = None;
+                port.tx
+                    .send(self.default_config_rx.clone())
+                    .expect("pod config receiver must still be held")
+            }
+        }
+
+        Ok(())
+    }
+
+    fn reset_servers(&mut self, _srvs: Vec<v1::Server>) -> Result<()> {
+        todo!("reset servers")
     }
 
     // === Authorization indexing ===
@@ -706,24 +771,37 @@ impl Index {
             ..
         } = self.namespaces.entry(ns_name).or_default();
 
-        match authzs.entry(authz_name.clone()) {
+        match authzs.entry(authz_name) {
             HashEntry::Vacant(entry) => {
-                let meta = AuthzMeta {
-                    servers,
-                    authz: Arc::new(authz),
-                };
-                Self::add_authz(authz_name, &meta, ns_servers);
-                entry.insert(meta);
+                let authz = Arc::new(authz);
+                for (srv_name, srv) in ns_servers.iter_mut() {
+                    let matches = match servers {
+                        ServerSelector::Name(ref n) => n == srv_name,
+                        ServerSelector::Selector(ref s) => s.matches(&srv.labels),
+                    };
+                    if matches {
+                        srv.add_authz(entry.key(), authz.clone());
+                    }
+                }
+                entry.insert(AuthzMeta { servers, authz });
             }
 
             HashEntry::Occupied(mut entry) => {
+                // If the authorization changed materially, then update it in all servers.
                 if entry.get().servers != servers || *entry.get().authz != authz {
-                    let meta = AuthzMeta {
-                        authz: Arc::new(authz),
-                        servers,
-                    };
-                    Self::add_authz(authz_name, &meta, ns_servers);
-                    entry.insert(meta);
+                    let authz = Arc::new(authz);
+                    for (srv_name, srv) in ns_servers.iter_mut() {
+                        let matches = match servers {
+                            ServerSelector::Name(ref n) => n == srv_name,
+                            ServerSelector::Selector(ref s) => s.matches(&srv.labels),
+                        };
+                        if matches {
+                            srv.add_authz(entry.key(), authz.clone());
+                        } else {
+                            srv.remove_authz(entry.key());
+                        }
+                    }
+                    entry.insert(AuthzMeta { authz, servers });
                 }
             }
         };
@@ -731,20 +809,41 @@ impl Index {
         Ok(())
     }
 
-    fn add_authz(
-        authz_name: AuthzName,
-        authz: &AuthzMeta,
-        ns_servers: &mut HashMap<SrvName, Server>,
-    ) {
-        for (srv_name, srv) in ns_servers.iter_mut() {
-            match authz.servers {
-                ServerSelector::Name(ref n) if n == srv_name => {}
-                ServerSelector::Selector(ref s) if s.matches(&srv.labels) => {
-                    srv.authorizations
-                        .insert(authz_name.clone(), authz.authz.clone());
-                }
-                _ => {}
-            }
+    fn delete_authz(&mut self, authz: v1::Authorization) -> Result<()> {
+        let ns_name = NsName::from_resource(&authz);
+        let ns = self
+            .namespaces
+            .get_mut(&ns_name)
+            .ok_or_else(|| anyhow!("removing authz from non-existent namespace"))?;
+
+        let authz_name = AuthzName::from_resource(&authz);
+        for srv in ns.servers.values_mut() {
+            srv.remove_authz(&authz_name);
+        }
+
+        Ok(())
+    }
+
+    fn reset_authzs(&mut self, _authzs: Vec<v1::Authorization>) -> Result<()> {
+        todo!("delete authz")
+    }
+}
+
+// === impl Server ===
+
+impl Server {
+    fn add_authz(&mut self, name: &AuthzName, authz: Arc<Authz>) {
+        self.authorizations.insert(name.clone(), authz);
+        let mut config = self.rx.borrow().clone();
+        config.authorizations = self.authorizations.values().cloned().collect();
+        self.tx.send(config).expect("config must send")
+    }
+
+    fn remove_authz(&mut self, name: &AuthzName) {
+        if self.authorizations.remove(name).is_some() {
+            let mut config = self.rx.borrow().clone();
+            config.authorizations = self.authorizations.values().cloned().collect();
+            self.tx.send(config).expect("config must send")
         }
     }
 }

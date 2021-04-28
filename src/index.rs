@@ -309,7 +309,7 @@ impl Index {
         let ip = Self::cidr_to_kubelet_ip(cidr)?;
         addrs.push(ip);
         if let Some(cidrs) = spec.pod_cidrs {
-            for cidr in cidrs.into_iter() {
+            for cidr in cidrs.into_iter().skip(1) {
                 let ip = Self::cidr_to_kubelet_ip(cidr)?;
                 addrs.push(ip);
             }

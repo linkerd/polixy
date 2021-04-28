@@ -1,4 +1,4 @@
-use crate::v1;
+use crate::{v1, watch::Watch};
 use anyhow::{anyhow, bail, Context, Error, Result};
 use dashmap::{mapref::entry::Entry as DashEntry, DashMap};
 use futures::prelude::*;
@@ -10,17 +10,15 @@ use kube::{
 };
 use kube_runtime::watcher;
 use parking_lot::Mutex;
-use serde::de::DeserializeOwned;
 use std::{
     collections::{hash_map::Entry as HashEntry, HashMap, HashSet},
     fmt,
     hash::Hash,
     net::IpAddr,
-    pin::Pin,
     sync::Arc,
 };
 use tokio::{sync::watch, time};
-use tracing::{debug, info, instrument, warn};
+use tracing::{debug, instrument, warn};
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 struct NodeName(Arc<str>);
@@ -160,8 +158,6 @@ pub struct Lookup {
     pub kubelet_ips: KubeletIps,
     pub server: watch::Receiver<watch::Receiver<ServerConfig>>,
 }
-
-struct Watch<T>(Pin<Box<dyn Stream<Item = watcher::Result<watcher::Event<T>>> + Send + 'static>>);
 
 pub fn run(client: kube::Client) -> (Handle, impl Future<Output = Error>) {
     let idx = Index::new(client);
@@ -844,37 +840,6 @@ impl Server {
             let mut config = self.rx.borrow().clone();
             config.authorizations = self.authorizations.values().cloned().collect();
             self.tx.send(config).expect("config must send")
-        }
-    }
-}
-
-// === impl Watch ===
-
-impl<T, W> From<W> for Watch<T>
-where
-    W: Stream<Item = watcher::Result<watcher::Event<T>>> + Send + 'static,
-{
-    fn from(watch: W) -> Self {
-        Watch(watch.boxed())
-    }
-}
-
-impl<T> Watch<T>
-where
-    T: Resource + Clone + DeserializeOwned + fmt::Debug + Send + Sync + 'static,
-    T::DynamicType: Clone + Eq + Hash + Default,
-{
-    async fn recv(&mut self) -> watcher::Event<T> {
-        loop {
-            match self
-                .0
-                .next()
-                .await
-                .expect("watch stream must not terminate")
-            {
-                Ok(ev) => return ev,
-                Err(error) => info!(%error, "Disconnected"),
-            }
         }
     }
 }

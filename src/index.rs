@@ -18,7 +18,7 @@ use std::{
     sync::Arc,
 };
 use tokio::{sync::watch, time};
-use tracing::{debug, instrument, warn};
+use tracing::{debug, instrument, trace, warn};
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 struct NodeName(Arc<str>);
@@ -247,19 +247,22 @@ impl Index {
 
     // === Node->IP indexing ===
 
+    #[instrument(skip(self, node), fields(node = %node.name()))]
     fn apply_node(&mut self, node: k8s::core::v1::Node) -> Result<()> {
         let name = NodeName::from_resource(&node);
-        if let HashEntry::Vacant(entry) = self.node_ips.entry(name) {
-            let ips = Self::kubelet_ips(node)
-                .with_context(|| format!("failed to load kubelet IPs for {}", entry.key()))?;
-            debug!(name = %entry.key(), ?ips, "Adding node");
-            entry.insert(ips);
-        } else {
-            debug!(?node.metadata, "Node already existed");
+        match self.node_ips.entry(name) {
+            HashEntry::Vacant(entry) => {
+                let ips = Self::kubelet_ips(node)
+                    .with_context(|| format!("failed to load kubelet IPs for {}", entry.key()))?;
+                debug!(?ips, "Adding node");
+                entry.insert(ips);
+            }
+            HashEntry::Occupied(_) => debug!("Node already existed"),
         }
         Ok(())
     }
 
+    #[instrument(skip(self, node), fields(node = %node.name()))]
     fn delete_node(&mut self, node: k8s::core::v1::Node) -> Result<()> {
         let name = NodeName::from_resource(&node);
         if self.node_ips.remove(&name).is_some() {
@@ -270,6 +273,7 @@ impl Index {
         }
     }
 
+    #[instrument(skip(self, nodes))]
     fn reset_nodes(&mut self, nodes: Vec<k8s::core::v1::Node>) -> Result<()> {
         // Avoid rebuilding data for nodes that have not changed.
         let mut prior_names = self.node_ips.keys().cloned().collect::<HashSet<_>>();
@@ -287,8 +291,8 @@ impl Index {
             }
         }
 
-        debug!(?prior_names, "Removing defunct nodes");
         for name in prior_names.into_iter() {
+            debug!(%name, "Removing defunct node");
             let removed = self.node_ips.remove(&name).is_some();
             debug_assert!(removed, "node must be removable");
             if !removed {
@@ -300,13 +304,15 @@ impl Index {
     }
 
     fn kubelet_ips(node: k8s::core::v1::Node) -> Result<KubeletIps> {
+        let name = node.name();
         let spec = node.spec.ok_or_else(|| anyhow!("node missing spec"))?;
         let cidr = spec
             .pod_cidr
-            .ok_or_else(|| anyhow!("node missing pod_cidr"))?;
+            .ok_or_else(|| anyhow!("node {} missing pod_cidr", name))?;
         let mut addrs = Vec::new();
 
-        let ip = Self::cidr_to_kubelet_ip(cidr)?;
+        let ip =
+            Self::cidr_to_kubelet_ip(cidr).with_context(|| format!("invalid node {}", name))?;
         addrs.push(ip);
         if let Some(cidrs) = spec.pod_cidrs {
             for cidr in cidrs.into_iter().skip(1) {
@@ -328,10 +334,11 @@ impl Index {
 
     // === Pod->Port->Server indexing ===
 
+    #[instrument(skip(self, pod), fields(ns = ?pod.namespace(), pod = %pod.name()))]
     fn apply_pod(&mut self, pod: k8s::core::v1::Pod) -> Result<()> {
         let ns_name = NsName::from_resource(&pod);
         let pod_name = PodName::from_resource(&pod);
-        let spec = pod.spec.ok_or_else(|| anyhow!("pod missing spec"))?;
+        let spec = pod.spec.ok_or_else(|| anyhow!("p;od missing spec"))?;
 
         let NsIndex {
             ref mut pods,
@@ -348,7 +355,7 @@ impl Index {
                     let name = spec
                         .node_name
                         .map(|n| NodeName(n.into()))
-                        .ok_or_else(|| anyhow!("pod missing node name"))?;
+                        .ok_or_else(|| anyhow!("pod {} missing node name", pod_entry.key()))?;
                     self.node_ips
                         .get(&name)
                         .ok_or_else(|| anyhow!("node IP does not exist for node {}", name))?
@@ -381,6 +388,7 @@ impl Index {
                                     }
                                 }
 
+                                debug!(%port, ?name, "Adding port");
                                 let (tx, server) = watch::channel(self.default_config_rx.clone());
 
                                 let pp = PodPort {
@@ -407,16 +415,22 @@ impl Index {
                     };
                     if let Some(pod_port) = pod_port {
                         if server.meta.pod_selector.matches(&labels) {
+                            debug!(name = %srv_name, "Setting server");
                             // TODO handle conflicts
                             *pod_port.server_name.lock() = Some(srv_name.clone());
                             pod_port
                                 .tx
                                 .send(server.rx.clone())
                                 .expect("pod config receiver must be set");
+                        } else {
+                            trace!(name = %srv_name, selector = ?server.meta.pod_selector, ?labels, "Server does not match pod labels");
                         }
+                    } else {
+                        trace!(name = %srv_name, port = ?server.meta.port, "Server does not match pod port");
                     }
                 }
 
+                debug!("Adding pod");
                 lookups_entry.insert(Arc::new(lookups));
                 pod_entry.insert(Pod {
                     port_names: port_names.into(),
@@ -441,16 +455,20 @@ impl Index {
 
                         if let Some(pod_port) = pod_port {
                             if server.meta.pod_selector.matches(&labels) {
+                                debug!(name = %srv_name, "Setting server");
                                 // TODO handle conflicts
                                 *pod_port.server_name.lock() = Some(srv_name.clone());
                                 pod_port
                                     .tx
                                     .send(server.rx.clone())
                                     .expect("pod config receiver must be set");
+                            } else {
+                                trace!(name = %srv_name, port = ?server.meta.port, "Server does not match pod port");
                             }
                         }
                     }
 
+                    debug!("Updating pod");
                     pod_entry.get_mut().labels = labels;
                 }
             }
@@ -467,6 +485,7 @@ impl Index {
         self.rm_pod(&ns_name, &pod_name)
     }
 
+    #[instrument(skip(self))]
     fn rm_pod(&mut self, ns: &NsName, pod: &PodName) -> Result<()> {
         self.namespaces
             .get_mut(&ns)
@@ -484,6 +503,7 @@ impl Index {
         Ok(())
     }
 
+    #[instrument(skip(self, pods))]
     fn reset_pods(&mut self, pods: Vec<k8s::core::v1::Pod>) -> Result<()> {
         let mut prior_pod_labels = self
             .namespaces
@@ -530,6 +550,7 @@ impl Index {
 
     // === Server indexing ===
 
+    #[instrument(skip(self, srv), fields(ns = ?srv.namespace(), srv = %srv.name()))]
     fn apply_server(&mut self, srv: v1::Server) {
         let ns_name = NsName::from_resource(&srv);
         let srv_name = SrvName::from_resource(&srv);
@@ -565,6 +586,7 @@ impl Index {
                                 ServerSelector::Selector(ref s) => s.matches(&labels),
                             };
                             if matches {
+                                debug!(name = %authz_name, "Adding authz");
                                 authorizations.insert(authz_name.clone(), a.authz.clone());
                             }
                         }
@@ -592,6 +614,7 @@ impl Index {
                     return;
                 }
 
+                debug!("Updating server");
                 entry.get_mut().meta.pod_selector = srv.spec.pod_selector.into();
                 entry.get_mut().meta.port = port;
             }
@@ -614,6 +637,7 @@ impl Index {
                     protocol: protocol.clone(),
                     authorizations: authorizations.values().cloned().collect(),
                 });
+                debug!("Adding server");
                 entry.insert(Server {
                     tx,
                     rx,
@@ -630,7 +654,7 @@ impl Index {
 
         // If we've updated the server->pod selection, then we need to reindex
         // all pods and servers.
-        for pod in pods.values() {
+        for (pod_name, pod) in pods.iter() {
             for (srv_name, srv) in servers.iter() {
                 let pod_port = match srv.meta.port {
                     ServerPort::Number(ref p) => pod.port_lookups.get(p),
@@ -641,6 +665,7 @@ impl Index {
 
                 if let Some(pod_port) = pod_port {
                     if srv.meta.pod_selector.matches(&pod.labels) {
+                        debug!(pod = %pod_name, "Updating pod");
                         // TODO handle conflicts
                         let mut sn = pod_port.server_name.lock();
                         debug_assert!(sn.is_none(), "pod port matches multiple servers");
@@ -674,6 +699,7 @@ impl Index {
         self.rm_server(ns_name, srv_name)
     }
 
+    #[instrument(skip(self))]
     fn rm_server(&mut self, ns_name: NsName, srv_name: SrvName) -> Result<()> {
         let ns = self
             .namespaces
@@ -695,6 +721,7 @@ impl Index {
         Ok(())
     }
 
+    #[instrument(skip(self, srvs))]
     fn reset_servers(&mut self, srvs: Vec<v1::Server>) -> Result<()> {
         let mut prior_servers = self
             .namespaces
@@ -750,6 +777,7 @@ impl Index {
 
     // === Authorization indexing ===
 
+    #[instrument(skip(self, authorization), fields(ns = ?authorization.namespace(), authz = %authorization.name()))]
     fn apply_authz(&mut self, authorization: v1::Authorization) -> Result<()> {
         let ns_name = NsName::from_resource(&authorization);
         let authz_name = AuthzName::from_resource(&authorization);
@@ -769,9 +797,11 @@ impl Index {
                         ServerSelector::Selector(ref s) => s.matches(&srv.meta.labels),
                     };
                     if matches {
+                        debug!(name = %srv_name, "Updating server authorization");
                         srv.add_authz(entry.key(), meta.authz.clone());
                     }
                 }
+                debug!("Adding authz");
                 entry.insert(meta);
             }
 
@@ -789,6 +819,7 @@ impl Index {
                             srv.remove_authz(entry.key());
                         }
                     }
+                    debug!("Updating authz");
                     entry.insert(meta);
                 }
             }
@@ -875,6 +906,7 @@ impl Index {
         self.rm_authz(ns_name, authz_name)
     }
 
+    #[instrument(skip(self))]
     fn rm_authz(&mut self, ns_name: NsName, authz_name: AuthzName) -> Result<()> {
         let ns = self
             .namespaces
@@ -886,6 +918,7 @@ impl Index {
         Ok(())
     }
 
+    #[instrument(skip(self, authzs))]
     fn reset_authzs(&mut self, authzs: Vec<v1::Authorization>) -> Result<()> {
         let mut prior_authzs = self
             .namespaces

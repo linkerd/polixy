@@ -138,13 +138,18 @@ enum ServerSelector {
 
 #[derive(Debug)]
 struct Server {
+    meta: ServerMeta,
+    authorizations: HashMap<AuthzName, Arc<Authz>>,
+    rx: watch::Receiver<ServerConfig>,
+    tx: watch::Sender<ServerConfig>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ServerMeta {
     labels: v1::Labels,
     port: ServerPort,
     pod_selector: Arc<v1::labels::Selector>,
     protocol: ProxyProtocol,
-    authorizations: HashMap<AuthzName, Arc<Authz>>,
-    rx: watch::Receiver<ServerConfig>,
-    tx: watch::Sender<ServerConfig>,
 }
 
 #[derive(Debug)]
@@ -396,12 +401,12 @@ impl Index {
                 }
 
                 for (srv_name, server) in servers.iter() {
-                    let pod_port = match server.port {
+                    let pod_port = match server.meta.port {
                         ServerPort::Number(ref p) => pod_ports.get(p),
                         ServerPort::Name(ref n) => port_names.get(n).and_then(|p| pod_ports.get(p)),
                     };
                     if let Some(pod_port) = pod_port {
-                        if server.pod_selector.matches(&labels) {
+                        if server.meta.pod_selector.matches(&labels) {
                             // TODO handle conflicts
                             *pod_port.server_name.lock() = Some(srv_name.clone());
                             pod_port
@@ -425,7 +430,7 @@ impl Index {
 
                 if pod_entry.get().labels != labels {
                     for (srv_name, server) in servers.iter() {
-                        let pod_port = match server.port {
+                        let pod_port = match server.meta.port {
                             ServerPort::Number(ref p) => pod_entry.get().port_lookups.get(p),
                             ServerPort::Name(ref n) => pod_entry
                                 .get()
@@ -435,7 +440,7 @@ impl Index {
                         };
 
                         if let Some(pod_port) = pod_port {
-                            if server.pod_selector.matches(&labels) {
+                            if server.meta.pod_selector.matches(&labels) {
                                 // TODO handle conflicts
                                 *pod_port.server_name.lock() = Some(srv_name.clone());
                                 pod_port
@@ -547,13 +552,13 @@ impl Index {
 
                 // If something about the server changed, we need to update the
                 // config to reflect the change.
-                if entry.get().labels != labels || entry.get().protocol == protocol {
+                if entry.get().meta.labels != labels || entry.get().meta.protocol == protocol {
                     // NB: Only a single task applies server updates, so it's
                     // okay to borrow a version, modify, and send it.  We don't
                     // need a lock because serialization is guaranteed.
                     let mut config = entry.get().rx.borrow().clone();
 
-                    if entry.get().labels != labels {
+                    if entry.get().meta.labels != labels {
                         let mut authorizations = HashMap::with_capacity(ns_authzs.len());
                         for (authz_name, a) in ns_authzs.iter() {
                             let matches = match a.servers {
@@ -566,12 +571,12 @@ impl Index {
                         }
 
                         config.authorizations = authorizations.values().cloned().collect();
-                        entry.get_mut().labels = labels;
+                        entry.get_mut().meta.labels = labels;
                         entry.get_mut().authorizations = authorizations;
                     }
 
                     config.protocol = protocol.clone();
-                    entry.get_mut().protocol = protocol;
+                    entry.get_mut().meta.protocol = protocol;
 
                     entry
                         .get()
@@ -582,12 +587,14 @@ impl Index {
 
                 // If the pod/port selector didn't change, we don't need to
                 // refresh the index.
-                if *entry.get().pod_selector == srv.spec.pod_selector && entry.get().port == port {
+                if *entry.get().meta.pod_selector == srv.spec.pod_selector
+                    && entry.get().meta.port == port
+                {
                     return;
                 }
 
-                entry.get_mut().pod_selector = srv.spec.pod_selector.into();
-                entry.get_mut().port = port;
+                entry.get_mut().meta.pod_selector = srv.spec.pod_selector.into();
+                entry.get_mut().meta.port = port;
             }
 
             HashEntry::Vacant(entry) => {
@@ -609,13 +616,15 @@ impl Index {
                     authorizations: authorizations.values().cloned().collect(),
                 });
                 entry.insert(Server {
-                    labels,
-                    port,
-                    pod_selector: srv.spec.pod_selector.into(),
-                    protocol,
-                    authorizations,
                     tx,
                     rx,
+                    authorizations,
+                    meta: ServerMeta {
+                        labels,
+                        port,
+                        pod_selector: srv.spec.pod_selector.into(),
+                        protocol,
+                    },
                 });
             }
         }
@@ -624,7 +633,7 @@ impl Index {
         // all pods and servers.
         for pod in pods.values() {
             for (srv_name, srv) in servers.iter() {
-                let pod_port = match srv.port {
+                let pod_port = match srv.meta.port {
                     ServerPort::Number(ref p) => pod.port_lookups.get(p),
                     ServerPort::Name(ref n) => {
                         pod.port_names.get(&n).and_then(|p| pod.port_lookups.get(p))
@@ -632,7 +641,7 @@ impl Index {
                 };
 
                 if let Some(pod_port) = pod_port {
-                    if srv.pod_selector.matches(&pod.labels) {
+                    if srv.meta.pod_selector.matches(&pod.labels) {
                         // TODO handle conflicts
                         let mut sn = pod_port.server_name.lock();
                         debug_assert!(sn.is_none(), "pod port matches multiple servers");
@@ -684,6 +693,19 @@ impl Index {
     }
 
     fn reset_servers(&mut self, _srvs: Vec<v1::Server>) -> Result<()> {
+        // let mut prior_servers = self
+        //     .namespaces
+        //     .iter()
+        //     .map(|(n, ns)| {
+        //         let pods = ns
+        //             .servers
+        //             .iter()
+        //             .map(|(n, p)| (n.clone(), p.labels.clone()))
+        //             .collect::<HashMap<_, _>>();
+        //         (n.clone(), pods)
+        //     })
+        //     .collect::<HashMap<_, _>>();
+
         todo!("reset servers")
     }
 
@@ -773,7 +795,7 @@ impl Index {
                 for (srv_name, srv) in ns_servers.iter_mut() {
                     let matches = match servers {
                         ServerSelector::Name(ref n) => n == srv_name,
-                        ServerSelector::Selector(ref s) => s.matches(&srv.labels),
+                        ServerSelector::Selector(ref s) => s.matches(&srv.meta.labels),
                     };
                     if matches {
                         srv.add_authz(entry.key(), authz.clone());
@@ -789,7 +811,7 @@ impl Index {
                     for (srv_name, srv) in ns_servers.iter_mut() {
                         let matches = match servers {
                             ServerSelector::Name(ref n) => n == srv_name,
-                            ServerSelector::Selector(ref s) => s.matches(&srv.labels),
+                            ServerSelector::Selector(ref s) => s.matches(&srv.meta.labels),
                         };
                         if matches {
                             srv.add_authz(entry.key(), authz.clone());

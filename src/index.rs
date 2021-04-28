@@ -534,17 +534,16 @@ impl Index {
         let ns_name = NsName::from_resource(&srv);
         let srv_name = SrvName::from_resource(&srv);
         let labels = v1::Labels::from(srv.metadata.labels);
+        let port = match srv.spec.port {
+            v1::server::Port::Number(n) => ServerPort::Number(n),
+            v1::server::Port::Name(n) => ServerPort::Name(n.into()),
+        };
 
         let NsIndex {
             ref pods,
             authzs: ref ns_authzs,
             ref mut servers,
         } = self.namespaces.entry(ns_name).or_default();
-
-        let port = match srv.spec.port {
-            v1::server::Port::Number(n) => ServerPort::Number(n),
-            v1::server::Port::Name(n) => ServerPort::Name(n.into()),
-        };
 
         match servers.entry(srv_name) {
             HashEntry::Occupied(mut entry) => {
@@ -671,12 +670,16 @@ impl Index {
 
     fn delete_server(&mut self, srv: v1::Server) -> Result<()> {
         let ns_name = NsName::from_resource(&srv);
+        let srv_name = SrvName::from_resource(&srv);
+        self.rm_server(ns_name, srv_name)
+    }
+
+    fn rm_server(&mut self, ns_name: NsName, srv_name: SrvName) -> Result<()> {
         let ns = self
             .namespaces
             .get_mut(&ns_name)
             .ok_or_else(|| anyhow!("removing server from non-existent namespace {}", ns_name))?;
 
-        let srv_name = SrvName::from_resource(&srv);
         if ns.servers.remove(&srv_name).is_none() {
             bail!("removing non-existent server {}", srv_name);
         }
@@ -692,21 +695,57 @@ impl Index {
         Ok(())
     }
 
-    fn reset_servers(&mut self, _srvs: Vec<v1::Server>) -> Result<()> {
-        // let mut prior_servers = self
-        //     .namespaces
-        //     .iter()
-        //     .map(|(n, ns)| {
-        //         let pods = ns
-        //             .servers
-        //             .iter()
-        //             .map(|(n, p)| (n.clone(), p.labels.clone()))
-        //             .collect::<HashMap<_, _>>();
-        //         (n.clone(), pods)
-        //     })
-        //     .collect::<HashMap<_, _>>();
+    fn reset_servers(&mut self, srvs: Vec<v1::Server>) -> Result<()> {
+        let mut prior_servers = self
+            .namespaces
+            .iter()
+            .map(|(n, ns)| {
+                let servers = ns
+                    .servers
+                    .iter()
+                    .map(|(n, s)| (n.clone(), s.meta.clone()))
+                    .collect::<HashMap<_, _>>();
+                (n.clone(), servers)
+            })
+            .collect::<HashMap<_, _>>();
 
-        todo!("reset servers")
+        let mut result = Ok(());
+        for srv in srvs.into_iter() {
+            let ns_name = NsName::from_resource(&srv);
+            let srv_name = SrvName::from_resource(&srv);
+
+            if let Some(prior_servers) = prior_servers.get_mut(&ns_name) {
+                if let Some(prior_meta) = prior_servers.remove(&srv_name) {
+                    let labels = v1::Labels::from(srv.metadata.labels.clone());
+                    let port = match srv.spec.port.clone() {
+                        v1::server::Port::Number(n) => ServerPort::Number(n),
+                        v1::server::Port::Name(n) => ServerPort::Name(n.into()),
+                    };
+                    let protocol = Self::mk_protocol(srv.spec.proxy_protocol.as_ref());
+                    let meta = ServerMeta {
+                        labels,
+                        port,
+                        pod_selector: Arc::new(srv.spec.pod_selector.clone()),
+                        protocol,
+                    };
+                    if prior_meta == meta {
+                        continue;
+                    }
+                }
+            }
+
+            self.apply_server(srv);
+        }
+
+        for (ns_name, ns_servers) in prior_servers.into_iter() {
+            for (srv_name, _) in ns_servers.into_iter() {
+                if let Err(e) = self.rm_server(ns_name.clone(), srv_name) {
+                    result = Err(e);
+                }
+            }
+        }
+
+        result
     }
 
     // === Authorization indexing ===
@@ -714,8 +753,51 @@ impl Index {
     fn apply_authz(&mut self, authorization: v1::Authorization) -> Result<()> {
         let ns_name = NsName::from_resource(&authorization);
         let authz_name = AuthzName::from_resource(&authorization);
-        let spec = authorization.spec;
+        let meta = Self::mk_authz(&ns_name, authorization.spec)?;
 
+        let NsIndex {
+            ref mut authzs,
+            servers: ref mut ns_servers,
+            ..
+        } = self.namespaces.entry(ns_name).or_default();
+
+        match authzs.entry(authz_name) {
+            HashEntry::Vacant(entry) => {
+                for (srv_name, srv) in ns_servers.iter_mut() {
+                    let matches = match meta.servers {
+                        ServerSelector::Name(ref n) => n == srv_name,
+                        ServerSelector::Selector(ref s) => s.matches(&srv.meta.labels),
+                    };
+                    if matches {
+                        srv.add_authz(entry.key(), meta.authz.clone());
+                    }
+                }
+                entry.insert(meta);
+            }
+
+            HashEntry::Occupied(mut entry) => {
+                // If the authorization changed materially, then update it in all servers.
+                if entry.get() != &meta {
+                    for (srv_name, srv) in ns_servers.iter_mut() {
+                        let matches = match meta.servers {
+                            ServerSelector::Name(ref n) => n == srv_name,
+                            ServerSelector::Selector(ref s) => s.matches(&srv.meta.labels),
+                        };
+                        if matches {
+                            srv.add_authz(entry.key(), meta.authz.clone());
+                        } else {
+                            srv.remove_authz(entry.key());
+                        }
+                    }
+                    entry.insert(meta);
+                }
+            }
+        };
+
+        Ok(())
+    }
+
+    fn mk_authz(ns_name: &NsName, spec: v1::authz::AuthorizationSpec) -> Result<AuthzMeta> {
         let servers = {
             let v1::authz::Server { name, selector } = spec.server;
             match (name, selector) {
@@ -783,67 +865,69 @@ impl Index {
             _ => bail!("authorization authorizes no clients"),
         };
 
-        let NsIndex {
-            ref mut authzs,
-            servers: ref mut ns_servers,
-            ..
-        } = self.namespaces.entry(ns_name).or_default();
-
-        match authzs.entry(authz_name) {
-            HashEntry::Vacant(entry) => {
-                let authz = Arc::new(authz);
-                for (srv_name, srv) in ns_servers.iter_mut() {
-                    let matches = match servers {
-                        ServerSelector::Name(ref n) => n == srv_name,
-                        ServerSelector::Selector(ref s) => s.matches(&srv.meta.labels),
-                    };
-                    if matches {
-                        srv.add_authz(entry.key(), authz.clone());
-                    }
-                }
-                entry.insert(AuthzMeta { servers, authz });
-            }
-
-            HashEntry::Occupied(mut entry) => {
-                // If the authorization changed materially, then update it in all servers.
-                if entry.get().servers != servers || *entry.get().authz != authz {
-                    let authz = Arc::new(authz);
-                    for (srv_name, srv) in ns_servers.iter_mut() {
-                        let matches = match servers {
-                            ServerSelector::Name(ref n) => n == srv_name,
-                            ServerSelector::Selector(ref s) => s.matches(&srv.meta.labels),
-                        };
-                        if matches {
-                            srv.add_authz(entry.key(), authz.clone());
-                        } else {
-                            srv.remove_authz(entry.key());
-                        }
-                    }
-                    entry.insert(AuthzMeta { authz, servers });
-                }
-            }
-        };
-
-        Ok(())
+        let authz = Arc::new(authz);
+        Ok(AuthzMeta { servers, authz })
     }
 
     fn delete_authz(&mut self, authz: v1::Authorization) -> Result<()> {
         let ns_name = NsName::from_resource(&authz);
+        let authz_name = AuthzName::from_resource(&authz);
+        self.rm_authz(ns_name, authz_name)
+    }
+
+    fn rm_authz(&mut self, ns_name: NsName, authz_name: AuthzName) -> Result<()> {
         let ns = self
             .namespaces
             .get_mut(&ns_name)
             .ok_or_else(|| anyhow!("removing authz from non-existent namespace"))?;
-
-        let authz_name = AuthzName::from_resource(&authz);
         for srv in ns.servers.values_mut() {
             srv.remove_authz(&authz_name);
         }
-
         Ok(())
     }
 
-    fn reset_authzs(&mut self, _authzs: Vec<v1::Authorization>) -> Result<()> {
-        todo!("delete authz")
+    fn reset_authzs(&mut self, authzs: Vec<v1::Authorization>) -> Result<()> {
+        let mut prior_authzs = self
+            .namespaces
+            .iter()
+            .map(|(n, ns)| (n.clone(), ns.authzs.clone()))
+            .collect::<HashMap<_, _>>();
+
+        let mut result = Ok(());
+        for authz in authzs.into_iter() {
+            let ns_name = NsName::from_resource(&authz);
+            let authz_name = AuthzName::from_resource(&authz);
+
+            if let Some(prior_ns) = prior_authzs.get_mut(&ns_name) {
+                if let Some(prior_authz) = prior_ns.remove(&authz_name) {
+                    match Self::mk_authz(&ns_name, authz.spec.clone()) {
+                        Ok(meta) => {
+                            if prior_authz == meta {
+                                continue;
+                            }
+                        }
+                        Err(e) => {
+                            result = Err(e);
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            if let Err(e) = self.apply_authz(authz) {
+                result = Err(e);
+            }
+        }
+
+        for (ns_name, ns_authzs) in prior_authzs.into_iter() {
+            for (authz_name, _) in ns_authzs.into_iter() {
+                if let Err(e) = self.rm_authz(ns_name.clone(), authz_name) {
+                    result = Err(e);
+                }
+            }
+        }
+
+        result
     }
 }
 

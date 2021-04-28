@@ -6,8 +6,10 @@ buildEnv {
   paths =  [
       binutils
       cacert
+      cargo-fuzz
+      cargo-udeps
+      cargo-watch
       clang
-      cowsay
       docker
       git
       (glibcLocales.override { locales = [ "en_US.UTF-8" ]; })

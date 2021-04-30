@@ -148,9 +148,8 @@ fn to_config(kubelet_ips: &KubeletIps, srv: ServerConfig) -> proto::InboundProxy
                         identities: identities.clone(),
                         suffixes: suffixes
                             .iter()
-                            .map(|parts| proto::Suffix {
-                                parts: parts.clone(),
-                            })
+                            .cloned()
+                            .map(|parts| proto::Suffix { parts })
                             .collect(),
                     }),
                 }),

@@ -1,5 +1,5 @@
 use crate::{
-    index::{Handle, KubeletIps, Lookup, ServerConfig},
+    index::{Authz, Handle, KubeletIps, Lookup, ProxyProtocol, ServerConfig},
     k8s::{NsName, PodName},
 };
 use futures::prelude::*;
@@ -103,6 +103,65 @@ impl proto::Service for Grpc {
     }
 }
 
-fn to_config(_k: &KubeletIps, _s: ServerConfig) -> proto::InboundProxyConfig {
-    todo!("Convert server to config")
+fn to_config(_ips: &KubeletIps, srv: ServerConfig) -> proto::InboundProxyConfig {
+    let protocol = proto::ProxyProtocol {
+        kind: match srv.protocol {
+            ProxyProtocol::Detect { timeout } => Some(proto::proxy_protocol::Kind::Detect(
+                proto::proxy_protocol::Detect {
+                    timeout: Some(timeout.into()),
+                },
+            )),
+            ProxyProtocol::Http => Some(proto::proxy_protocol::Kind::Http(
+                proto::proxy_protocol::Http {},
+            )),
+            ProxyProtocol::Grpc => Some(proto::proxy_protocol::Kind::Grpc(
+                proto::proxy_protocol::Grpc {},
+            )),
+            ProxyProtocol::Opaque => Some(proto::proxy_protocol::Kind::Opaque(
+                proto::proxy_protocol::Opaque {},
+            )),
+        },
+    };
+
+    let authorizations = srv
+        .authorizations
+        .into_iter()
+        .map(|a| match *a {
+            Authz::Unauthenticated(ref nets) => proto::Authorization {
+                networks: nets
+                    .iter()
+                    .map(|net| proto::Network {
+                        cidr: net.to_string(),
+                    })
+                    .collect(),
+                ..Default::default()
+            },
+            Authz::Authenticated {
+                ref identities,
+                ref suffixes,
+            } => proto::Authorization {
+                networks: vec![proto::Network {
+                    cidr: "0.0.0.0/0".into(),
+                }],
+                tls_terminated: Some(proto::authorization::Tls {
+                    client_id: Some(proto::IdMatch {
+                        identities: identities.clone(),
+                        suffixes: suffixes
+                            .iter()
+                            .map(|parts| proto::Suffix {
+                                parts: parts.clone(),
+                            })
+                            .collect(),
+                    }),
+                }),
+                ..Default::default()
+            },
+        })
+        .collect();
+
+    proto::InboundProxyConfig {
+        protocol: Some(protocol),
+        authorizations,
+        ..Default::default()
+    }
 }

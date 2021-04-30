@@ -3,6 +3,7 @@ use crate::{
     k8s::{NsName, PodName},
 };
 use futures::prelude::*;
+use std::{collections::HashMap, iter::FromIterator};
 use tokio_stream::wrappers::WatchStream;
 
 pub mod proto {
@@ -136,6 +137,10 @@ fn to_config(kubelet_ips: &KubeletIps, srv: ServerConfig) -> proto::InboundProxy
                         cidr: net.to_string(),
                     })
                     .collect(),
+                labels: HashMap::from_iter(Some((
+                    "authorization".to_string(),
+                    "TODO use the resource name here".to_string(),
+                ))),
                 ..Default::default()
             },
 
@@ -163,7 +168,10 @@ fn to_config(kubelet_ips: &KubeletIps, srv: ServerConfig) -> proto::InboundProxy
                             .collect(),
                     }),
                 }),
-                ..Default::default()
+                labels: HashMap::from_iter(Some((
+                    "authorization".to_string(),
+                    "TODO use the resource name here".to_string(),
+                ))),
             },
         })
         // Traffic is always permitted from the pod's Kubelet IPs.
@@ -174,13 +182,14 @@ fn to_config(kubelet_ips: &KubeletIps, srv: ServerConfig) -> proto::InboundProxy
                 .map(|net| net.to_string())
                 .map(|cidr| proto::Network { cidr })
                 .collect(),
+            labels: HashMap::from_iter(Some(("authorization".to_string(), "kubelet".to_string()))),
             ..Default::default()
         }))
         .collect();
 
     proto::InboundProxyConfig {
-        protocol: Some(protocol),
         authorizations,
+        protocol: Some(protocol),
         ..Default::default()
     }
 }

@@ -15,7 +15,7 @@ use std::{
 use tokio::{sync::watch, time};
 use tracing::{debug, instrument, warn};
 
-type SharedLookupMap = Arc<DashMap<k8s::NsName, DashMap<k8s::PodName, Arc<HashMap<u16, Lookup>>>>>;
+type SharedLookupMap = Arc<DashMap<(k8s::NsName, k8s::PodName), Arc<HashMap<u16, Lookup>>>>;
 
 #[derive(Clone, Debug)]
 pub struct Handle(SharedLookupMap);
@@ -151,6 +151,14 @@ pub fn run(client: kube::Client) -> (Handle, impl Future<Output = Error>) {
     );
 
     (Handle(lookups), idx.index())
+}
+
+// === impl Handle ===
+
+impl Handle {
+    pub fn lookup(&self, ns: k8s::NsName, name: k8s::PodName, port: u16) -> Option<Lookup> {
+        self.0.get(&(ns, name))?.get(&port).cloned()
+    }
 }
 
 // === impl Index ===
@@ -327,9 +335,10 @@ impl Index {
             ref mut servers,
             ..
         } = self.namespaces.entry(ns_name.clone()).or_default();
-        let lookups = self.lookups.entry(ns_name).or_default();
 
-        match (pods.entry(pod_name.clone()), lookups.entry(pod_name)) {
+        let lookups_entry = self.lookups.entry((ns_name, pod_name.clone()));
+
+        match (pods.entry(pod_name), lookups_entry) {
             (HashEntry::Vacant(pod_entry), DashEntry::Vacant(lookups_entry)) => {
                 let labels = v1::Labels::from(pod.metadata.labels);
 
@@ -460,17 +469,15 @@ impl Index {
 
     fn rm_pod(&mut self, ns: &k8s::NsName, pod: &k8s::PodName) -> Result<()> {
         self.namespaces
-            .get_mut(&ns)
+            .get_mut(ns)
             .ok_or_else(|| anyhow!("namespace {} doesn't exist", ns))?
             .pods
-            .remove(&pod)
+            .remove(pod)
             .ok_or_else(|| anyhow!("pod {} doesn't exist", pod))?;
 
         self.lookups
-            .get_mut(&ns)
-            .ok_or_else(|| anyhow!("namespace {} doesn't exist", ns))?
-            .remove(&pod)
-            .ok_or_else(|| anyhow!("pod {} doesn't exist", pod))?;
+            .remove(&(ns.clone(), pod.clone()))
+            .ok_or_else(|| anyhow!("pod {} doesn't exist in namespace {}", pod, ns))?;
 
         Ok(())
     }
@@ -937,16 +944,5 @@ impl Server {
             config.authorizations = self.authorizations.values().cloned().collect();
             self.tx.send(config).expect("config must send")
         }
-    }
-}
-
-// === impl Handle ===
-
-impl Handle {
-    pub fn lookup(&self, ns: k8s::NsName, name: k8s::PodName, port: u16) -> Option<Lookup> {
-        let ns = self.0.get(&ns)?;
-        let pod = ns.get(&name)?;
-        let lookup = pod.get(&port)?;
-        Some(lookup.clone())
     }
 }

@@ -11,6 +11,7 @@ buildEnv {
       cargo-watch
       clang
       docker
+      kube3d
       git
       (glibcLocales.override { locales = [ "en_US.UTF-8" ]; })
       cmake

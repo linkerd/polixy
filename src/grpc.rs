@@ -103,7 +103,7 @@ impl proto::Service for Grpc {
     }
 }
 
-fn to_config(_ips: &KubeletIps, srv: ServerConfig) -> proto::InboundProxyConfig {
+fn to_config(kubelet_ips: &KubeletIps, srv: ServerConfig) -> proto::InboundProxyConfig {
     let protocol = proto::ProxyProtocol {
         kind: match srv.protocol {
             ProxyProtocol::Detect { timeout } => Some(proto::proxy_protocol::Kind::Detect(
@@ -157,6 +157,16 @@ fn to_config(_ips: &KubeletIps, srv: ServerConfig) -> proto::InboundProxyConfig 
                 ..Default::default()
             },
         })
+        .chain(Some(proto::Authorization {
+            networks: kubelet_ips
+                .as_nets()
+                .into_iter()
+                .map(|net| proto::Network {
+                    cidr: net.to_string(),
+                })
+                .collect(),
+            ..Default::default()
+        }))
         .collect();
 
     proto::InboundProxyConfig {

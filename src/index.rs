@@ -946,3 +946,11 @@ impl Server {
         }
     }
 }
+
+// === impl KubeletIps ===
+
+impl KubeletIps {
+    pub fn as_nets(&self) -> Vec<IpNet> {
+        self.0.iter().copied().map(IpNet::from).collect()
+    }
+}

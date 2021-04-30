@@ -92,6 +92,7 @@ impl proto::Service for Grpc {
                 ))
             })?;
 
+        // TODO deduplicate redundant updates.
         let watch = WatchStream::new(server)
             .map(WatchStream::new)
             .flat_map(move |updates| {
@@ -104,6 +105,7 @@ impl proto::Service for Grpc {
 }
 
 fn to_config(kubelet_ips: &KubeletIps, srv: ServerConfig) -> proto::InboundProxyConfig {
+    // Convert the protocol object into a protobuf response.
     let protocol = proto::ProxyProtocol {
         kind: match srv.protocol {
             ProxyProtocol::Detect { timeout } => Some(proto::proxy_protocol::Kind::Detect(
@@ -136,13 +138,21 @@ fn to_config(kubelet_ips: &KubeletIps, srv: ServerConfig) -> proto::InboundProxy
                     .collect(),
                 ..Default::default()
             },
+
+            // Authenticated connections must have TLS and apply to all
+            // networks.
             Authz::Authenticated {
                 ref identities,
                 ref suffixes,
             } => proto::Authorization {
-                networks: vec![proto::Network {
-                    cidr: "0.0.0.0/0".into(),
-                }],
+                networks: vec![
+                    proto::Network {
+                        cidr: "0.0.0.0/0".into(),
+                    },
+                    proto::Network {
+                        cidr: "::/0".into(),
+                    },
+                ],
                 tls_terminated: Some(proto::authorization::Tls {
                     client_id: Some(proto::IdMatch {
                         identities: identities.clone(),
@@ -156,13 +166,13 @@ fn to_config(kubelet_ips: &KubeletIps, srv: ServerConfig) -> proto::InboundProxy
                 ..Default::default()
             },
         })
+        // Traffic is always permitted from the pod's Kubelet IPs.
         .chain(Some(proto::Authorization {
             networks: kubelet_ips
-                .as_nets()
+                .to_nets()
                 .into_iter()
-                .map(|net| proto::Network {
-                    cidr: net.to_string(),
-                })
+                .map(|net| net.to_string())
+                .map(|cidr| proto::Network { cidr })
                 .collect(),
             ..Default::default()
         }))

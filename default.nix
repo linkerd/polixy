@@ -3,24 +3,25 @@ with pkgs;
 
 buildEnv {
   name = "polixy-env";
-  paths =  [
-      binutils
-      cacert
-      cargo-fuzz
-      cargo-udeps
-      cargo-watch
-      clang
-      docker
-      kube3d
-      git
-      (glibcLocales.override { locales = [ "en_US.UTF-8" ]; })
-      cmake
-      openssl
-      pkg-config
-      protobuf
-      rustup
-      stdenv
-    ];
+  paths = [
+    binutils
+    cacert
+    cargo-fuzz
+    cargo-udeps
+    cargo-watch
+    clang
+    cmake
+    docker
+    kube3d
+    git
+    (glibcLocales.override { locales = [ "en_US.UTF-8" ]; })
+    gnupg
+    openssl
+    pkg-config
+    protobuf
+    rustup
+    stdenv
+  ];
 
   passthru = with pkgs; {
     CARGO_TERM_COLOR = "always";

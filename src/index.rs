@@ -1,18 +1,13 @@
-use crate::{v1, watch::Watch};
+use crate::{k8s, v1, watch::Watch, FromResource};
 use anyhow::{anyhow, bail, Context, Error, Result};
 use dashmap::{mapref::entry::Entry as DashEntry, DashMap};
 use futures::prelude::*;
 use ipnet::IpNet;
-use k8s_openapi::api as k8s;
-use kube::{
-    api::{ListParams, Resource},
-    Api,
-};
+use kube::{api::ListParams, Api};
 use kube_runtime::watcher;
 use parking_lot::Mutex;
 use std::{
     collections::{hash_map::Entry as HashEntry, HashMap, HashSet},
-    fmt,
     hash::Hash,
     net::IpAddr,
     sync::Arc,
@@ -20,41 +15,14 @@ use std::{
 use tokio::{sync::watch, time};
 use tracing::{debug, instrument, warn};
 
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
-struct NodeName(String);
-
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct NsName(String);
-
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct PodName(String);
-
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct PortName(String);
-
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub enum ServerPort {
-    Number(u16),
-    Name(PortName),
-}
-
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
-struct SrvName(String);
-
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
-struct AuthzName(String);
-
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct KubeletIps(Arc<Vec<IpAddr>>);
+type SharedLookupMap = Arc<DashMap<k8s::NsName, DashMap<k8s::PodName, Arc<HashMap<u16, Lookup>>>>>;
 
 #[derive(Clone, Debug)]
 pub struct Handle(SharedLookupMap);
 
-type SharedLookupMap = Arc<DashMap<NsName, DashMap<PodName, Arc<HashMap<u16, Lookup>>>>>;
-
 #[derive(Clone, Debug)]
 pub struct Lookup {
-    pub name: Option<PortName>,
+    pub name: Option<v1::server::PortName>,
     pub kubelet_ips: KubeletIps,
 
     /// Each pod-port has a watch for servers; and then the server config can be
@@ -62,12 +30,15 @@ pub struct Lookup {
     pub server: watch::Receiver<watch::Receiver<ServerConfig>>,
 }
 
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct KubeletIps(Arc<Vec<IpAddr>>);
+
 struct Index {
     /// Cached Node IPs.
-    node_ips: HashMap<NodeName, KubeletIps>,
+    node_ips: HashMap<k8s::NodeName, KubeletIps>,
 
     /// Holds per-namespace pod/server/authorization indexes.
-    namespaces: HashMap<NsName, NsIndex>,
+    namespaces: HashMap<k8s::NsName, NsIndex>,
 
     /// A shared map containing watches for all pods.  API clients simply
     /// retrieve watches from this pre-populated map.
@@ -79,8 +50,8 @@ struct Index {
     _default_config_tx: watch::Sender<ServerConfig>,
 
     // Resource watches.
-    nodes: Watch<k8s::core::v1::Node>,
-    pods: Watch<k8s::core::v1::Pod>,
+    nodes: Watch<k8s::Node>,
+    pods: Watch<k8s::Pod>,
     servers: Watch<v1::Server>,
     authorizations: Watch<v1::Authorization>,
 }
@@ -89,24 +60,24 @@ struct Index {
 struct NsIndex {
     /// Caches pod labels so we can differentiate innocuous updates (like status
     /// changes) from label changes that could impact server indexing.
-    pods: HashMap<PodName, Pod>,
+    pods: HashMap<k8s::PodName, Pod>,
 
     /// Caches a watch for each server.
-    servers: HashMap<SrvName, Server>,
+    servers: HashMap<v1::server::Name, Server>,
 
-    authzs: HashMap<AuthzName, AuthzMeta>,
+    authzs: HashMap<v1::authz::Name, AuthzMeta>,
 }
 
 #[derive(Debug)]
 struct Pod {
-    port_names: Arc<HashMap<PortName, u16>>,
+    port_names: Arc<HashMap<v1::server::PortName, u16>>,
     port_lookups: Arc<HashMap<u16, PodPort>>,
     labels: v1::Labels,
 }
 
 #[derive(Debug)]
 struct PodPort {
-    server_name: Mutex<Option<SrvName>>,
+    server_name: Mutex<Option<v1::server::Name>>,
     tx: watch::Sender<watch::Receiver<ServerConfig>>,
 }
 
@@ -142,14 +113,14 @@ pub enum Authz {
 /// Selects servers for an authorization.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum ServerSelector {
-    Name(SrvName),
+    Name(v1::server::Name),
     Selector(Arc<v1::labels::Selector>),
 }
 
 #[derive(Debug)]
 struct Server {
     meta: ServerMeta,
-    authorizations: HashMap<AuthzName, Arc<Authz>>,
+    authorizations: HashMap<v1::authz::Name, Arc<Authz>>,
     rx: watch::Receiver<ServerConfig>,
     tx: watch::Sender<ServerConfig>,
 }
@@ -157,14 +128,9 @@ struct Server {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServerMeta {
     labels: v1::Labels,
-    port: ServerPort,
+    port: v1::server::Port,
     pod_selector: Arc<v1::labels::Selector>,
     protocol: ProxyProtocol,
-}
-
-#[derive(Debug)]
-pub struct PodLookups {
-    servers: Arc<HashMap<u16, Lookup>>,
 }
 
 pub fn run(client: kube::Client) -> (Handle, impl Future<Output = Error>) {
@@ -191,8 +157,8 @@ pub fn run(client: kube::Client) -> (Handle, impl Future<Output = Error>) {
 
 impl Index {
     fn new(
-        nodes: Watch<k8s::core::v1::Node>,
-        pods: Watch<k8s::core::v1::Pod>,
+        nodes: Watch<k8s::Node>,
+        pods: Watch<k8s::Pod>,
         servers: Watch<v1::Server>,
         authorizations: Watch<v1::Authorization>,
         lookups: SharedLookupMap,
@@ -270,8 +236,8 @@ impl Index {
 
     // === Node->IP indexing ===
 
-    fn apply_node(&mut self, node: k8s::core::v1::Node) -> Result<()> {
-        let name = NodeName::from_resource(&node);
+    fn apply_node(&mut self, node: k8s::Node) -> Result<()> {
+        let name = k8s::NodeName::from_resource(&node);
         if let HashEntry::Vacant(entry) = self.node_ips.entry(name) {
             let ips = Self::kubelet_ips(node)
                 .with_context(|| format!("failed to load kubelet IPs for {}", entry.key()))?;
@@ -283,8 +249,8 @@ impl Index {
         Ok(())
     }
 
-    fn delete_node(&mut self, node: k8s::core::v1::Node) -> Result<()> {
-        let name = NodeName::from_resource(&node);
+    fn delete_node(&mut self, node: k8s::Node) -> Result<()> {
+        let name = k8s::NodeName::from_resource(&node);
         if self.node_ips.remove(&name).is_some() {
             debug!(%name, "Node deleted");
             Ok(())
@@ -293,13 +259,13 @@ impl Index {
         }
     }
 
-    fn reset_nodes(&mut self, nodes: Vec<k8s::core::v1::Node>) -> Result<()> {
+    fn reset_nodes(&mut self, nodes: Vec<k8s::Node>) -> Result<()> {
         // Avoid rebuilding data for nodes that have not changed.
         let mut prior_names = self.node_ips.keys().cloned().collect::<HashSet<_>>();
 
         let mut result = Ok(());
         for node in nodes.into_iter() {
-            let name = NodeName::from_resource(&node);
+            let name = k8s::NodeName::from_resource(&node);
             if !prior_names.remove(&name) {
                 if let Err(error) = self.apply_node(node) {
                     warn!(%name, %error, "Failed to apply node");
@@ -322,7 +288,7 @@ impl Index {
         result
     }
 
-    fn kubelet_ips(node: k8s::core::v1::Node) -> Result<KubeletIps> {
+    fn kubelet_ips(node: k8s::Node) -> Result<KubeletIps> {
         let spec = node.spec.ok_or_else(|| anyhow!("node missing spec"))?;
         let cidr = spec
             .pod_cidr
@@ -351,9 +317,9 @@ impl Index {
 
     // === Pod->Port->Server indexing ===
 
-    fn apply_pod(&mut self, pod: k8s::core::v1::Pod) -> Result<()> {
-        let ns_name = NsName::from_resource(&pod);
-        let pod_name = PodName::from_resource(&pod);
+    fn apply_pod(&mut self, pod: k8s::Pod) -> Result<()> {
+        let ns_name = k8s::NsName::from_resource(&pod);
+        let pod_name = k8s::PodName::from_resource(&pod);
         let spec = pod.spec.ok_or_else(|| anyhow!("pod missing spec"))?;
 
         let NsIndex {
@@ -370,7 +336,7 @@ impl Index {
                 let kubelet = {
                     let name = spec
                         .node_name
-                        .map(|n| NodeName(n.into()))
+                        .map(k8s::NodeName::from)
                         .ok_or_else(|| anyhow!("pod missing node name"))?;
                     self.node_ips
                         .get(&name)
@@ -425,8 +391,10 @@ impl Index {
 
                 for (srv_name, server) in servers.iter() {
                     let pod_port = match server.meta.port {
-                        ServerPort::Number(ref p) => pod_ports.get(p),
-                        ServerPort::Name(ref n) => port_names.get(n).and_then(|p| pod_ports.get(p)),
+                        v1::server::Port::Number(ref p) => pod_ports.get(p),
+                        v1::server::Port::Name(ref n) => {
+                            port_names.get(n).and_then(|p| pod_ports.get(p))
+                        }
                     };
                     if let Some(pod_port) = pod_port {
                         if server.meta.pod_selector.matches(&labels) {
@@ -454,8 +422,8 @@ impl Index {
                 if pod_entry.get().labels != labels {
                     for (srv_name, server) in servers.iter() {
                         let pod_port = match server.meta.port {
-                            ServerPort::Number(ref p) => pod_entry.get().port_lookups.get(p),
-                            ServerPort::Name(ref n) => pod_entry
+                            v1::server::Port::Number(ref p) => pod_entry.get().port_lookups.get(p),
+                            v1::server::Port::Name(ref n) => pod_entry
                                 .get()
                                 .port_names
                                 .get(n)
@@ -484,13 +452,13 @@ impl Index {
         Ok(())
     }
 
-    fn delete_pod(&mut self, pod: k8s::core::v1::Pod) -> Result<()> {
-        let ns_name = NsName::from_resource(&pod);
-        let pod_name = PodName::from_resource(&pod);
+    fn delete_pod(&mut self, pod: k8s::Pod) -> Result<()> {
+        let ns_name = k8s::NsName::from_resource(&pod);
+        let pod_name = k8s::PodName::from_resource(&pod);
         self.rm_pod(&ns_name, &pod_name)
     }
 
-    fn rm_pod(&mut self, ns: &NsName, pod: &PodName) -> Result<()> {
+    fn rm_pod(&mut self, ns: &k8s::NsName, pod: &k8s::PodName) -> Result<()> {
         self.namespaces
             .get_mut(&ns)
             .ok_or_else(|| anyhow!("namespace {} doesn't exist", ns))?
@@ -507,7 +475,7 @@ impl Index {
         Ok(())
     }
 
-    fn reset_pods(&mut self, pods: Vec<k8s::core::v1::Pod>) -> Result<()> {
+    fn reset_pods(&mut self, pods: Vec<k8s::Pod>) -> Result<()> {
         let mut prior_pod_labels = self
             .namespaces
             .iter()
@@ -523,8 +491,8 @@ impl Index {
 
         let mut result = Ok(());
         for pod in pods.into_iter() {
-            let ns_name = NsName::from_resource(&pod);
-            let pod_name = PodName::from_resource(&pod);
+            let ns_name = k8s::NsName::from_resource(&pod);
+            let pod_name = k8s::PodName::from_resource(&pod);
 
             if let Some(prior) = prior_pod_labels.get_mut(&ns_name) {
                 if let Some(prior_labels) = prior.remove(&pod_name) {
@@ -554,13 +522,10 @@ impl Index {
     // === Server indexing ===
 
     fn apply_server(&mut self, srv: v1::Server) {
-        let ns_name = NsName::from_resource(&srv);
-        let srv_name = SrvName::from_resource(&srv);
+        let ns_name = k8s::NsName::from_resource(&srv);
+        let srv_name = v1::server::Name::from_resource(&srv);
         let labels = v1::Labels::from(srv.metadata.labels);
-        let port = match srv.spec.port {
-            v1::server::Port::Number(n) => ServerPort::Number(n),
-            v1::server::Port::Name(n) => ServerPort::Name(n.into()),
-        };
+        let port = srv.spec.port;
 
         let NsIndex {
             ref pods,
@@ -656,8 +621,8 @@ impl Index {
         for pod in pods.values() {
             for (srv_name, srv) in servers.iter() {
                 let pod_port = match srv.meta.port {
-                    ServerPort::Number(ref p) => pod.port_lookups.get(p),
-                    ServerPort::Name(ref n) => {
+                    v1::server::Port::Number(ref p) => pod.port_lookups.get(p),
+                    v1::server::Port::Name(ref n) => {
                         pod.port_names.get(&n).and_then(|p| pod.port_lookups.get(p))
                     }
                 };
@@ -692,12 +657,12 @@ impl Index {
     }
 
     fn delete_server(&mut self, srv: v1::Server) -> Result<()> {
-        let ns_name = NsName::from_resource(&srv);
-        let srv_name = SrvName::from_resource(&srv);
+        let ns_name = k8s::NsName::from_resource(&srv);
+        let srv_name = v1::server::Name::from_resource(&srv);
         self.rm_server(ns_name, srv_name)
     }
 
-    fn rm_server(&mut self, ns_name: NsName, srv_name: SrvName) -> Result<()> {
+    fn rm_server(&mut self, ns_name: k8s::NsName, srv_name: v1::server::Name) -> Result<()> {
         let ns = self
             .namespaces
             .get_mut(&ns_name)
@@ -739,16 +704,13 @@ impl Index {
 
         let mut result = Ok(());
         for srv in srvs.into_iter() {
-            let ns_name = NsName::from_resource(&srv);
-            let srv_name = SrvName::from_resource(&srv);
+            let ns_name = k8s::NsName::from_resource(&srv);
+            let srv_name = v1::server::Name::from_resource(&srv);
 
             if let Some(prior_servers) = prior_servers.get_mut(&ns_name) {
                 if let Some(prior_meta) = prior_servers.remove(&srv_name) {
                     let labels = v1::Labels::from(srv.metadata.labels.clone());
-                    let port = match srv.spec.port.clone() {
-                        v1::server::Port::Number(n) => ServerPort::Number(n),
-                        v1::server::Port::Name(n) => ServerPort::Name(n.into()),
-                    };
+                    let port = srv.spec.port.clone();
                     let protocol = Self::mk_protocol(srv.spec.proxy_protocol.as_ref());
                     let meta = ServerMeta {
                         labels,
@@ -779,8 +741,8 @@ impl Index {
     // === Authorization indexing ===
 
     fn apply_authz(&mut self, authorization: v1::Authorization) -> Result<()> {
-        let ns_name = NsName::from_resource(&authorization);
-        let authz_name = AuthzName::from_resource(&authorization);
+        let ns_name = k8s::NsName::from_resource(&authorization);
+        let authz_name = v1::authz::Name::from_resource(&authorization);
         let meta = Self::mk_authz(&ns_name, authorization.spec)?;
 
         let NsIndex {
@@ -825,11 +787,11 @@ impl Index {
         Ok(())
     }
 
-    fn mk_authz(ns_name: &NsName, spec: v1::authz::AuthorizationSpec) -> Result<AuthzMeta> {
+    fn mk_authz(ns_name: &k8s::NsName, spec: v1::authz::AuthorizationSpec) -> Result<AuthzMeta> {
         let servers = {
             let v1::authz::Server { name, selector } = spec.server;
             match (name, selector) {
-                (Some(n), None) => ServerSelector::Name(SrvName(n.into())),
+                (Some(n), None) => ServerSelector::Name(n),
                 (None, Some(sel)) => ServerSelector::Selector(sel.into()),
                 (Some(_), Some(_)) => bail!("authorization selection is ambiguous"),
                 (None, None) => bail!("authorization selects no servers"),
@@ -898,12 +860,12 @@ impl Index {
     }
 
     fn delete_authz(&mut self, authz: v1::Authorization) -> Result<()> {
-        let ns_name = NsName::from_resource(&authz);
-        let authz_name = AuthzName::from_resource(&authz);
+        let ns_name = k8s::NsName::from_resource(&authz);
+        let authz_name = v1::authz::Name::from_resource(&authz);
         self.rm_authz(ns_name, authz_name)
     }
 
-    fn rm_authz(&mut self, ns_name: NsName, authz_name: AuthzName) -> Result<()> {
+    fn rm_authz(&mut self, ns_name: k8s::NsName, authz_name: v1::authz::Name) -> Result<()> {
         let ns = self
             .namespaces
             .get_mut(&ns_name)
@@ -923,8 +885,8 @@ impl Index {
 
         let mut result = Ok(());
         for authz in authzs.into_iter() {
-            let ns_name = NsName::from_resource(&authz);
-            let authz_name = AuthzName::from_resource(&authz);
+            let ns_name = k8s::NsName::from_resource(&authz);
+            let authz_name = v1::authz::Name::from_resource(&authz);
 
             if let Some(prior_ns) = prior_authzs.get_mut(&ns_name) {
                 if let Some(prior_authz) = prior_ns.remove(&authz_name) {
@@ -962,14 +924,14 @@ impl Index {
 // === impl Server ===
 
 impl Server {
-    fn add_authz(&mut self, name: &AuthzName, authz: Arc<Authz>) {
+    fn add_authz(&mut self, name: &v1::authz::Name, authz: Arc<Authz>) {
         self.authorizations.insert(name.clone(), authz);
         let mut config = self.rx.borrow().clone();
         config.authorizations = self.authorizations.values().cloned().collect();
         self.tx.send(config).expect("config must send")
     }
 
-    fn remove_authz(&mut self, name: &AuthzName) {
+    fn remove_authz(&mut self, name: &v1::authz::Name) {
         if self.authorizations.remove(name).is_some() {
             let mut config = self.rx.borrow().clone();
             config.authorizations = self.authorizations.values().cloned().collect();
@@ -981,110 +943,10 @@ impl Server {
 // === impl Handle ===
 
 impl Handle {
-    pub fn lookup(&self, ns: NsName, name: PodName, port: u16) -> Option<Lookup> {
+    pub fn lookup(&self, ns: k8s::NsName, name: k8s::PodName, port: u16) -> Option<Lookup> {
         let ns = self.0.get(&ns)?;
         let pod = ns.get(&name)?;
         let lookup = pod.get(&port)?;
         Some(lookup.clone())
-    }
-}
-
-trait FromResource<T> {
-    fn from_resource(resource: &T) -> Self;
-}
-
-// === NodeName ===
-
-impl FromResource<k8s::core::v1::Node> for NodeName {
-    fn from_resource(n: &k8s::core::v1::Node) -> Self {
-        Self(n.name().into())
-    }
-}
-
-impl fmt::Display for NodeName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-// === NsName ===
-
-impl<T: Resource> FromResource<T> for NsName {
-    fn from_resource(t: &T) -> Self {
-        t.namespace().unwrap_or_else(|| "default".into()).into()
-    }
-}
-
-impl<T: Into<String>> From<T> for NsName {
-    fn from(ns: T) -> Self {
-        Self(ns.into())
-    }
-}
-
-impl fmt::Display for NsName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-// === PodName ===
-
-impl FromResource<k8s::core::v1::Pod> for PodName {
-    fn from_resource(p: &k8s::core::v1::Pod) -> Self {
-        Self(p.name().into())
-    }
-}
-
-impl<T: Into<String>> From<T> for PodName {
-    fn from(pod: T) -> Self {
-        Self(pod.into())
-    }
-}
-
-impl fmt::Display for PodName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-// === PortName ===
-
-impl<T: Into<String>> From<T> for PortName {
-    fn from(p: T) -> Self {
-        Self(p.into())
-    }
-}
-
-impl fmt::Display for PortName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-// === SrvName ===
-
-impl FromResource<v1::Server> for SrvName {
-    fn from_resource(s: &v1::Server) -> Self {
-        Self(s.name().into())
-    }
-}
-
-impl fmt::Display for SrvName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-// === AuthzName ===
-
-impl FromResource<v1::Authorization> for AuthzName {
-    fn from_resource(s: &v1::Authorization) -> Self {
-        Self(s.name().into())
-    }
-}
-
-impl fmt::Display for AuthzName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
     }
 }

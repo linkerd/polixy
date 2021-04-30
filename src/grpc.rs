@@ -1,4 +1,7 @@
-use crate::index::{Handle, KubeletIps, Lookup, NsName, PodName, ServerConfig};
+use crate::{
+    index::{Handle, KubeletIps, Lookup, ServerConfig},
+    k8s::{NsName, PodName},
+};
 use futures::prelude::*;
 use tokio_stream::wrappers::WatchStream;
 

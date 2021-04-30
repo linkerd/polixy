@@ -1,7 +1,12 @@
 use super::labels;
-use kube::CustomResource;
+use crate::FromResource;
+use kube::{api::Resource, CustomResource};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::fmt;
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct Name(String);
 
 /// Authorizes clients to connect to a Server.
 #[kube(
@@ -20,7 +25,7 @@ pub struct AuthorizationSpec {
 
 #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
 pub struct Server {
-    pub name: Option<String>,
+    pub name: Option<super::server::Name>,
     pub selector: Option<labels::Selector>,
 }
 
@@ -50,4 +55,18 @@ pub struct ServiceAccountRef {
 #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
 pub struct Unauthenticated {
     pub networks: Vec<String>,
+}
+
+// === Name ===
+
+impl FromResource<Authorization> for Name {
+    fn from_resource(s: &Authorization) -> Self {
+        Self(s.name())
+    }
+}
+
+impl fmt::Display for Name {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
 }

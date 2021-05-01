@@ -179,7 +179,10 @@ impl Index {
             },
             authorizations: vec![
                 // Permit all traffic when a `Server` instance is not present.
-                Arc::new(Authz::Unauthenticated(vec!["0.0.0.0/0".parse().unwrap()])),
+                Arc::new(Authz::Unauthenticated(vec![
+                    "0.0.0.0/0".parse().unwrap(),
+                    "::/0".parse().unwrap(),
+                ])),
             ],
         });
 
@@ -419,7 +422,11 @@ impl Index {
                                 .tx
                                 .send(server.rx.clone())
                                 .expect("pod config receiver must be set");
+                        } else {
+                            trace!(server = %srv_name, pod = %pod_entry.key(), "Server does not match pod");
                         }
+                    } else {
+                        trace!(server = %srv_name, pod = %pod_entry.key(), port = ?server.meta.port, "Server does not match port");
                     }
                 }
 

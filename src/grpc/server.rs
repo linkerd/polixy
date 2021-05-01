@@ -87,6 +87,7 @@ impl proto::Service for Server {
             })?;
 
         // TODO deduplicate redundant updates.
+        // TODO end streams on drain.
         let watch = WatchStream::new(server)
             .map(WatchStream::new)
             .flat_map(move |updates| {

@@ -12,7 +12,7 @@ enum Command {
         port: u16,
     },
     Client {
-        #[structopt(long, default_value = "localhost.:8910")]
+        #[structopt(long, default_value = "http://localhost.:8910")]
         server: String,
         #[structopt(subcommand)]
         command: ClientCommand,

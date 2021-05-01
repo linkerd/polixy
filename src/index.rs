@@ -247,6 +247,10 @@ impl Index {
 
     // === Node->IP indexing ===
 
+    #[instrument(
+        skip(self, node),
+        fields(name = ?node.metadata.name)
+    )]
     fn apply_node(&mut self, node: k8s::Node) -> Result<()> {
         let name = k8s::NodeName::from_resource(&node);
 
@@ -254,27 +258,30 @@ impl Index {
             HashEntry::Vacant(entry) => {
                 let ips = Self::kubelet_ips(node)
                     .with_context(|| format!("failed to load kubelet IPs for {}", entry.key()))?;
-                debug!(name = %entry.key(), ?ips, "Adding node");
+                debug!(?ips, "Adding");
                 entry.insert(ips);
             }
-            HashEntry::Occupied(entry) => {
-                trace!(name = %entry.key(), "Node already existed");
-            }
+            HashEntry::Occupied(_) => trace!("Already existed"),
         }
 
         Ok(())
     }
 
+    #[instrument(
+        skip(self, node),
+        fields(name = ?node.metadata.name)
+    )]
     fn delete_node(&mut self, node: k8s::Node) -> Result<()> {
         let name = k8s::NodeName::from_resource(&node);
         if self.node_ips.remove(&name).is_some() {
-            debug!(%name, "Node deleted");
+            debug!("Deleted");
             Ok(())
         } else {
             Err(anyhow!("node {} already deleted", name))
         }
     }
 
+    #[instrument(skip(self, nodes))]
     fn reset_nodes(&mut self, nodes: Vec<k8s::Node>) -> Result<()> {
         // Avoid rebuilding data for nodes that have not changed.
         let mut prior_names = self.node_ips.keys().cloned().collect::<HashSet<_>>();
@@ -288,12 +295,12 @@ impl Index {
                     result = Err(error);
                 }
             } else {
-                trace!(%name, "Node already existed");
+                trace!(%name, "Already existed");
             }
         }
 
-        debug!(?prior_names, "Removing defunct nodes");
         for name in prior_names.into_iter() {
+            debug!(?name, "Removing defunct node");
             let removed = self.node_ips.remove(&name).is_some();
             debug_assert!(removed, "node must be removable");
             if !removed {
@@ -333,6 +340,13 @@ impl Index {
 
     // === Pod->Port->Server indexing ===
 
+    #[instrument(
+        skip(self, pod),
+        fields(
+            ns = ?pod.metadata.namespace,
+            name = ?pod.metadata.name,
+        )
+    )]
     fn apply_pod(&mut self, pod: k8s::Pod) -> Result<()> {
         let ns_name = k8s::NsName::from_resource(&pod);
         let pod_name = k8s::PodName::from_resource(&pod);
@@ -370,7 +384,7 @@ impl Index {
                             if p.protocol.map(|p| p == "TCP").unwrap_or(true) {
                                 let port = p.container_port as u16;
                                 if pod_ports.contains_key(&port) {
-                                    debug!(pod = %pod_entry.key(), port, "Port duplicated");
+                                    debug!(port, "Port duplicated");
                                     continue;
                                 }
 
@@ -378,7 +392,7 @@ impl Index {
                                 if let Some(name) = name.clone() {
                                     match port_names.entry(name) {
                                         HashEntry::Occupied(entry) => {
-                                            debug!(pod = %pod_entry.key(), name = %entry.key(), "Port duplicated");
+                                            debug!(name = %entry.key(), "Port duplicated");
                                             continue;
                                         }
                                         HashEntry::Vacant(entry) => {
@@ -415,7 +429,7 @@ impl Index {
                     };
                     if let Some(pod_port) = pod_port {
                         if server.meta.pod_selector.matches(&labels) {
-                            debug!(server = %srv_name, pod = %pod_entry.key(), port = ?server.meta.port, "Adding server to pod");
+                            debug!(server = %srv_name, port = ?server.meta.port, "Matches");
                             // TODO handle conflicts
                             *pod_port.server_name.lock() = Some(srv_name.clone());
                             pod_port
@@ -426,13 +440,16 @@ impl Index {
                             trace!(
                                 server = %srv_name,
                                 selector = ?server.meta.pod_selector,
-                                pod = %pod_entry.key(),
                                 labels = ?labels,
-                                "Server does not match pod"
+                                "Does not match",
                             );
                         }
                     } else {
-                        trace!(server = %srv_name, pod = %pod_entry.key(), port = ?server.meta.port, "Server does not match port");
+                        trace!(
+                            server = %srv_name,
+                            port = ?server.meta.port,
+                            "Does not match port",
+                        );
                     }
                 }
 
@@ -460,7 +477,7 @@ impl Index {
 
                         if let Some(pod_port) = pod_port {
                             if server.meta.pod_selector.matches(&labels) {
-                                debug!(server = %srv_name, pod = %pod_entry.key(), port = ?server.meta.port, "Adding server to pod");
+                                debug!(server = %srv_name, port = ?server.meta.port, "Matches");
                                 // TODO handle conflicts
                                 *pod_port.server_name.lock() = Some(srv_name.clone());
                                 pod_port
@@ -473,11 +490,15 @@ impl Index {
                                     selector = ?server.meta.pod_selector,
                                     pod = %pod_entry.key(),
                                     labels = ?labels,
-                                    "Server does not match pod"
+                                    "Does not match",
                                 );
                             }
                         } else {
-                            trace!(server = %srv_name, pod = %pod_entry.key(), port = ?server.meta.port, "Server does not match port");
+                            trace!(
+                                server = %srv_name,
+                                port = ?server.meta.port,
+                                "Does not match port",
+                            );
                         }
                     }
 
@@ -491,6 +512,13 @@ impl Index {
         Ok(())
     }
 
+    #[instrument(
+        skip(self, pod),
+        fields(
+            ns = ?pod.metadata.namespace,
+            name = ?pod.metadata.name,
+        )
+    )]
     fn delete_pod(&mut self, pod: k8s::Pod) -> Result<()> {
         let ns_name = k8s::NsName::from_resource(&pod);
         let pod_name = k8s::PodName::from_resource(&pod);
@@ -512,6 +540,7 @@ impl Index {
         Ok(())
     }
 
+    #[instrument(skip(self, pods))]
     fn reset_pods(&mut self, pods: Vec<k8s::Pod>) -> Result<()> {
         let mut prior_pod_labels = self
             .namespaces
@@ -558,6 +587,13 @@ impl Index {
 
     // === Server indexing ===
 
+    #[instrument(
+        skip(self, srv),
+        fields(
+            ns = ?srv.metadata.namespace,
+            name = ?srv.metadata.name,
+        )
+    )]
     fn apply_server(&mut self, srv: v1::Server) {
         let ns_name = k8s::NsName::from_resource(&srv);
         let srv_name = v1::server::Name::from_resource(&srv);
@@ -581,8 +617,10 @@ impl Index {
                         ServerSelector::Selector(ref s) => s.matches(&labels),
                     };
                     if matches {
-                        debug!(authz = %authz_name, server = %entry.key(), "Adding authz to server");
+                        debug!(authz = %authz_name, "Matched");
                         authorizations.insert(authz_name.clone(), a.authz.clone());
+                    } else {
+                        trace!(authz = %authz_name, "Not matched");
                     }
                 }
 
@@ -622,8 +660,10 @@ impl Index {
                                 ServerSelector::Selector(ref s) => s.matches(&labels),
                             };
                             if matches {
-                                debug!(authz = %authz_name, server = %entry.key(), "Adding authz to server");
+                                debug!(authz = %authz_name, "Matched");
                                 authorizations.insert(authz_name.clone(), a.authz.clone());
+                            } else {
+                                trace!(authz = %authz_name, "Not matched");
                             }
                         }
 
@@ -635,6 +675,7 @@ impl Index {
                     config.protocol = protocol.clone();
                     entry.get_mut().meta.protocol = protocol;
 
+                    debug!("Updating");
                     entry
                         .get()
                         .tx
@@ -668,7 +709,7 @@ impl Index {
 
                 if let Some(pod_port) = pod_port {
                     if srv.meta.pod_selector.matches(&pod.labels) {
-                        debug!(server = %srv_name, pod = %pod_name, port = ?srv.meta.port, "Adding server to pod");
+                        debug!(pod = %pod_name, port = ?srv.meta.port, "Matches");
                         // TODO handle conflicts
                         let mut sn = pod_port.server_name.lock();
                         debug_assert!(sn.is_none(), "pod port matches multiple servers");
@@ -696,6 +737,13 @@ impl Index {
         }
     }
 
+    #[instrument(
+        skip(self, srv),
+        fields(
+            ns = ?srv.metadata.namespace,
+            name = ?srv.metadata.name,
+        )
+    )]
     fn delete_server(&mut self, srv: v1::Server) -> Result<()> {
         let ns_name = k8s::NsName::from_resource(&srv);
         let srv_name = v1::server::Name::from_resource(&srv);
@@ -728,6 +776,7 @@ impl Index {
         Ok(())
     }
 
+    #[instrument(skip(self, srvs))]
     fn reset_servers(&mut self, srvs: Vec<v1::Server>) -> Result<()> {
         let mut prior_servers = self
             .namespaces
@@ -780,6 +829,13 @@ impl Index {
 
     // === Authorization indexing ===
 
+    #[instrument(
+        skip(self, authorization),
+        fields(
+            ns = ?authorization.metadata.namespace,
+            name = ?authorization.metadata.name,
+        )
+    )]
     fn apply_authz(&mut self, authorization: v1::Authorization) -> Result<()> {
         let ns_name = k8s::NsName::from_resource(&authorization);
         let authz_name = v1::authz::Name::from_resource(&authorization);
@@ -799,7 +855,7 @@ impl Index {
                         ServerSelector::Selector(ref s) => s.matches(&srv.meta.labels),
                     };
                     if matches {
-                        debug!(authz = %entry.key(), server = %srv_name, "Adding authz to server");
+                        debug!(authz = %entry.key(), "Adding authz to server");
                         srv.add_authz(entry.key(), meta.authz.clone());
                     }
                 }
@@ -815,10 +871,10 @@ impl Index {
                             ServerSelector::Selector(ref s) => s.matches(&srv.meta.labels),
                         };
                         if matches {
-                            debug!(authz = %entry.key(), server = %srv_name, "Adding authz to server");
+                            debug!(authz = %entry.key(), "Adding authz to server");
                             srv.add_authz(entry.key(), meta.authz.clone());
                         } else {
-                            debug!(authz = %entry.key(), server = %srv_name, "Removing authz from server");
+                            debug!(authz = %entry.key(), "Removing authz from server");
                             srv.remove_authz(entry.key());
                         }
                     }
@@ -849,13 +905,16 @@ impl Index {
                 if let Some(ids) = auth.identities {
                     for id in ids.into_iter() {
                         if id == "*" {
+                            debug!(suffix = %id, "Authenticated");
                             suffixes.push(Vec::new());
                         } else if id.starts_with("*.") {
+                            debug!(suffix = %id, "Authenticated");
                             let mut parts = id.split('.');
                             let star = parts.next();
                             debug_assert_eq!(star, Some("*"));
                             suffixes.push(parts.map(|p| p.to_string()).collect());
                         } else {
+                            debug!(%id, "Authenticated");
                             identities.push(id);
                         }
                     }
@@ -865,7 +924,7 @@ impl Index {
                     for sa in sas.into_iter() {
                         let ns = sa.namespace.unwrap_or_else(|| ns_name.to_string());
                         let name = sa.name;
-                        debug!(ns = %ns, sa = %name, "Adding serviceaccount to authz");
+                        debug!(ns = %ns, serviceaccount = %name, "Authenticated");
                         // FIXME configurable cluster domain
                         identities.push(format!(
                             "{}.{}.serviceaccount.linkerd.cluster.local",
@@ -888,6 +947,7 @@ impl Index {
                 let mut nets = Vec::with_capacity(unauth.networks.len());
                 for s in unauth.networks.into_iter() {
                     let net = s.parse::<IpNet>()?;
+                    debug!(%net, "Unauthenticated");
                     nets.push(net);
                 }
                 Authz::Unauthenticated(nets)
@@ -903,6 +963,13 @@ impl Index {
         Ok(AuthzMeta { servers, authz })
     }
 
+    #[instrument(
+        skip(self, authz),
+        fields(
+            ns = ?authz.metadata.namespace,
+            name = ?authz.metadata.name,
+        )
+    )]
     fn delete_authz(&mut self, authz: v1::Authorization) -> Result<()> {
         let ns_name = k8s::NsName::from_resource(&authz);
         let authz_name = v1::authz::Name::from_resource(&authz);
@@ -920,6 +987,7 @@ impl Index {
         Ok(())
     }
 
+    #[instrument(skip(self, authzs))]
     fn reset_authzs(&mut self, authzs: Vec<v1::Authorization>) -> Result<()> {
         let mut prior_authzs = self
             .namespaces

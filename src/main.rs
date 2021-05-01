@@ -12,7 +12,7 @@ enum Command {
         port: u16,
     },
     Client {
-        #[structopt(long, default_value = "http://localhost.:8910")]
+        #[structopt(long, default_value = "http://127.0.0.1:8910")]
         server: String,
         #[structopt(subcommand)]
         command: ClientCommand,
@@ -22,6 +22,12 @@ enum Command {
 #[derive(Debug, StructOpt)]
 enum ClientCommand {
     Watch {
+        #[structopt(short, long, default_value = "default")]
+        namespace: String,
+        pod: String,
+        port: u16,
+    },
+    Get {
         #[structopt(short, long, default_value = "default")]
         namespace: String,
         pod: String,
@@ -71,7 +77,22 @@ async fn main() -> Result<()> {
                 while let Some(config) = updates.try_next().await? {
                     println!("{:#?}", config);
                 }
+                eprintln!("Stream closed");
+                Ok(())
+            }
 
+            ClientCommand::Get {
+                namespace,
+                pod,
+                port,
+            } => {
+                let mut client = polixy::grpc::Client::connect(server).await?;
+                let mut updates = client.watch_inbound(namespace, pod, port).await?;
+                if let Some(config) = updates.try_next().await? {
+                    println!("{:#?}", config);
+                } else {
+                    eprintln!("No configuration read");
+                }
                 Ok(())
             }
         },

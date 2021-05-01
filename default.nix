@@ -1,4 +1,4 @@
-{ pkgs ? import <nixpkgs> { } }:
+{ pkgs ? import <nixos-unstable> { } }:
 with pkgs;
 
 buildEnv {

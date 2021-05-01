@@ -1,9 +1,9 @@
-{ pkgs ? import <nixpkgs> { } }:
+scope@{ pkgs ? import <nixos-unstable> { } }:
 with pkgs;
 
 let env = (import ./default.nix scope);
 
-in mkShell { 
+in mkShell {
   CARGO_TERM_COLOR = "always";
   CURL_CA_BUNDLE = "${cacert}/etc/ssl/certs/ca-bundle.crt";
   GIT_SSL_CAINFO = "${cacert}/etc/ssl/certs/ca-bundle.crt";

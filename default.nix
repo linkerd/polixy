@@ -11,6 +11,7 @@ buildEnv {
     cargo-watch
     clang
     cmake
+    curl
     docker
     kube3d
     git
@@ -25,7 +26,7 @@ buildEnv {
 
   passthru = with pkgs; {
     CARGO_TERM_COLOR = "always";
-    CURL_CA_BUNDLE = "${cacert}/etc/ca-bundle.crt";
+    CURL_CA_BUNDLE = "${cacert}/etc/ssl/certs/ca-bundle.crt";
     GIT_SSL_CAINFO = "${cacert}/etc/ssl/certs/ca-bundle.crt";
     LOCALE_ARCHIVE = "${glibcLocales}/lib/locale/locale-archive";
     LC_ALL = "en_US.UTF-8";

@@ -3,6 +3,7 @@ use kube::api::Resource;
 use kube_runtime::watcher;
 use serde::de::DeserializeOwned;
 use std::{fmt, hash::Hash, pin::Pin};
+use tokio::time;
 use tracing::info;
 
 pub(crate) struct Watch<T>(
@@ -34,7 +35,10 @@ where
                 .expect("watch stream must not terminate")
             {
                 Ok(ev) => return ev,
-                Err(error) => info!(%error, "Disconnected"),
+                Err(error) => {
+                    info!(%error, "Disconnected");
+                    time::sleep(time::Duration::from_secs(1)).await;
+                }
             }
         }
     }

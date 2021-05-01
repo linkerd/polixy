@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use futures::{future, prelude::*};
 use polixy::index;
 use structopt::StructOpt;
-use tracing::{info, instrument};
+use tracing::{debug, info, instrument};
 
 #[derive(Debug, StructOpt)]
 #[structopt(name = "polixy", about = "A policy resource prototype")]
@@ -14,6 +14,18 @@ enum Command {
     Client {
         #[structopt(long, default_value = "localhost.:8910")]
         server: String,
+        #[structopt(subcommand)]
+        command: ClientCommand,
+    },
+}
+
+#[derive(Debug, StructOpt)]
+enum ClientCommand {
+    Watch {
+        #[structopt(short, long, default_value = "default")]
+        namespace: String,
+        pod: String,
+        port: u16,
     },
 }
 
@@ -47,7 +59,22 @@ async fn main() -> Result<()> {
                 },
             }
         }
-        Command::Client { server: _ } => todo!("client"),
+
+        Command::Client { server, command } => match command {
+            ClientCommand::Watch {
+                namespace,
+                pod,
+                port,
+            } => {
+                let mut client = polixy::grpc::Client::connect(server).await?;
+                let mut updates = client.watch_inbound(namespace, pod, port).await?;
+                while let Some(config) = updates.try_next().await? {
+                    println!("{:#?}", config);
+                }
+
+                Ok(())
+            }
+        },
     }
 }
 
@@ -71,8 +98,12 @@ async fn grpc(port: u16, index: index::Handle, drain: linkerd_drain::Watch) -> R
 
 async fn shutdown(drain: linkerd_drain::Signal) {
     tokio::select! {
-        _ = tokio::signal::ctrl_c() => {},
-        _ = sigterm() => {}
+        _ = tokio::signal::ctrl_c() => {
+            debug!("Received ctrl-c");
+        },
+        _ = sigterm() => {
+            debug!("Received SIGTERM");
+        }
     }
     info!("Shutting down");
     drain.drain().await;

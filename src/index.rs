@@ -423,7 +423,13 @@ impl Index {
                                 .send(server.rx.clone())
                                 .expect("pod config receiver must be set");
                         } else {
-                            trace!(server = %srv_name, pod = %pod_entry.key(), "Server does not match pod");
+                            trace!(
+                                server = %srv_name,
+                                selector = ?server.meta.pod_selector,
+                                pod = %pod_entry.key(),
+                                labels = ?labels,
+                                "Server does not match pod"
+                            );
                         }
                     } else {
                         trace!(server = %srv_name, pod = %pod_entry.key(), port = ?server.meta.port, "Server does not match port");
@@ -461,7 +467,17 @@ impl Index {
                                     .tx
                                     .send(server.rx.clone())
                                     .expect("pod config receiver must be set");
+                            } else {
+                                trace!(
+                                    server = %srv_name,
+                                    selector = ?server.meta.pod_selector,
+                                    pod = %pod_entry.key(),
+                                    labels = ?labels,
+                                    "Server does not match pod"
+                                );
                             }
+                        } else {
+                            trace!(server = %srv_name, pod = %pod_entry.key(), port = ?server.meta.port, "Server does not match port");
                         }
                     }
 

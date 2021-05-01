@@ -13,7 +13,7 @@ use std::{
     sync::Arc,
 };
 use tokio::{sync::watch, time};
-use tracing::{debug, instrument, warn};
+use tracing::{debug, instrument, trace, warn};
 
 type SharedLookupMap = Arc<DashMap<(k8s::NsName, k8s::PodName), Arc<HashMap<u16, Lookup>>>>;
 
@@ -247,13 +247,16 @@ impl Index {
     fn apply_node(&mut self, node: k8s::Node) -> Result<()> {
         let name = k8s::NodeName::from_resource(&node);
 
-        if let HashEntry::Vacant(entry) = self.node_ips.entry(name) {
-            let ips = Self::kubelet_ips(node)
-                .with_context(|| format!("failed to load kubelet IPs for {}", entry.key()))?;
-            debug!(name = %entry.key(), ?ips, "Adding node");
-            entry.insert(ips);
-        } else {
-            debug!(?node.metadata, "Node already existed");
+        match self.node_ips.entry(name) {
+            HashEntry::Vacant(entry) => {
+                let ips = Self::kubelet_ips(node)
+                    .with_context(|| format!("failed to load kubelet IPs for {}", entry.key()))?;
+                debug!(name = %entry.key(), ?ips, "Adding node");
+                entry.insert(ips);
+            }
+            HashEntry::Occupied(entry) => {
+                trace!(name = %entry.key(), "Node already existed");
+            }
         }
 
         Ok(())
@@ -282,7 +285,7 @@ impl Index {
                     result = Err(error);
                 }
             } else {
-                debug!(%name, "Node already existed");
+                trace!(%name, "Node already existed");
             }
         }
 
@@ -364,7 +367,7 @@ impl Index {
                             if p.protocol.map(|p| p == "TCP").unwrap_or(true) {
                                 let port = p.container_port as u16;
                                 if pod_ports.contains_key(&port) {
-                                    debug!(port, "Port duplicated");
+                                    debug!(pod = %pod_entry.key(), port, "Port duplicated");
                                     continue;
                                 }
 
@@ -372,7 +375,7 @@ impl Index {
                                 if let Some(name) = name.clone() {
                                     match port_names.entry(name) {
                                         HashEntry::Occupied(entry) => {
-                                            debug!(name = %entry.key(), "Port name duplicated");
+                                            debug!(pod = %pod_entry.key(), name = %entry.key(), "Port duplicated");
                                             continue;
                                         }
                                         HashEntry::Vacant(entry) => {
@@ -543,6 +546,38 @@ impl Index {
         } = self.namespaces.entry(ns_name).or_default();
 
         match servers.entry(srv_name) {
+            HashEntry::Vacant(entry) => {
+                let protocol = Self::mk_protocol(srv.spec.proxy_protocol.as_ref());
+
+                let mut authorizations = HashMap::with_capacity(ns_authzs.len());
+                for (authz_name, a) in ns_authzs.iter() {
+                    let matches = match a.servers {
+                        ServerSelector::Name(ref n) => n == entry.key(),
+                        ServerSelector::Selector(ref s) => s.matches(&labels),
+                    };
+                    if matches {
+                        debug!(authz = %authz_name, server = %entry.key(), "Adding authz to server");
+                        authorizations.insert(authz_name.clone(), a.authz.clone());
+                    }
+                }
+
+                let (tx, rx) = watch::channel(ServerConfig {
+                    protocol: protocol.clone(),
+                    authorizations: authorizations.values().cloned().collect(),
+                });
+                entry.insert(Server {
+                    tx,
+                    rx,
+                    authorizations,
+                    meta: ServerMeta {
+                        labels,
+                        port,
+                        pod_selector: srv.spec.pod_selector.into(),
+                        protocol,
+                    },
+                });
+            }
+
             HashEntry::Occupied(mut entry) => {
                 let protocol = Self::mk_protocol(srv.spec.proxy_protocol.as_ref());
 
@@ -562,6 +597,7 @@ impl Index {
                                 ServerSelector::Selector(ref s) => s.matches(&labels),
                             };
                             if matches {
+                                debug!(authz = %authz_name, server = %entry.key(), "Adding authz to server");
                                 authorizations.insert(authz_name.clone(), a.authz.clone());
                             }
                         }
@@ -591,37 +627,6 @@ impl Index {
 
                 entry.get_mut().meta.pod_selector = srv.spec.pod_selector.into();
                 entry.get_mut().meta.port = port;
-            }
-
-            HashEntry::Vacant(entry) => {
-                let protocol = Self::mk_protocol(srv.spec.proxy_protocol.as_ref());
-
-                let mut authorizations = HashMap::with_capacity(ns_authzs.len());
-                for (authz_name, a) in ns_authzs.iter() {
-                    let matches = match a.servers {
-                        ServerSelector::Name(ref n) => n == entry.key(),
-                        ServerSelector::Selector(ref s) => s.matches(&labels),
-                    };
-                    if matches {
-                        authorizations.insert(authz_name.clone(), a.authz.clone());
-                    }
-                }
-
-                let (tx, rx) = watch::channel(ServerConfig {
-                    protocol: protocol.clone(),
-                    authorizations: authorizations.values().cloned().collect(),
-                });
-                entry.insert(Server {
-                    tx,
-                    rx,
-                    authorizations,
-                    meta: ServerMeta {
-                        labels,
-                        port,
-                        pod_selector: srv.spec.pod_selector.into(),
-                        protocol,
-                    },
-                });
             }
         }
 
@@ -768,6 +773,7 @@ impl Index {
                         ServerSelector::Selector(ref s) => s.matches(&srv.meta.labels),
                     };
                     if matches {
+                        debug!(authz = %entry.key(), server = %srv_name, "Adding authz to server");
                         srv.add_authz(entry.key(), meta.authz.clone());
                     }
                 }
@@ -783,8 +789,10 @@ impl Index {
                             ServerSelector::Selector(ref s) => s.matches(&srv.meta.labels),
                         };
                         if matches {
+                            debug!(authz = %entry.key(), server = %srv_name, "Adding authz to server");
                             srv.add_authz(entry.key(), meta.authz.clone());
                         } else {
+                            debug!(authz = %entry.key(), server = %srv_name, "Removing authz from server");
                             srv.remove_authz(entry.key());
                         }
                     }
@@ -831,6 +839,7 @@ impl Index {
                     for sa in sas.into_iter() {
                         let ns = sa.namespace.unwrap_or_else(|| ns_name.to_string());
                         let name = sa.name;
+                        debug!(ns = %ns, sa = %name, "Adding serviceaccount to authz");
                         // FIXME configurable cluster domain
                         identities.push(format!(
                             "{}.{}.serviceaccount.linkerd.cluster.local",

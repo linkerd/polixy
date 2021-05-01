@@ -132,7 +132,7 @@ fn to_config(kubelet_ips: &KubeletIps, srv: ServerConfig) -> proto::InboundProxy
                     .collect(),
                 labels: HashMap::from_iter(Some((
                     "authorization".to_string(),
-                    "TODO use the resource name here".to_string(),
+                    "unauthenticated ...".to_string(),
                 ))),
                 ..Default::default()
             },
@@ -163,7 +163,7 @@ fn to_config(kubelet_ips: &KubeletIps, srv: ServerConfig) -> proto::InboundProxy
                 }),
                 labels: HashMap::from_iter(Some((
                     "authorization".to_string(),
-                    "TODO use the resource name here".to_string(),
+                    "authenticated ...".to_string(),
                 ))),
             },
         })

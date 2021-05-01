@@ -58,7 +58,11 @@ impl Selector {
         }
 
         if let Some(match_labels) = self.match_labels.as_ref() {
-            return match_labels == labels.as_ref();
+            for (k, v) in match_labels.iter() {
+                if labels.0.get(k) != Some(v) {
+                    return false;
+                }
+            }
         }
 
         true
@@ -165,8 +169,8 @@ mod tests {
             (
                 Selector::from_iter(Some(("foo", "bar"))),
                 Labels::from_iter(vec![("foo", "bar"), ("bah", "baz")]),
-                false,
-                "insufficient label match",
+                true,
+                "sufficient label match",
             ),
             (
                 Selector::from_iter(Some(Expression {

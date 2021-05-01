@@ -412,6 +412,7 @@ impl Index {
                     };
                     if let Some(pod_port) = pod_port {
                         if server.meta.pod_selector.matches(&labels) {
+                            debug!(server = %srv_name, pod = %pod_entry.key(), port = ?server.meta.port, "Adding server to pod");
                             // TODO handle conflicts
                             *pod_port.server_name.lock() = Some(srv_name.clone());
                             pod_port
@@ -446,6 +447,7 @@ impl Index {
 
                         if let Some(pod_port) = pod_port {
                             if server.meta.pod_selector.matches(&labels) {
+                                debug!(server = %srv_name, pod = %pod_entry.key(), port = ?server.meta.port, "Adding server to pod");
                                 // TODO handle conflicts
                                 *pod_port.server_name.lock() = Some(srv_name.clone());
                                 pod_port
@@ -632,7 +634,7 @@ impl Index {
 
         // If we've updated the server->pod selection, then we need to reindex
         // all pods and servers.
-        for pod in pods.values() {
+        for (pod_name, pod) in pods.iter() {
             for (srv_name, srv) in servers.iter() {
                 let pod_port = match srv.meta.port {
                     v1::server::Port::Number(ref p) => pod.port_lookups.get(p),
@@ -643,6 +645,7 @@ impl Index {
 
                 if let Some(pod_port) = pod_port {
                     if srv.meta.pod_selector.matches(&pod.labels) {
+                        debug!(server = %srv_name, pod = %pod_name, port = ?srv.meta.port, "Adding server to pod");
                         // TODO handle conflicts
                         let mut sn = pod_port.server_name.lock();
                         debug_assert!(sn.is_none(), "pod port matches multiple servers");

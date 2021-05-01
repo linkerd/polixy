@@ -54,7 +54,7 @@ async fn main() -> Result<()> {
 #[instrument(skip(index, drain))]
 async fn grpc(port: u16, index: index::Handle, drain: linkerd_drain::Watch) -> Result<()> {
     let addr = ([0, 0, 0, 0], port).into();
-    let server = polixy::Grpc::new(index, drain.clone());
+    let server = polixy::grpc::Server::new(index, drain.clone());
     let (close_tx, close_rx) = tokio::sync::oneshot::channel();
     tokio::pin! {
         let srv = server.serve(addr, close_rx.map(|_| {}));

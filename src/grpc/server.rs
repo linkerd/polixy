@@ -1,3 +1,4 @@
+use super::proto;
 use crate::{
     index::{Authz, Handle, KubeletIps, Lookup, ProxyProtocol, ServerConfig},
     k8s::{NsName, PodName},
@@ -6,21 +7,13 @@ use futures::prelude::*;
 use std::{collections::HashMap, iter::FromIterator};
 use tokio_stream::wrappers::WatchStream;
 
-pub mod proto {
-    tonic::include_proto!("polixy.olix0r.net");
-
-    pub use self::proxy_config_service_server::{
-        ProxyConfigService as Service, ProxyConfigServiceServer as Server,
-    };
-}
-
 #[derive(Clone, Debug)]
-pub struct Grpc {
+pub struct Server {
     index: Handle,
     drain: linkerd_drain::Watch,
 }
 
-impl Grpc {
+impl Server {
     pub fn new(index: Handle, drain: linkerd_drain::Watch) -> Self {
         Self { index, drain }
     }
@@ -38,7 +31,7 @@ impl Grpc {
 }
 
 #[async_trait::async_trait]
-impl proto::Service for Grpc {
+impl proto::Service for Server {
     type WatchInboundStream = std::pin::Pin<
         Box<dyn Stream<Item = Result<proto::InboundProxyConfig, tonic::Status>> + Send + Sync>,
     >;

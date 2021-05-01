@@ -246,6 +246,7 @@ impl Index {
 
     fn apply_node(&mut self, node: k8s::Node) -> Result<()> {
         let name = k8s::NodeName::from_resource(&node);
+
         if let HashEntry::Vacant(entry) = self.node_ips.entry(name) {
             let ips = Self::kubelet_ips(node)
                 .with_context(|| format!("failed to load kubelet IPs for {}", entry.key()))?;
@@ -254,6 +255,7 @@ impl Index {
         } else {
             debug!(?node.metadata, "Node already existed");
         }
+
         Ok(())
     }
 

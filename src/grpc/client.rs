@@ -59,48 +59,39 @@ impl Client {
         });
 
         let rsp = self.client.watch_inbound(req).await?;
+
         let updates = rsp.into_inner().map_err(Into::into).map_ok(
             |proto::InboundProxyConfig {
                  authorizations,
                  protocol,
                  labels,
-             }| Inbound {
-                labels,
-                authorizations: authorizations
+             }| {
+                let authorizations = authorizations
                     .into_iter()
-                    .map(
-                        |proto::Authorization {
-                             networks,
-                             tls_terminated,
-                             labels,
-                         }| {
-                            match tls_terminated {
-                                Some(proto::authorization::Tls {
-                                    client_id:
-                                        Some(proto::IdMatch {
-                                            identities,
-                                            suffixes,
-                                        }),
-                                }) => Authz::Authenticated {
-                                    identities,
-                                    suffixes: suffixes
-                                        .into_iter()
-                                        .map(|proto::Suffix { parts }| parts)
-                                        .collect(),
-                                    labels,
-                                },
-                                _ => Authz::Unauthenticated {
-                                    networks: networks
-                                        .into_iter()
-                                        .filter_map(|n| n.cidr.parse().ok())
-                                        .collect(),
-                                    labels,
-                                },
-                            }
+                    .map(|a| match a.tls_terminated {
+                        Some(proto::authorization::Tls {
+                            client_id: Some(ids),
+                        }) => Authz::Authenticated {
+                            labels: a.labels,
+                            identities: ids.identities,
+                            suffixes: ids
+                                .suffixes
+                                .into_iter()
+                                .map(|proto::Suffix { parts }| parts)
+                                .collect(),
                         },
-                    )
-                    .collect(),
-                protocol: protocol
+                        _ => Authz::Unauthenticated {
+                            labels: a.labels,
+                            networks: a
+                                .networks
+                                .into_iter()
+                                .filter_map(|n| n.cidr.parse().ok())
+                                .collect(),
+                        },
+                    })
+                    .collect();
+
+                let protocol = protocol
                     .and_then(|proto::ProxyProtocol { kind }| {
                         kind.map(|k| match k {
                             proto::proxy_protocol::Kind::Detect(_) => Protocol::Detect,
@@ -109,7 +100,13 @@ impl Client {
                             proto::proxy_protocol::Kind::Grpc(_) => Protocol::Grpc,
                         })
                     })
-                    .unwrap_or(Protocol::Detect),
+                    .unwrap_or(Protocol::Detect);
+
+                Inbound {
+                    labels,
+                    authorizations,
+                    protocol,
+                }
             },
         );
         Ok(updates)

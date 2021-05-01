@@ -830,26 +830,26 @@ impl Index {
     // === Authorization indexing ===
 
     #[instrument(
-        skip(self, authorization),
+        skip(self, authz),
         fields(
-            ns = ?authorization.metadata.namespace,
-            name = ?authorization.metadata.name,
+            ns = ?authz.metadata.namespace,
+            name = ?authz.metadata.name,
         )
     )]
-    fn apply_authz(&mut self, authorization: v1::Authorization) -> Result<()> {
-        let ns_name = k8s::NsName::from_resource(&authorization);
-        let authz_name = v1::authz::Name::from_resource(&authorization);
-        let meta = Self::mk_authz(&ns_name, authorization.spec)?;
+    fn apply_authz(&mut self, authz: v1::Authorization) -> Result<()> {
+        let ns_name = k8s::NsName::from_resource(&authz);
+        let authz_name = v1::authz::Name::from_resource(&authz);
+        let meta = Self::mk_authz(&ns_name, authz.spec)?;
 
         let NsIndex {
             ref mut authzs,
-            servers: ref mut ns_servers,
+            ref mut servers,
             ..
         } = self.namespaces.entry(ns_name).or_default();
 
         match authzs.entry(authz_name) {
             HashEntry::Vacant(entry) => {
-                for (srv_name, srv) in ns_servers.iter_mut() {
+                for (srv_name, srv) in servers.iter_mut() {
                     let matches = match meta.servers {
                         ServerSelector::Name(ref n) => n == srv_name,
                         ServerSelector::Selector(ref s) => s.matches(&srv.meta.labels),
@@ -865,7 +865,7 @@ impl Index {
             HashEntry::Occupied(mut entry) => {
                 // If the authorization changed materially, then update it in all servers.
                 if entry.get() != &meta {
-                    for (srv_name, srv) in ns_servers.iter_mut() {
+                    for (srv_name, srv) in servers.iter_mut() {
                         let matches = match meta.servers {
                             ServerSelector::Name(ref n) => n == srv_name,
                             ServerSelector::Selector(ref s) => s.matches(&srv.meta.labels),

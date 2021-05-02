@@ -1,6 +1,6 @@
 use super::proto;
 use crate::{
-    index::{Authz, Handle, KubeletIps, Lookup, ProxyProtocol, ServerConfig},
+    index::{Clients, Handle, KubeletIps, Lookup, ProxyProtocol, ServerConfig},
     k8s::{NsName, PodName},
 };
 use futures::prelude::*;
@@ -141,23 +141,20 @@ fn to_config(
         .authorizations
         .into_iter()
         .map(|a| match *a {
-            Authz::Unauthenticated(ref nets) => proto::Authorization {
+            Clients::Unauthenticated(ref nets) => proto::Authorization {
                 networks: nets
                     .iter()
                     .map(|net| proto::Network {
                         cidr: net.to_string(),
                     })
                     .collect(),
-                labels: HashMap::from_iter(Some((
-                    "authorization".to_string(),
-                    "unauthenticated ...".to_string(),
-                ))),
+                labels: HashMap::from_iter(Some(("authn".to_string(), "false".to_string()))),
                 ..Default::default()
             },
 
             // Authenticated connections must have TLS and apply to all
             // networks.
-            Authz::Authenticated {
+            Clients::Authenticated {
                 ref service_accounts,
                 ref identities,
                 ref suffixes,
@@ -189,10 +186,7 @@ fn to_config(
                             .collect(),
                     }),
                 }),
-                labels: HashMap::from_iter(Some((
-                    "authorization".to_string(),
-                    "authenticated ...".to_string(),
-                ))),
+                labels: HashMap::from_iter(Some(("authn".to_string(), "true".to_string()))),
             },
         })
         // Traffic is always permitted from the pod's Kubelet IPs.

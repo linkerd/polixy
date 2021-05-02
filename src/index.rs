@@ -51,8 +51,8 @@ struct Index {
     _default_config_tx: watch::Sender<ServerConfig>,
 }
 
+/// Resource watches.
 struct Resources {
-    // Resource watches.
     nodes: Watch<k8s::Node>,
     pods: Watch<k8s::Pod>,
     servers: Watch<v1::Server>,
@@ -87,7 +87,7 @@ struct PodPort {
 #[derive(Clone, Debug)]
 pub struct ServerConfig {
     pub protocol: ProxyProtocol,
-    pub authorizations: Vec<Arc<Authz>>,
+    pub authorizations: Vec<Arc<Clients>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -101,11 +101,11 @@ pub enum ProxyProtocol {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct AuthzMeta {
     pub servers: ServerSelector,
-    pub authz: Arc<Authz>,
+    pub clients: Arc<Clients>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub enum Authz {
+pub enum Clients {
     Unauthenticated(Vec<IpNet>),
     Authenticated {
         service_accounts: Vec<ServiceAccountRef>,
@@ -136,7 +136,7 @@ enum ServerSelector {
 #[derive(Debug)]
 struct Server {
     meta: ServerMeta,
-    authorizations: HashMap<v1::authz::Name, Arc<Authz>>,
+    authorizations: HashMap<v1::authz::Name, Arc<Clients>>,
     rx: watch::Receiver<ServerConfig>,
     tx: watch::Sender<ServerConfig>,
 }
@@ -190,7 +190,7 @@ impl Index {
             },
             authorizations: vec![
                 // Permit all traffic when a `Server` instance is not present.
-                Arc::new(Authz::Unauthenticated(vec![
+                Arc::new(Clients::Unauthenticated(vec![
                     "0.0.0.0/0".parse().unwrap(),
                     "::/0".parse().unwrap(),
                 ])),
@@ -632,7 +632,7 @@ impl Index {
                     };
                     if matches {
                         debug!(authz = %authz_name, "Matched");
-                        authorizations.insert(authz_name.clone(), a.authz.clone());
+                        authorizations.insert(authz_name.clone(), a.clients.clone());
                     } else {
                         trace!(authz = %authz_name, "Not matched");
                     }
@@ -675,7 +675,7 @@ impl Index {
                             };
                             if matches {
                                 debug!(authz = %authz_name, "Matched");
-                                authorizations.insert(authz_name.clone(), a.authz.clone());
+                                authorizations.insert(authz_name.clone(), a.clients.clone());
                             } else {
                                 trace!(authz = %authz_name, "Not matched");
                             }
@@ -870,7 +870,7 @@ impl Index {
                     };
                     if matches {
                         debug!(authz = %entry.key(), "Adding authz to server");
-                        srv.add_authz(entry.key(), meta.authz.clone());
+                        srv.add_authz(entry.key(), meta.clients.clone());
                     }
                 }
                 entry.insert(meta);
@@ -886,7 +886,7 @@ impl Index {
                         };
                         if matches {
                             debug!(authz = %entry.key(), "Adding authz to server");
-                            srv.add_authz(entry.key(), meta.authz.clone());
+                            srv.add_authz(entry.key(), meta.clients.clone());
                         } else {
                             debug!(authz = %entry.key(), "Removing authz from server");
                             srv.remove_authz(entry.key());
@@ -957,7 +957,7 @@ impl Index {
                     bail!("authorization authorizes no clients");
                 }
 
-                Authz::Authenticated {
+                Clients::Authenticated {
                     identities,
                     suffixes,
                     service_accounts,
@@ -971,7 +971,7 @@ impl Index {
                     debug!(%net, "Unauthenticated");
                     nets.push(net);
                 }
-                Authz::Unauthenticated(nets)
+                Clients::Unauthenticated(nets)
             }
 
             (Some(_), Some(_)) => {
@@ -980,8 +980,8 @@ impl Index {
             _ => bail!("authorization authorizes no clients"),
         };
 
-        let authz = Arc::new(authz);
-        Ok(AuthzMeta { servers, authz })
+        let clients = Arc::new(authz);
+        Ok(AuthzMeta { servers, clients })
     }
 
     #[instrument(
@@ -1057,8 +1057,8 @@ impl Index {
 // === impl Server ===
 
 impl Server {
-    fn add_authz(&mut self, name: &v1::authz::Name, authz: Arc<Authz>) {
-        self.authorizations.insert(name.clone(), authz);
+    fn add_authz(&mut self, name: &v1::authz::Name, clients: Arc<Clients>) {
+        self.authorizations.insert(name.clone(), clients);
         let mut config = self.rx.borrow().clone();
         config.authorizations = self.authorizations.values().cloned().collect();
         self.tx.send(config).expect("config must send")

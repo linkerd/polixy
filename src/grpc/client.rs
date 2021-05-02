@@ -11,13 +11,13 @@ pub struct Client {
 
 #[derive(Clone, Debug)]
 pub struct Inbound {
-    authorizations: Vec<Authz>,
-    labels: HashMap<String, String>,
-    protocol: Protocol,
+    pub authorizations: Vec<Authz>,
+    pub labels: HashMap<String, String>,
+    pub protocol: Protocol,
 }
 
 #[derive(Copy, Clone, Debug)]
-enum Protocol {
+pub enum Protocol {
     Detect,
     Opaque,
     Http,
@@ -64,27 +64,35 @@ impl Client {
             let authorizations = c
                 .authorizations
                 .into_iter()
-                .map(|a| match a.tls_terminated {
-                    Some(proto::authorization::Tls {
-                        client_id: Some(ids),
-                    }) => Authz::Authenticated {
-                        labels: a.labels,
-                        identities: ids.identities,
-                        suffixes: ids
-                            .suffixes
-                            .into_iter()
-                            .map(|proto::Suffix { parts }| parts)
-                            .collect(),
+                .map(
+                    |proto::Authorization {
+                         labels,
+                         tls_terminated,
+                         networks,
+                     }| match tls_terminated {
+                        Some(proto::authorization::Tls {
+                            client_id:
+                                Some(proto::IdMatch {
+                                    identities,
+                                    suffixes,
+                                }),
+                        }) => Authz::Authenticated {
+                            labels,
+                            identities,
+                            suffixes: suffixes
+                                .into_iter()
+                                .map(|proto::Suffix { parts }| parts)
+                                .collect(),
+                        },
+                        _ => Authz::Unauthenticated {
+                            labels,
+                            networks: networks
+                                .into_iter()
+                                .filter_map(|n| n.cidr.parse().ok())
+                                .collect(),
+                        },
                     },
-                    _ => Authz::Unauthenticated {
-                        labels: a.labels,
-                        networks: a
-                            .networks
-                            .into_iter()
-                            .filter_map(|n| n.cidr.parse().ok())
-                            .collect(),
-                    },
-                })
+                )
                 .collect();
 
             let protocol = c

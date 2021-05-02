@@ -8,6 +8,7 @@ use kube_runtime::watcher;
 use parking_lot::Mutex;
 use std::{
     collections::{hash_map::Entry as HashEntry, HashMap, HashSet},
+    fmt,
     hash::Hash,
     net::IpAddr,
     sync::Arc,
@@ -107,9 +108,22 @@ struct AuthzMeta {
 pub enum Authz {
     Unauthenticated(Vec<IpNet>),
     Authenticated {
-        identities: Vec<String>,
-        suffixes: Vec<Vec<String>>,
+        service_accounts: Vec<ServiceAccountRef>,
+        identities: Vec<Identity>,
+        suffixes: Vec<Suffix>,
     },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Identity(Arc<str>);
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Suffix(Arc<[String]>);
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ServiceAccountRef {
+    ns: k8s::NsName,
+    name: Arc<str>,
 }
 
 /// Selects servers for an authorization.
@@ -901,35 +915,41 @@ impl Index {
             (Some(auth), None) => {
                 let mut identities = Vec::new();
                 let mut suffixes = Vec::new();
+                let mut service_accounts = Vec::new();
 
                 if let Some(ids) = auth.identities {
                     for id in ids.into_iter() {
                         if id == "*" {
                             debug!(suffix = %id, "Authenticated");
-                            suffixes.push(Vec::new());
+                            suffixes.push(Suffix(Arc::new([])));
                         } else if id.starts_with("*.") {
                             debug!(suffix = %id, "Authenticated");
                             let mut parts = id.split('.');
                             let star = parts.next();
                             debug_assert_eq!(star, Some("*"));
-                            suffixes.push(parts.map(|p| p.to_string()).collect());
+                            suffixes.push(Suffix(
+                                parts.map(|p| p.to_string()).collect::<Vec<_>>().into(),
+                            ));
                         } else {
                             debug!(%id, "Authenticated");
-                            identities.push(id);
+                            identities.push(Identity(id.into()));
                         }
                     }
                 }
 
                 if let Some(sas) = auth.service_account_refs {
                     for sa in sas.into_iter() {
-                        let ns = sa.namespace.unwrap_or_else(|| ns_name.to_string());
                         let name = sa.name;
+                        let ns = sa
+                            .namespace
+                            .map(k8s::NsName::from)
+                            .unwrap_or_else(|| ns_name.clone());
                         debug!(ns = %ns, serviceaccount = %name, "Authenticated");
                         // FIXME configurable cluster domain
-                        identities.push(format!(
-                            "{}.{}.serviceaccount.linkerd.cluster.local",
-                            ns, name
-                        ));
+                        service_accounts.push(ServiceAccountRef {
+                            ns,
+                            name: name.into(),
+                        });
                     }
                 }
 
@@ -940,6 +960,7 @@ impl Index {
                 Authz::Authenticated {
                     identities,
                     suffixes,
+                    service_accounts,
                 }
             }
 
@@ -1057,5 +1078,42 @@ impl Server {
 impl KubeletIps {
     pub fn to_nets(&self) -> Vec<IpNet> {
         self.0.iter().copied().map(IpNet::from).collect()
+    }
+}
+
+// === impl Identity ===
+
+impl fmt::Display for Identity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+// === impl Suffix ===
+
+impl Suffix {
+    pub fn iter(&self) -> std::slice::Iter<'_, String> {
+        self.0.iter()
+    }
+}
+
+impl fmt::Display for Suffix {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "*")?;
+        for part in self.0.iter() {
+            write!(f, ".{}", part)?;
+        }
+        Ok(())
+    }
+}
+
+// === impl ServiceAccountRef ===
+
+impl ServiceAccountRef {
+    pub fn identity(&self, domain: &str) -> String {
+        format!(
+            "{}.{}.serviceaccount.linkerd.{}",
+            self.ns, self.name, domain
+        )
     }
 }

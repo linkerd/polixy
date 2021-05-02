@@ -4,18 +4,27 @@ use crate::{
     k8s::{NsName, PodName},
 };
 use futures::prelude::*;
-use std::{collections::HashMap, iter::FromIterator};
+use std::{collections::HashMap, iter::FromIterator, sync::Arc};
 use tokio_stream::wrappers::WatchStream;
 
 #[derive(Clone, Debug)]
 pub struct Server {
     index: Handle,
     drain: linkerd_drain::Watch,
+    identity_domain: Arc<str>,
 }
 
 impl Server {
-    pub fn new(index: Handle, drain: linkerd_drain::Watch) -> Self {
-        Self { index, drain }
+    pub fn new(
+        index: Handle,
+        drain: linkerd_drain::Watch,
+        identity_domain: impl Into<Arc<str>>,
+    ) -> Self {
+        Self {
+            index,
+            drain,
+            identity_domain: identity_domain.into(),
+        }
     }
 
     pub async fn serve(
@@ -88,18 +97,26 @@ impl proto::Service for Server {
 
         // TODO deduplicate redundant updates.
         // TODO end streams on drain.
+        let identity_domain = self.identity_domain.clone();
         let watch = WatchStream::new(server)
             .map(WatchStream::new)
             .flat_map(move |updates| {
                 let ips = kubelet_ips.clone();
-                updates.map(move |c| to_config(&ips, c)).map(Ok)
+                let domain = identity_domain.clone();
+                updates
+                    .map(move |c| to_config(&ips, c, domain.as_ref()))
+                    .map(Ok)
             });
 
         Ok(tonic::Response::new(Box::pin(watch)))
     }
 }
 
-fn to_config(kubelet_ips: &KubeletIps, srv: ServerConfig) -> proto::InboundProxyConfig {
+fn to_config(
+    kubelet_ips: &KubeletIps,
+    srv: ServerConfig,
+    identity_domain: &str,
+) -> proto::InboundProxyConfig {
     // Convert the protocol object into a protobuf response.
     let protocol = proto::ProxyProtocol {
         kind: match srv.protocol {
@@ -141,6 +158,7 @@ fn to_config(kubelet_ips: &KubeletIps, srv: ServerConfig) -> proto::InboundProxy
             // Authenticated connections must have TLS and apply to all
             // networks.
             Authz::Authenticated {
+                ref service_accounts,
                 ref identities,
                 ref suffixes,
             } => proto::Authorization {
@@ -154,11 +172,20 @@ fn to_config(kubelet_ips: &KubeletIps, srv: ServerConfig) -> proto::InboundProxy
                 ],
                 tls_terminated: Some(proto::authorization::Tls {
                     client_id: Some(proto::IdMatch {
-                        identities: identities.clone(),
+                        identities: identities
+                            .iter()
+                            .map(ToString::to_string)
+                            .chain(
+                                service_accounts
+                                    .iter()
+                                    .map(|sa| sa.identity(identity_domain)),
+                            )
+                            .collect(),
                         suffixes: suffixes
                             .iter()
-                            .cloned()
-                            .map(|parts| proto::Suffix { parts })
+                            .map(|sfx| proto::Suffix {
+                                parts: sfx.iter().map(ToString::to_string).collect(),
+                            })
                             .collect(),
                     }),
                 }),

@@ -10,6 +10,8 @@ enum Command {
     Controller {
         #[structopt(short, long, default_value = "8910")]
         port: u16,
+        #[structopt(long, default_value = "cluster.local")]
+        identity_domain: String,
     },
     Client {
         #[structopt(long, default_value = "http://127.0.0.1:8910")]
@@ -40,7 +42,10 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     match Command::from_args() {
-        Command::Controller { port } => {
+        Command::Controller {
+            port,
+            identity_domain,
+        } => {
             let (drain_tx, drain_rx) = linkerd_drain::channel();
 
             let client = kube::Client::try_default()
@@ -49,7 +54,7 @@ async fn main() -> Result<()> {
             let (index, index_task) = index::run(client);
 
             let index_task = tokio::spawn(index_task);
-            let grpc = tokio::spawn(grpc(port, index, drain_rx));
+            let grpc = tokio::spawn(grpc(port, index, drain_rx, identity_domain));
 
             tokio::select! {
                 _ = shutdown(drain_tx) => Ok(()),
@@ -100,9 +105,14 @@ async fn main() -> Result<()> {
 }
 
 #[instrument(skip(index, drain))]
-async fn grpc(port: u16, index: index::Handle, drain: linkerd_drain::Watch) -> Result<()> {
+async fn grpc(
+    port: u16,
+    index: index::Handle,
+    drain: linkerd_drain::Watch,
+    identity_domain: String,
+) -> Result<()> {
     let addr = ([0, 0, 0, 0], port).into();
-    let server = polixy::grpc::Server::new(index, drain.clone());
+    let server = polixy::grpc::Server::new(index, drain.clone(), identity_domain);
     let (close_tx, close_rx) = tokio::sync::oneshot::channel();
     tokio::pin! {
         let srv = server.serve(addr, close_rx.map(|_| {}));

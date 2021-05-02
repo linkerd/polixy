@@ -97,12 +97,12 @@ impl proto::Service for Server {
 
         // TODO deduplicate redundant updates.
         // TODO end streams on drain.
-        let identity_domain = self.identity_domain.clone();
+        let domain = self.identity_domain.clone();
         let watch = WatchStream::new(server)
             .map(WatchStream::new)
             .flat_map(move |updates| {
                 let ips = kubelet_ips.clone();
-                let domain = identity_domain.clone();
+                let domain = domain.clone();
                 updates
                     .map(move |c| to_config(&ips, c, domain.as_ref()))
                     .map(Ok)
@@ -161,10 +161,10 @@ fn to_config(
             } => proto::Authorization {
                 networks: vec![
                     proto::Network {
-                        cidr: "0.0.0.0/0".into(),
+                        cidr: "0.0.0.0/0".to_string(),
                     },
                     proto::Network {
-                        cidr: "::/0".into(),
+                        cidr: "::/0".to_string(),
                     },
                 ],
                 tls_terminated: Some(proto::authorization::Tls {

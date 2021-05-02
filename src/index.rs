@@ -32,18 +32,18 @@ pub struct Lookup {
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct KubeletIps(Arc<Vec<IpAddr>>);
+pub struct KubeletIps(Arc<[IpAddr]>);
 
 struct Index {
-    /// Cached Node IPs.
-    node_ips: HashMap<k8s::NodeName, KubeletIps>,
+    /// A shared map containing watches for all pods.  API clients simply
+    /// retrieve watches from this pre-populated map.
+    lookups: SharedLookupMap,
 
     /// Holds per-namespace pod/server/authorization indexes.
     namespaces: HashMap<k8s::NsName, NsIndex>,
 
-    /// A shared map containing watches for all pods.  API clients simply
-    /// retrieve watches from this pre-populated map.
-    lookups: SharedLookupMap,
+    /// Cached Node IPs.
+    node_ips: HashMap<k8s::NodeName, KubeletIps>,
 
     /// A default server config to use when no server matches.
     default_config_rx: watch::Receiver<ServerConfig>,
@@ -68,7 +68,7 @@ struct NsIndex {
     /// Caches a watch for each server.
     servers: HashMap<v1::server::Name, Server>,
 
-    authzs: HashMap<v1::authz::Name, AuthzMeta>,
+    authzs: HashMap<v1::authz::Name, Authz>,
 }
 
 #[derive(Debug)]
@@ -99,7 +99,7 @@ pub enum ProxyProtocol {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct AuthzMeta {
+struct Authz {
     pub servers: ServerSelector,
     pub clients: Arc<Clients>,
 }
@@ -327,19 +327,18 @@ impl Index {
 
     fn kubelet_ips(node: k8s::Node) -> Result<KubeletIps> {
         let spec = node.spec.ok_or_else(|| anyhow!("node missing spec"))?;
-        let cidr = spec
-            .pod_cidr
-            .ok_or_else(|| anyhow!("node missing pod_cidr"))?;
-        let mut addrs = Vec::new();
 
-        let ip = Self::cidr_to_kubelet_ip(cidr)?;
-        addrs.push(ip);
-        if let Some(cidrs) = spec.pod_cidrs {
-            for cidr in cidrs.into_iter().skip(1) {
-                let ip = Self::cidr_to_kubelet_ip(cidr)?;
-                addrs.push(ip);
-            }
-        }
+        let addrs = if let Some(nets) = spec.pod_cidrs {
+            nets.into_iter()
+                .map(Self::cidr_to_kubelet_ip)
+                .collect::<Result<Vec<_>>>()?
+        } else {
+            let cidr = spec
+                .pod_cidr
+                .ok_or_else(|| anyhow!("node missing pod_cidr"))?;
+            let ip = Self::cidr_to_kubelet_ip(cidr)?;
+            vec![ip]
+        };
 
         Ok(KubeletIps(addrs.into()))
     }
@@ -853,7 +852,7 @@ impl Index {
     fn apply_authz(&mut self, authz: v1::Authorization) -> Result<()> {
         let ns_name = k8s::NsName::from_resource(&authz);
         let authz_name = v1::authz::Name::from_resource(&authz);
-        let meta = Self::mk_authz(&ns_name, authz.spec)?;
+        let authz = Self::mk_authz(&ns_name, authz.spec)?;
 
         let NsIndex {
             ref mut authzs,
@@ -864,35 +863,35 @@ impl Index {
         match authzs.entry(authz_name) {
             HashEntry::Vacant(entry) => {
                 for (srv_name, srv) in servers.iter_mut() {
-                    let matches = match meta.servers {
+                    let matches = match authz.servers {
                         ServerSelector::Name(ref n) => n == srv_name,
                         ServerSelector::Selector(ref s) => s.matches(&srv.meta.labels),
                     };
                     if matches {
                         debug!(authz = %entry.key(), "Adding authz to server");
-                        srv.add_authz(entry.key(), meta.clients.clone());
+                        srv.add_authz(entry.key(), authz.clients.clone());
                     }
                 }
-                entry.insert(meta);
+                entry.insert(authz);
             }
 
             HashEntry::Occupied(mut entry) => {
                 // If the authorization changed materially, then update it in all servers.
-                if entry.get() != &meta {
+                if entry.get() != &authz {
                     for (srv_name, srv) in servers.iter_mut() {
-                        let matches = match meta.servers {
+                        let matches = match authz.servers {
                             ServerSelector::Name(ref n) => n == srv_name,
                             ServerSelector::Selector(ref s) => s.matches(&srv.meta.labels),
                         };
                         if matches {
                             debug!(authz = %entry.key(), "Adding authz to server");
-                            srv.add_authz(entry.key(), meta.clients.clone());
+                            srv.add_authz(entry.key(), authz.clients.clone());
                         } else {
                             debug!(authz = %entry.key(), "Removing authz from server");
                             srv.remove_authz(entry.key());
                         }
                     }
-                    entry.insert(meta);
+                    entry.insert(authz);
                 }
             }
         };
@@ -900,7 +899,7 @@ impl Index {
         Ok(())
     }
 
-    fn mk_authz(ns_name: &k8s::NsName, spec: v1::authz::AuthorizationSpec) -> Result<AuthzMeta> {
+    fn mk_authz(ns_name: &k8s::NsName, spec: v1::authz::AuthorizationSpec) -> Result<Authz> {
         let servers = {
             let v1::authz::Server { name, selector } = spec.server;
             match (name, selector) {
@@ -981,7 +980,7 @@ impl Index {
         };
 
         let clients = Arc::new(authz);
-        Ok(AuthzMeta { servers, clients })
+        Ok(Authz { servers, clients })
     }
 
     #[instrument(
@@ -992,9 +991,10 @@ impl Index {
         )
     )]
     fn delete_authz(&mut self, authz: v1::Authorization) -> Result<()> {
-        let ns_name = k8s::NsName::from_resource(&authz);
-        let authz_name = v1::authz::Name::from_resource(&authz);
-        self.rm_authz(ns_name, authz_name)
+        self.rm_authz(
+            k8s::NsName::from_resource(&authz),
+            v1::authz::Name::from_resource(&authz),
+        )
     }
 
     fn rm_authz(&mut self, ns_name: k8s::NsName, authz_name: v1::authz::Name) -> Result<()> {

@@ -48,7 +48,9 @@ struct Index {
     default_config_rx: watch::Receiver<ServerConfig>,
     /// Keeps the above server config receiver alive. Never updated.
     _default_config_tx: watch::Sender<ServerConfig>,
+}
 
+struct Resources {
     // Resource watches.
     nodes: Watch<k8s::Node>,
     pods: Watch<k8s::Pod>,
@@ -138,19 +140,20 @@ pub fn run(client: kube::Client) -> (Handle, impl Future<Output = Error>) {
 
     // Watches Nodes, Pods, Servers, and Authorizations to update the lookup map
     // with an entry for each linkerd-injected pod.
-    let idx = Index::new(
-        watcher(Api::all(client.clone()), ListParams::default()).into(),
-        watcher(
+    let idx = Index::new(lookups.clone());
+
+    let resources = Resources {
+        nodes: watcher(Api::all(client.clone()), ListParams::default()).into(),
+        pods: watcher(
             Api::all(client.clone()),
             ListParams::default().labels("linkerd.io/control-plane-ns"),
         )
         .into(),
-        watcher(Api::all(client.clone()), ListParams::default()).into(),
-        watcher(Api::all(client), ListParams::default()).into(),
-        lookups.clone(),
-    );
+        servers: watcher(Api::all(client.clone()), ListParams::default()).into(),
+        authorizations: watcher(Api::all(client), ListParams::default()).into(),
+    };
 
-    (Handle(lookups), idx.index())
+    (Handle(lookups), idx.index(resources))
 }
 
 // === impl Handle ===
@@ -164,13 +167,7 @@ impl Handle {
 // === impl Index ===
 
 impl Index {
-    fn new(
-        nodes: Watch<k8s::Node>,
-        pods: Watch<k8s::Pod>,
-        servers: Watch<v1::Server>,
-        authorizations: Watch<v1::Authorization>,
-        lookups: SharedLookupMap,
-    ) -> Self {
+    fn new(lookups: SharedLookupMap) -> Self {
         // A default config to be provided to pods when no matching server
         // exists.
         let (_default_config_tx, default_config_rx) = watch::channel(ServerConfig {
@@ -187,10 +184,6 @@ impl Index {
         });
 
         Self {
-            nodes,
-            pods,
-            authorizations,
-            servers,
             lookups,
             node_ips: HashMap::default(),
             namespaces: HashMap::default(),
@@ -207,24 +200,31 @@ impl Index {
     /// structures.  All updates are published to the shared `lookups` map after
     /// indexing ocrurs; but the indexing task is soley responsible for mutating
     /// it. The associated `Handle` is used for reads against this.
-    #[instrument(skip(self), fields(result))]
-    async fn index(mut self) -> Error {
+    #[instrument(skip(self, resources), fields(result))]
+    async fn index(mut self, resources: Resources) -> Error {
+        let Resources {
+            mut nodes,
+            mut pods,
+            mut servers,
+            mut authorizations,
+        } = resources;
+
         loop {
             let res = tokio::select! {
                 // Track the kubelet IPs for all nodes.
-                up = self.nodes.recv() => match up {
+                up = nodes.recv() => match up {
                     watcher::Event::Applied(node) => self.apply_node(node),
                     watcher::Event::Deleted(node) => self.delete_node(node),
                     watcher::Event::Restarted(nodes) => self.reset_nodes(nodes),
                 }.context("nodes"),
 
-                up = self.pods.recv() => match up {
+                up = pods.recv() => match up {
                     watcher::Event::Applied(pod) => self.apply_pod(pod),
                     watcher::Event::Deleted(pod) => self.delete_pod(pod),
                     watcher::Event::Restarted(pods) => self.reset_pods(pods),
                 }.context("pods"),
 
-                up = self.servers.recv() => match up {
+                up = servers.recv() => match up {
                     watcher::Event::Applied(srv) => {
                         self.apply_server(srv);
                         Ok(())
@@ -233,7 +233,7 @@ impl Index {
                     watcher::Event::Restarted(srvs) => self.reset_servers(srvs),
                 }.context("servers"),
 
-                up = self.authorizations.recv() => match up {
+                up = authorizations.recv() => match up {
                     watcher::Event::Applied(authz) => self.apply_authz(authz),
                     watcher::Event::Deleted(authz) => self.delete_authz(authz),
                     watcher::Event::Restarted(authzs) => self.reset_authzs(authzs),

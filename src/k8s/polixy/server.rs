@@ -1,11 +1,13 @@
-use super::labels;
+use super::super::labels;
 use crate::FromResource;
 use kube::{api::Resource, CustomResource};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-#[derive(Clone, Debug, Hash, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[derive(
+    Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize, JsonSchema,
+)]
 pub struct Name(String);
 
 /// Describes a server interface exposed by a set of pods.

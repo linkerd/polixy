@@ -1,7 +1,18 @@
 use crate::FromResource;
-pub use k8s_openapi::api::core::v1::{Node, Pod};
 use kube::Resource;
+use kube::{api::ListParams, Api};
+use kube_runtime::watcher;
 use std::fmt;
+
+pub mod labels;
+pub mod polixy;
+mod watch;
+
+pub use self::{
+    labels::Labels,
+    watch::{Event, Watch},
+};
+pub use k8s_openapi::api::core::v1::{Node, Pod};
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct NodeName(String);
@@ -11,6 +22,31 @@ pub struct NsName(String);
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct PodName(String);
+
+/// Resource watches.
+pub(crate) struct ResourceWatches {
+    pub nodes: Watch<Node>,
+    pub pods: Watch<Pod>,
+    pub servers: Watch<polixy::Server>,
+    pub authorizations: Watch<polixy::Authorization>,
+}
+
+// === impl ResourceWatches ===
+
+impl ResourceWatches {
+    pub fn new(client: kube::Client) -> Self {
+        Self {
+            nodes: watcher(Api::all(client.clone()), ListParams::default()).into(),
+            pods: watcher(
+                Api::all(client.clone()),
+                ListParams::default().labels("linkerd.io/control-plane-ns"),
+            )
+            .into(),
+            servers: watcher(Api::all(client.clone()), ListParams::default()).into(),
+            authorizations: watcher(Api::all(client), ListParams::default()).into(),
+        }
+    }
+}
 
 // === NodeName ===
 

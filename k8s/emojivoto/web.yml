@@ -107,3 +107,4 @@ spec:
   unauthenticated:
     networks:
       - 0.0.0.0/0
+      - ::/0

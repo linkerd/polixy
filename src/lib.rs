@@ -1,9 +1,125 @@
 pub mod grpc;
-pub mod index;
+mod index;
 mod k8s;
-mod v1;
-mod watch;
+
+use dashmap::DashMap;
+use ipnet::IpNet;
+use std::{
+    collections::{BTreeMap, HashMap},
+    fmt,
+    net::IpAddr,
+    sync::Arc,
+};
+use tokio::{sync::watch, time};
 
 trait FromResource<T> {
     fn from_resource(resource: &T) -> Self;
+}
+
+#[derive(Clone, Debug)]
+pub struct LookupHandle(SharedLookupMap);
+
+type SharedLookupMap = Arc<DashMap<(k8s::NsName, k8s::PodName), Arc<HashMap<u16, Lookup>>>>;
+
+type ServerRx = watch::Receiver<InboundServerConfig>;
+type ServerTx = watch::Sender<InboundServerConfig>;
+pub type ServerRxRx = watch::Receiver<ServerRx>;
+type ServerRxTx = watch::Sender<ServerRx>;
+
+#[derive(Clone, Debug)]
+pub struct Lookup {
+    pub name: Option<k8s::polixy::server::PortName>,
+    pub kubelet_ips: KubeletIps,
+    pub rx: ServerRxRx,
+}
+
+#[derive(Clone, Debug)]
+pub struct InboundServerConfig {
+    pub protocol: ProxyProtocol,
+    pub authorizations: BTreeMap<Option<k8s::polixy::authz::Name>, Clients>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProxyProtocol {
+    Detect { timeout: time::Duration },
+    Opaque,
+    Http,
+    Grpc,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Clients {
+    Unauthenticated(Arc<[IpNet]>),
+    Authenticated {
+        service_accounts: Vec<ServiceAccountRef>,
+        identities: Vec<Identity>,
+        suffixes: Vec<Suffix>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Identity(Arc<str>);
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Suffix(Arc<[String]>);
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ServiceAccountRef {
+    ns: k8s::NsName,
+    name: Arc<str>,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct KubeletIps(Arc<[IpAddr]>);
+
+// === impl LookupHandle ===
+
+impl LookupHandle {
+    pub fn run(client: kube::Client) -> (Self, impl std::future::Future<Output = anyhow::Error>) {
+        let lookups = SharedLookupMap::default();
+
+        // Watches Nodes, Pods, Servers, and Authorizations to update the lookup map
+        // with an entry for each linkerd-injected pod.
+        let idx = index::Index::new(lookups.clone());
+
+        (Self(lookups), idx.index(k8s::ResourceWatches::new(client)))
+    }
+
+    pub fn lookup(&self, ns: k8s::NsName, name: k8s::PodName, port: u16) -> Option<Lookup> {
+        self.0.get(&(ns, name))?.get(&port).cloned()
+    }
+}
+
+// === impl Identity ===
+
+impl fmt::Display for Identity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+// === impl Suffix ===
+
+impl Suffix {
+    pub fn iter(&self) -> std::slice::Iter<'_, String> {
+        self.0.iter()
+    }
+}
+
+impl fmt::Display for Suffix {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "*")?;
+        for part in self.0.iter() {
+            write!(f, ".{}", part)?;
+        }
+        Ok(())
+    }
+}
+
+// === impl KubeletIps ===
+
+impl KubeletIps {
+    pub fn to_nets(&self) -> Vec<IpNet> {
+        self.0.iter().copied().map(IpNet::from).collect()
+    }
 }

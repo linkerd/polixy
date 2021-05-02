@@ -1,40 +1,21 @@
-use crate::{k8s, v1, watch::Watch, FromResource};
+use crate::{
+    k8s::{self, polixy},
+    Clients, FromResource, Identity, InboundServerConfig, KubeletIps, Lookup, ProxyProtocol,
+    ServerRx, ServerRxTx, ServerTx, ServiceAccountRef, SharedLookupMap, Suffix,
+};
 use anyhow::{anyhow, bail, Context, Error, Result};
-use dashmap::{mapref::entry::Entry as DashEntry, DashMap};
-use futures::prelude::*;
+use dashmap::mapref::entry::Entry as DashEntry;
 use ipnet::IpNet;
-use kube::{api::ListParams, Api};
-use kube_runtime::watcher;
 use parking_lot::Mutex;
 use std::{
-    collections::{hash_map::Entry as HashEntry, HashMap, HashSet},
-    fmt,
-    hash::Hash,
+    collections::{hash_map::Entry as HashEntry, BTreeMap, HashMap, HashSet},
     net::IpAddr,
     sync::Arc,
 };
 use tokio::{sync::watch, time};
 use tracing::{debug, instrument, trace, warn};
 
-type SharedLookupMap = Arc<DashMap<(k8s::NsName, k8s::PodName), Arc<HashMap<u16, Lookup>>>>;
-
-#[derive(Clone, Debug)]
-pub struct Handle(SharedLookupMap);
-
-#[derive(Clone, Debug)]
-pub struct Lookup {
-    pub name: Option<v1::server::PortName>,
-    pub kubelet_ips: KubeletIps,
-
-    /// Each pod-port has a watch for servers; and then the server config can be
-    /// updated as its authorizations change.
-    pub server: watch::Receiver<watch::Receiver<ServerConfig>>,
-}
-
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct KubeletIps(Arc<[IpAddr]>);
-
-struct Index {
+pub struct Index {
     /// A shared map containing watches for all pods.  API clients simply
     /// retrieve watches from this pre-populated map.
     lookups: SharedLookupMap,
@@ -46,17 +27,9 @@ struct Index {
     node_ips: HashMap<k8s::NodeName, KubeletIps>,
 
     /// A default server config to use when no server matches.
-    default_config_rx: watch::Receiver<ServerConfig>,
+    default_config_rx: ServerRx,
     /// Keeps the above server config receiver alive. Never updated.
-    _default_config_tx: watch::Sender<ServerConfig>,
-}
-
-/// Resource watches.
-struct Resources {
-    nodes: Watch<k8s::Node>,
-    pods: Watch<k8s::Pod>,
-    servers: Watch<v1::Server>,
-    authorizations: Watch<v1::Authorization>,
+    _default_config_tx: ServerTx,
 }
 
 #[derive(Debug, Default)]
@@ -66,135 +39,94 @@ struct NsIndex {
     pods: HashMap<k8s::PodName, Pod>,
 
     /// Caches a watch for each server.
-    servers: HashMap<v1::server::Name, Server>,
+    servers: HashMap<polixy::server::Name, Server>,
 
-    authzs: HashMap<v1::authz::Name, Authz>,
+    authzs: HashMap<polixy::authz::Name, Authz>,
 }
 
 #[derive(Debug)]
 struct Pod {
-    port_names: Arc<HashMap<v1::server::PortName, u16>>,
-    port_lookups: Arc<HashMap<u16, PodPort>>,
-    labels: v1::Labels,
+    port_names: Arc<PortNames>,
+    ports: Arc<PodPorts>,
+    labels: k8s::Labels,
 }
+
+type PortNames = HashMap<polixy::server::PortName, u16>;
+type PodPorts = HashMap<u16, PodPort>;
 
 #[derive(Debug)]
 struct PodPort {
-    server_name: Mutex<Option<v1::server::Name>>,
-    tx: watch::Sender<watch::Receiver<ServerConfig>>,
-}
-
-#[derive(Clone, Debug)]
-pub struct ServerConfig {
-    pub protocol: ProxyProtocol,
-    pub authorizations: Vec<Arc<Clients>>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ProxyProtocol {
-    Detect { timeout: time::Duration },
-    Opaque,
-    Http,
-    Grpc,
+    server_name: Mutex<Option<polixy::server::Name>>,
+    tx: ServerRxTx,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Authz {
-    pub servers: ServerSelector,
-    pub clients: Arc<Clients>,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub enum Clients {
-    Unauthenticated(Vec<IpNet>),
-    Authenticated {
-        service_accounts: Vec<ServiceAccountRef>,
-        identities: Vec<Identity>,
-        suffixes: Vec<Suffix>,
-    },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct Identity(Arc<str>);
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct Suffix(Arc<[String]>);
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct ServiceAccountRef {
-    ns: k8s::NsName,
-    name: Arc<str>,
+    servers: ServerSelector,
+    clients: Clients,
 }
 
 /// Selects servers for an authorization.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum ServerSelector {
-    Name(v1::server::Name),
-    Selector(Arc<v1::labels::Selector>),
+    Name(polixy::server::Name),
+    Selector(Arc<k8s::labels::Selector>),
 }
 
 #[derive(Debug)]
 struct Server {
     meta: ServerMeta,
-    authorizations: HashMap<v1::authz::Name, Arc<Clients>>,
-    rx: watch::Receiver<ServerConfig>,
-    tx: watch::Sender<ServerConfig>,
+    authorizations: BTreeMap<Option<polixy::authz::Name>, Clients>,
+    rx: ServerRx,
+    tx: ServerTx,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServerMeta {
-    labels: v1::Labels,
-    port: v1::server::Port,
-    pod_selector: Arc<v1::labels::Selector>,
+    labels: k8s::Labels,
+    port: polixy::server::Port,
+    pod_selector: Arc<k8s::labels::Selector>,
     protocol: ProxyProtocol,
 }
 
-pub fn run(client: kube::Client) -> (Handle, impl Future<Output = Error>) {
-    let lookups = SharedLookupMap::default();
+// === impl Server ===
 
-    // Watches Nodes, Pods, Servers, and Authorizations to update the lookup map
-    // with an entry for each linkerd-injected pod.
-    let idx = Index::new(lookups.clone());
+impl Server {
+    fn add_authz(&mut self, name: polixy::authz::Name, clients: Clients) {
+        self.authorizations.insert(Some(name), clients);
+        let mut config = self.rx.borrow().clone();
+        config.authorizations = self.authorizations.clone();
+        self.tx.send(config).expect("config must send")
+    }
 
-    let resources = Resources {
-        nodes: watcher(Api::all(client.clone()), ListParams::default()).into(),
-        pods: watcher(
-            Api::all(client.clone()),
-            ListParams::default().labels("linkerd.io/control-plane-ns"),
-        )
-        .into(),
-        servers: watcher(Api::all(client.clone()), ListParams::default()).into(),
-        authorizations: watcher(Api::all(client), ListParams::default()).into(),
-    };
-
-    (Handle(lookups), idx.index(resources))
-}
-
-// === impl Handle ===
-
-impl Handle {
-    pub fn lookup(&self, ns: k8s::NsName, name: k8s::PodName, port: u16) -> Option<Lookup> {
-        self.0.get(&(ns, name))?.get(&port).cloned()
+    fn remove_authz(&mut self, name: polixy::authz::Name) {
+        if self.authorizations.remove(&Some(name)).is_some() {
+            let mut config = self.rx.borrow().clone();
+            config.authorizations = self.authorizations.clone();
+            self.tx.send(config).expect("config must send")
+        }
     }
 }
 
 // === impl Index ===
 
 impl Index {
-    fn new(lookups: SharedLookupMap) -> Self {
+    pub(crate) fn new(lookups: SharedLookupMap) -> Self {
         // A default config to be provided to pods when no matching server
         // exists.
-        let (_default_config_tx, default_config_rx) = watch::channel(ServerConfig {
+        let (_default_config_tx, default_config_rx) = watch::channel(InboundServerConfig {
             protocol: ProxyProtocol::Detect {
                 timeout: time::Duration::from_secs(5),
             },
-            authorizations: vec![
+            authorizations: Some((
+                None,
                 // Permit all traffic when a `Server` instance is not present.
-                Arc::new(Clients::Unauthenticated(vec![
-                    "0.0.0.0/0".parse().unwrap(),
-                    "::/0".parse().unwrap(),
-                ])),
-            ],
+                Clients::Unauthenticated(
+                    vec!["0.0.0.0/0".parse().unwrap(), "::/0".parse().unwrap()].into(),
+                ),
+            ))
+            .into_iter()
+            .collect(),
         });
 
         Self {
@@ -215,8 +147,8 @@ impl Index {
     /// indexing ocrurs; but the indexing task is soley responsible for mutating
     /// it. The associated `Handle` is used for reads against this.
     #[instrument(skip(self, resources), fields(result))]
-    async fn index(mut self, resources: Resources) -> Error {
-        let Resources {
+    pub(crate) async fn index(mut self, resources: k8s::ResourceWatches) -> Error {
+        let k8s::ResourceWatches {
             mut nodes,
             mut pods,
             mut servers,
@@ -227,34 +159,34 @@ impl Index {
             let res = tokio::select! {
                 // Track the kubelet IPs for all nodes.
                 up = nodes.recv() => match up {
-                    watcher::Event::Applied(node) => self.apply_node(node),
-                    watcher::Event::Deleted(node) => self.delete_node(node),
-                    watcher::Event::Restarted(nodes) => self.reset_nodes(nodes),
+                    k8s::Event::Applied(node) => self.apply_node(node).context("apply"),
+                    k8s::Event::Deleted(node) => self.delete_node(node).context("delete"),
+                    k8s::Event::Restarted(nodes) => self.reset_nodes(nodes).context("reset"),
                 }.context("nodes"),
 
                 up = pods.recv() => match up {
-                    watcher::Event::Applied(pod) => self.apply_pod(pod),
-                    watcher::Event::Deleted(pod) => self.delete_pod(pod),
-                    watcher::Event::Restarted(pods) => self.reset_pods(pods),
+                    k8s::Event::Applied(pod) => self.apply_pod(pod).context("apply"),
+                    k8s::Event::Deleted(pod) => self.delete_pod(pod).context("delete"),
+                    k8s::Event::Restarted(pods) => self.reset_pods(pods).context("reset"),
                 }.context("pods"),
 
                 up = servers.recv() => match up {
-                    watcher::Event::Applied(srv) => {
+                    k8s::Event::Applied(srv) => {
                         self.apply_server(srv);
                         Ok(())
                     }
-                    watcher::Event::Deleted(srv) => self.delete_server(srv),
-                    watcher::Event::Restarted(srvs) => self.reset_servers(srvs),
+                    k8s::Event::Deleted(srv) => self.delete_server(srv).context("delete"),
+                    k8s::Event::Restarted(srvs) => self.reset_servers(srvs).context("reset"),
                 }.context("servers"),
 
                 up = authorizations.recv() => match up {
-                    watcher::Event::Applied(authz) => self.apply_authz(authz),
-                    watcher::Event::Deleted(authz) => self.delete_authz(authz),
-                    watcher::Event::Restarted(authzs) => self.reset_authzs(authzs),
+                    k8s::Event::Applied(authz) => self.apply_authz(authz).context("apply"),
+                    k8s::Event::Deleted(authz) => self.delete_authz(authz).context("delete"),
+                    k8s::Event::Restarted(authzs) => self.reset_authzs(authzs).context("reset"),
                 }.context("authorizations"),
             };
             if let Err(error) = res {
-                debug!(%error);
+                warn!(?error);
             }
         }
     }
@@ -375,7 +307,7 @@ impl Index {
 
         match (pods.entry(pod_name), lookups_entry) {
             (HashEntry::Vacant(pod_entry), DashEntry::Vacant(lookups_entry)) => {
-                let labels = v1::Labels::from(pod.metadata.labels);
+                let labels = k8s::Labels::from(pod.metadata.labels);
 
                 let kubelet = {
                     let name = spec
@@ -388,15 +320,15 @@ impl Index {
                         .clone()
                 };
 
-                let mut port_names = HashMap::new();
-                let mut pod_ports = HashMap::new();
+                let mut port_names = PortNames::default();
+                let mut ports = PodPorts::default();
                 let mut lookups = HashMap::new();
                 for container in spec.containers.into_iter() {
                     if let Some(ps) = container.ports {
                         for p in ps.into_iter() {
                             if p.protocol.map(|p| p == "TCP").unwrap_or(true) {
                                 let port = p.container_port as u16;
-                                if pod_ports.contains_key(&port) {
+                                if ports.contains_key(&port) {
                                     debug!(port, "Port duplicated");
                                     continue;
                                 }
@@ -414,104 +346,86 @@ impl Index {
                                     }
                                 }
 
-                                let (tx, server) = watch::channel(self.default_config_rx.clone());
-
-                                let pp = PodPort {
-                                    server_name: Mutex::new(None),
-                                    tx,
-                                };
-                                pod_ports.insert(port, pp);
-
-                                let lookup = Lookup {
-                                    name,
-                                    server,
-                                    kubelet_ips: kubelet.clone(),
-                                };
-                                lookups.insert(port, lookup);
+                                let (tx, rx) = watch::channel(self.default_config_rx.clone());
+                                trace!(%port, "Adding port");
+                                ports.insert(
+                                    port,
+                                    PodPort {
+                                        server_name: Mutex::new(None),
+                                        tx,
+                                    },
+                                );
+                                trace!(%port, "Adding lookup");
+                                lookups.insert(
+                                    port,
+                                    Lookup {
+                                        rx,
+                                        name,
+                                        kubelet_ips: kubelet.clone(),
+                                    },
+                                );
                             }
                         }
                     }
                 }
 
                 for (srv_name, server) in servers.iter() {
-                    let pod_port = match server.meta.port {
-                        v1::server::Port::Number(ref p) => pod_ports.get(p),
-                        v1::server::Port::Name(ref n) => {
-                            port_names.get(n).and_then(|p| pod_ports.get(p))
-                        }
-                    };
-                    if let Some(pod_port) = pod_port {
+                    if let Some(port) =
+                        Self::get_port(&srv_name, &server.meta.port, &port_names, &ports)
+                    {
                         if server.meta.pod_selector.matches(&labels) {
-                            debug!(server = %srv_name, port = ?server.meta.port, "Matches");
                             // TODO handle conflicts
-                            *pod_port.server_name.lock() = Some(srv_name.clone());
-                            pod_port
-                                .tx
+                            *port.server_name.lock() = Some(srv_name.clone());
+                            port.tx
                                 .send(server.rx.clone())
                                 .expect("pod config receiver must be set");
+                            debug!(server = %srv_name, "Pod server udpated");
+                            trace!(selector = ?server.meta.pod_selector, ?labels);
                         } else {
                             trace!(
                                 server = %srv_name,
                                 selector = ?server.meta.pod_selector,
-                                labels = ?labels,
+                                ?labels,
                                 "Does not match",
                             );
                         }
-                    } else {
-                        trace!(
-                            server = %srv_name,
-                            port = ?server.meta.port,
-                            "Does not match port",
-                        );
                     }
                 }
 
                 lookups_entry.insert(Arc::new(lookups));
                 pod_entry.insert(Pod {
                     port_names: port_names.into(),
-                    port_lookups: pod_ports.into(),
+                    ports: ports.into(),
                     labels,
                 });
             }
 
             (HashEntry::Occupied(mut pod_entry), DashEntry::Occupied(_)) => {
-                let labels = v1::Labels::from(pod.metadata.labels);
+                let labels = k8s::Labels::from(pod.metadata.labels);
 
                 if pod_entry.get().labels != labels {
                     for (srv_name, server) in servers.iter() {
-                        let pod_port = match server.meta.port {
-                            v1::server::Port::Number(ref p) => pod_entry.get().port_lookups.get(p),
-                            v1::server::Port::Name(ref n) => pod_entry
-                                .get()
-                                .port_names
-                                .get(n)
-                                .and_then(|p| pod_entry.get().port_lookups.get(p)),
-                        };
-
-                        if let Some(pod_port) = pod_port {
+                        let pod = pod_entry.get();
+                        if let Some(port) =
+                            Self::get_port(srv_name, &server.meta.port, &pod.port_names, &pod.ports)
+                        {
                             if server.meta.pod_selector.matches(&labels) {
-                                debug!(server = %srv_name, port = ?server.meta.port, "Matches");
                                 // TODO handle conflicts
-                                *pod_port.server_name.lock() = Some(srv_name.clone());
-                                pod_port
-                                    .tx
+                                *port.server_name.lock() = Some(srv_name.clone());
+                                port.tx
                                     .send(server.rx.clone())
                                     .expect("pod config receiver must be set");
+                                debug!(server = %srv_name, "Pod server udpated");
+                                trace!(selector = ?server.meta.pod_selector, ?labels);
                             } else {
                                 trace!(
                                     server = %srv_name,
                                     selector = ?server.meta.pod_selector,
                                     pod = %pod_entry.key(),
-                                    labels = ?labels,
+                                    ?labels,
                                     "Does not match",
                                 );
                             }
-                        } else {
-                            trace!(
-                                server = %srv_name,
-                                port = ?server.meta.port,
-                                "Does not match port",
-                            );
                         }
                     }
 
@@ -523,6 +437,42 @@ impl Index {
         }
 
         Ok(())
+    }
+
+    fn get_port<'p>(
+        server: &polixy::server::Name,
+        port_match: &polixy::server::Port,
+        port_names: &PortNames,
+        ports: &'p PodPorts,
+    ) -> Option<&'p PodPort> {
+        match port_match {
+            polixy::server::Port::Number(ref port) => match ports.get(port) {
+                Some(p) => {
+                    debug!(%server, %port, "Matches");
+                    Some(p)
+                }
+                None => {
+                    trace!(%server, %port, "No port on pod");
+                    None
+                }
+            },
+            polixy::server::Port::Name(ref name) => match port_names.get(name) {
+                Some(port) => match ports.get(port) {
+                    Some(p) => {
+                        debug!(%server, %port, %name, "Matches");
+                        Some(p)
+                    }
+                    None => {
+                        trace!(%server, %port, "No port on pod");
+                        None
+                    }
+                },
+                None => {
+                    trace!(%server, %name, "No port on pod");
+                    None
+                }
+            },
+        }
     }
 
     #[instrument(
@@ -575,7 +525,7 @@ impl Index {
 
             if let Some(prior) = prior_pod_labels.get_mut(&ns_name) {
                 if let Some(prior_labels) = prior.remove(&pod_name) {
-                    let labels = v1::Labels::from(pod.metadata.labels.clone());
+                    let labels = k8s::Labels::from(pod.metadata.labels.clone());
                     if prior_labels == labels {
                         continue;
                     }
@@ -607,10 +557,10 @@ impl Index {
             name = ?srv.metadata.name,
         )
     )]
-    fn apply_server(&mut self, srv: v1::Server) {
+    fn apply_server(&mut self, srv: polixy::Server) {
         let ns_name = k8s::NsName::from_resource(&srv);
-        let srv_name = v1::server::Name::from_resource(&srv);
-        let labels = v1::Labels::from(srv.metadata.labels);
+        let srv_name = polixy::server::Name::from_resource(&srv);
+        let labels = k8s::Labels::from(srv.metadata.labels);
         let port = srv.spec.port;
 
         let NsIndex {
@@ -623,34 +573,42 @@ impl Index {
             HashEntry::Vacant(entry) => {
                 let protocol = Self::mk_protocol(srv.spec.proxy_protocol.as_ref());
 
-                let mut authorizations = HashMap::with_capacity(ns_authzs.len());
+                let mut authorizations = BTreeMap::new();
                 for (authz_name, a) in ns_authzs.iter() {
                     let matches = match a.servers {
-                        ServerSelector::Name(ref n) => n == entry.key(),
-                        ServerSelector::Selector(ref s) => s.matches(&labels),
+                        ServerSelector::Name(ref n) => {
+                            trace!(r#ref = %n, name = %entry.key());
+                            n == entry.key()
+                        }
+                        ServerSelector::Selector(ref s) => {
+                            trace!(selector = ?s, ?labels);
+                            s.matches(&labels)
+                        }
                     };
                     if matches {
-                        debug!(authz = %authz_name, "Matched");
-                        authorizations.insert(authz_name.clone(), a.clients.clone());
+                        debug!(authz = %authz_name, %matches);
+                        authorizations.insert(Some(authz_name.clone()), a.clients.clone());
                     } else {
-                        trace!(authz = %authz_name, "Not matched");
+                        trace!(authz = %authz_name, %matches);
                     }
                 }
 
-                let (tx, rx) = watch::channel(ServerConfig {
+                let meta = ServerMeta {
+                    labels,
+                    port,
+                    pod_selector: srv.spec.pod_selector.into(),
                     protocol: protocol.clone(),
-                    authorizations: authorizations.values().cloned().collect(),
+                };
+                let (tx, rx) = watch::channel(InboundServerConfig {
+                    protocol,
+                    authorizations: authorizations.clone(),
                 });
+                debug!(authzs = ?authorizations.keys());
                 entry.insert(Server {
                     tx,
                     rx,
+                    meta,
                     authorizations,
-                    meta: ServerMeta {
-                        labels,
-                        port,
-                        pod_selector: srv.spec.pod_selector.into(),
-                        protocol,
-                    },
                 });
             }
 
@@ -666,21 +624,28 @@ impl Index {
                     let mut config = entry.get().rx.borrow().clone();
 
                     if entry.get().meta.labels != labels {
-                        let mut authorizations = HashMap::with_capacity(ns_authzs.len());
+                        let mut authorizations = BTreeMap::new();
                         for (authz_name, a) in ns_authzs.iter() {
                             let matches = match a.servers {
-                                ServerSelector::Name(ref n) => n == entry.key(),
-                                ServerSelector::Selector(ref s) => s.matches(&labels),
+                                ServerSelector::Name(ref n) => {
+                                    trace!(r#ref = %n, name = %entry.key());
+                                    n == entry.key()
+                                }
+                                ServerSelector::Selector(ref s) => {
+                                    trace!(selector = ?s, ?labels);
+                                    s.matches(&labels)
+                                }
                             };
                             if matches {
-                                debug!(authz = %authz_name, "Matched");
-                                authorizations.insert(authz_name.clone(), a.clients.clone());
+                                debug!(authz = %authz_name, %matches);
+                                authorizations.insert(Some(authz_name.clone()), a.clients.clone());
                             } else {
-                                trace!(authz = %authz_name, "Not matched");
+                                trace!(authz = %authz_name, %matches);
                             }
                         }
 
-                        config.authorizations = authorizations.values().cloned().collect();
+                        debug!(authzs = ?authorizations.keys());
+                        config.authorizations = authorizations.clone();
                         entry.get_mut().meta.labels = labels;
                         entry.get_mut().authorizations = authorizations;
                     }
@@ -713,14 +678,9 @@ impl Index {
         // all pods and servers.
         for (pod_name, pod) in pods.iter() {
             for (srv_name, srv) in servers.iter() {
-                let pod_port = match srv.meta.port {
-                    v1::server::Port::Number(ref p) => pod.port_lookups.get(p),
-                    v1::server::Port::Name(ref n) => {
-                        pod.port_names.get(&n).and_then(|p| pod.port_lookups.get(p))
-                    }
-                };
-
-                if let Some(pod_port) = pod_port {
+                if let Some(pod_port) =
+                    Self::get_port(&srv_name, &srv.meta.port, &*pod.port_names, &*pod.ports)
+                {
                     if srv.meta.pod_selector.matches(&pod.labels) {
                         debug!(pod = %pod_name, port = ?srv.meta.port, "Matches");
                         // TODO handle conflicts
@@ -733,20 +693,30 @@ impl Index {
                             .tx
                             .send(srv.rx.clone())
                             .expect("pod config receiver is held");
+                        debug!(server = %srv_name, "Pod server udpated");
+                        trace!(selector = ?srv.meta.pod_selector, labels = ?pod.labels);
+                    } else {
+                        trace!(
+                            server = %srv_name,
+                            pod = %pod_name,
+                            selector = ?srv.meta.pod_selector,
+                            labels = ?pod.labels,
+                            "Does not match",
+                        );
                     }
                 }
             }
         }
     }
 
-    fn mk_protocol(p: Option<&v1::server::ProxyProtocol>) -> ProxyProtocol {
+    fn mk_protocol(p: Option<&polixy::server::ProxyProtocol>) -> ProxyProtocol {
         match p {
-            Some(v1::server::ProxyProtocol::Detect) | None => ProxyProtocol::Detect {
+            Some(polixy::server::ProxyProtocol::Detect) | None => ProxyProtocol::Detect {
                 timeout: time::Duration::from_secs(5),
             },
-            Some(v1::server::ProxyProtocol::Opaque) => ProxyProtocol::Opaque,
-            Some(v1::server::ProxyProtocol::Http) => ProxyProtocol::Http,
-            Some(v1::server::ProxyProtocol::Grpc) => ProxyProtocol::Grpc,
+            Some(polixy::server::ProxyProtocol::Opaque) => ProxyProtocol::Opaque,
+            Some(polixy::server::ProxyProtocol::Http) => ProxyProtocol::Http,
+            Some(polixy::server::ProxyProtocol::Grpc) => ProxyProtocol::Grpc,
         }
     }
 
@@ -757,13 +727,13 @@ impl Index {
             name = ?srv.metadata.name,
         )
     )]
-    fn delete_server(&mut self, srv: v1::Server) -> Result<()> {
+    fn delete_server(&mut self, srv: polixy::Server) -> Result<()> {
         let ns_name = k8s::NsName::from_resource(&srv);
-        let srv_name = v1::server::Name::from_resource(&srv);
+        let srv_name = polixy::server::Name::from_resource(&srv);
         self.rm_server(ns_name, srv_name)
     }
 
-    fn rm_server(&mut self, ns_name: k8s::NsName, srv_name: v1::server::Name) -> Result<()> {
+    fn rm_server(&mut self, ns_name: k8s::NsName, srv_name: polixy::server::Name) -> Result<()> {
         let ns = self
             .namespaces
             .get_mut(&ns_name)
@@ -775,7 +745,7 @@ impl Index {
 
         // Reset the server config for all pods that were using this server.
         for pod in ns.pods.values_mut() {
-            for port in pod.port_lookups.values() {
+            for port in pod.ports.values() {
                 let mut sn = port.server_name.lock();
                 if sn.as_ref() == Some(&srv_name) {
                     *sn = None;
@@ -790,7 +760,7 @@ impl Index {
     }
 
     #[instrument(skip(self, srvs))]
-    fn reset_servers(&mut self, srvs: Vec<v1::Server>) -> Result<()> {
+    fn reset_servers(&mut self, srvs: Vec<polixy::Server>) -> Result<()> {
         let mut prior_servers = self
             .namespaces
             .iter()
@@ -807,11 +777,11 @@ impl Index {
         let mut result = Ok(());
         for srv in srvs.into_iter() {
             let ns_name = k8s::NsName::from_resource(&srv);
-            let srv_name = v1::server::Name::from_resource(&srv);
+            let srv_name = polixy::server::Name::from_resource(&srv);
 
             if let Some(prior_servers) = prior_servers.get_mut(&ns_name) {
                 if let Some(prior_meta) = prior_servers.remove(&srv_name) {
-                    let labels = v1::Labels::from(srv.metadata.labels.clone());
+                    let labels = k8s::Labels::from(srv.metadata.labels.clone());
                     let port = srv.spec.port.clone();
                     let protocol = Self::mk_protocol(srv.spec.proxy_protocol.as_ref());
                     let meta = ServerMeta {
@@ -849,10 +819,11 @@ impl Index {
             name = ?authz.metadata.name,
         )
     )]
-    fn apply_authz(&mut self, authz: v1::Authorization) -> Result<()> {
+    fn apply_authz(&mut self, authz: polixy::Authorization) -> Result<()> {
         let ns_name = k8s::NsName::from_resource(&authz);
-        let authz_name = v1::authz::Name::from_resource(&authz);
-        let authz = Self::mk_authz(&ns_name, authz.spec)?;
+        let authz_name = polixy::authz::Name::from_resource(&authz);
+        let authz = Self::mk_authz(&ns_name, authz.spec)
+            .with_context(|| format!("ns={}, authz={}", ns_name, authz_name))?;
 
         let NsIndex {
             ref mut authzs,
@@ -869,7 +840,7 @@ impl Index {
                     };
                     if matches {
                         debug!(authz = %entry.key(), "Adding authz to server");
-                        srv.add_authz(entry.key(), authz.clients.clone());
+                        srv.add_authz(entry.key().clone(), authz.clients.clone());
                     }
                 }
                 entry.insert(authz);
@@ -885,10 +856,10 @@ impl Index {
                         };
                         if matches {
                             debug!(authz = %entry.key(), "Adding authz to server");
-                            srv.add_authz(entry.key(), authz.clients.clone());
+                            srv.add_authz(entry.key().clone(), authz.clients.clone());
                         } else {
                             debug!(authz = %entry.key(), "Removing authz from server");
-                            srv.remove_authz(entry.key());
+                            srv.remove_authz(entry.key().clone());
                         }
                     }
                     entry.insert(authz);
@@ -899,9 +870,9 @@ impl Index {
         Ok(())
     }
 
-    fn mk_authz(ns_name: &k8s::NsName, spec: v1::authz::AuthorizationSpec) -> Result<Authz> {
+    fn mk_authz(ns_name: &k8s::NsName, spec: polixy::authz::AuthorizationSpec) -> Result<Authz> {
         let servers = {
-            let v1::authz::Server { name, selector } = spec.server;
+            let polixy::authz::Server { name, selector } = spec.server;
             match (name, selector) {
                 (Some(n), None) => ServerSelector::Name(n),
                 (None, Some(sel)) => ServerSelector::Selector(sel.into()),
@@ -910,7 +881,7 @@ impl Index {
             }
         };
 
-        let authz = match (spec.authenticated, spec.unauthenticated) {
+        let clients = match (spec.authenticated, spec.unauthenticated) {
             (Some(auth), None) => {
                 let mut identities = Vec::new();
                 let mut suffixes = Vec::new();
@@ -952,7 +923,7 @@ impl Index {
                     }
                 }
 
-                if identities.is_empty() && suffixes.is_empty() {
+                if identities.is_empty() && suffixes.is_empty() && service_accounts.is_empty() {
                     bail!("authorization authorizes no clients");
                 }
 
@@ -970,7 +941,7 @@ impl Index {
                     debug!(%net, "Unauthenticated");
                     nets.push(net);
                 }
-                Clients::Unauthenticated(nets)
+                Clients::Unauthenticated(nets.into())
             }
 
             (Some(_), Some(_)) => {
@@ -979,7 +950,6 @@ impl Index {
             _ => bail!("authorization authorizes no clients"),
         };
 
-        let clients = Arc::new(authz);
         Ok(Authz { servers, clients })
     }
 
@@ -990,26 +960,26 @@ impl Index {
             name = ?authz.metadata.name,
         )
     )]
-    fn delete_authz(&mut self, authz: v1::Authorization) -> Result<()> {
-        self.rm_authz(
-            k8s::NsName::from_resource(&authz),
-            v1::authz::Name::from_resource(&authz),
-        )
+    fn delete_authz(&mut self, authz: polixy::Authorization) -> Result<()> {
+        let ns = k8s::NsName::from_resource(&authz);
+        let authz = polixy::authz::Name::from_resource(&authz);
+        self.rm_authz(ns.clone(), authz.clone())
+            .with_context(|| format!("ns={}, authz={}", ns, authz))
     }
 
-    fn rm_authz(&mut self, ns_name: k8s::NsName, authz_name: v1::authz::Name) -> Result<()> {
+    fn rm_authz(&mut self, ns_name: k8s::NsName, authz_name: polixy::authz::Name) -> Result<()> {
         let ns = self
             .namespaces
             .get_mut(&ns_name)
             .ok_or_else(|| anyhow!("removing authz from non-existent namespace"))?;
         for srv in ns.servers.values_mut() {
-            srv.remove_authz(&authz_name);
+            srv.remove_authz(authz_name.clone());
         }
         Ok(())
     }
 
     #[instrument(skip(self, authzs))]
-    fn reset_authzs(&mut self, authzs: Vec<v1::Authorization>) -> Result<()> {
+    fn reset_authzs(&mut self, authzs: Vec<polixy::Authorization>) -> Result<()> {
         let mut prior_authzs = self
             .namespaces
             .iter()
@@ -1019,7 +989,7 @@ impl Index {
         let mut result = Ok(());
         for authz in authzs.into_iter() {
             let ns_name = k8s::NsName::from_resource(&authz);
-            let authz_name = v1::authz::Name::from_resource(&authz);
+            let authz_name = polixy::authz::Name::from_resource(&authz);
 
             if let Some(prior_ns) = prior_authzs.get_mut(&ns_name) {
                 if let Some(prior_authz) = prior_ns.remove(&authz_name) {
@@ -1051,69 +1021,5 @@ impl Index {
         }
 
         result
-    }
-}
-
-// === impl Server ===
-
-impl Server {
-    fn add_authz(&mut self, name: &v1::authz::Name, clients: Arc<Clients>) {
-        self.authorizations.insert(name.clone(), clients);
-        let mut config = self.rx.borrow().clone();
-        config.authorizations = self.authorizations.values().cloned().collect();
-        self.tx.send(config).expect("config must send")
-    }
-
-    fn remove_authz(&mut self, name: &v1::authz::Name) {
-        if self.authorizations.remove(name).is_some() {
-            let mut config = self.rx.borrow().clone();
-            config.authorizations = self.authorizations.values().cloned().collect();
-            self.tx.send(config).expect("config must send")
-        }
-    }
-}
-
-// === impl KubeletIps ===
-
-impl KubeletIps {
-    pub fn to_nets(&self) -> Vec<IpNet> {
-        self.0.iter().copied().map(IpNet::from).collect()
-    }
-}
-
-// === impl Identity ===
-
-impl fmt::Display for Identity {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-// === impl Suffix ===
-
-impl Suffix {
-    pub fn iter(&self) -> std::slice::Iter<'_, String> {
-        self.0.iter()
-    }
-}
-
-impl fmt::Display for Suffix {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "*")?;
-        for part in self.0.iter() {
-            write!(f, ".{}", part)?;
-        }
-        Ok(())
-    }
-}
-
-// === impl ServiceAccountRef ===
-
-impl ServiceAccountRef {
-    pub fn identity(&self, domain: &str) -> String {
-        format!(
-            "{}.{}.serviceaccount.linkerd.{}",
-            self.ns, self.name, domain
-        )
     }
 }

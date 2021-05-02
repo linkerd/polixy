@@ -1,11 +1,11 @@
-use super::labels;
+use super::super::labels;
 use crate::FromResource;
 use kube::{api::Resource, CustomResource};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Name(String);
 
 /// Authorizes clients to connect to a Server.

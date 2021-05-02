@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use futures::{future, prelude::*};
-use polixy::index;
 use structopt::StructOpt;
 use tracing::{debug, info, instrument};
 
@@ -51,10 +50,11 @@ async fn main() -> Result<()> {
             let client = kube::Client::try_default()
                 .await
                 .context("failed to initialize kubernetes client")?;
-            let (index, index_task) = index::run(client);
 
+            let (handle, index_task) = polixy::LookupHandle::run(client);
             let index_task = tokio::spawn(index_task);
-            let grpc = tokio::spawn(grpc(port, index, drain_rx, identity_domain));
+
+            let grpc = tokio::spawn(grpc(port, handle, drain_rx, identity_domain));
 
             tokio::select! {
                 _ = shutdown(drain_tx) => Ok(()),
@@ -104,15 +104,15 @@ async fn main() -> Result<()> {
     }
 }
 
-#[instrument(skip(index, drain))]
+#[instrument(skip(handle, drain, identity_domain))]
 async fn grpc(
     port: u16,
-    index: index::Handle,
+    handle: polixy::LookupHandle,
     drain: linkerd_drain::Watch,
     identity_domain: String,
 ) -> Result<()> {
     let addr = ([0, 0, 0, 0], port).into();
-    let server = polixy::grpc::Server::new(index, drain.clone(), identity_domain);
+    let server = polixy::grpc::Server::new(handle, drain.clone(), identity_domain);
     let (close_tx, close_rx) = tokio::sync::oneshot::channel();
     tokio::pin! {
         let srv = server.serve(addr, close_rx.map(|_| {}));

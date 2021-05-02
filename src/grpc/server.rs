@@ -1,27 +1,28 @@
 use super::proto;
 use crate::{
-    index::{Clients, Handle, KubeletIps, Lookup, ProxyProtocol, ServerConfig},
     k8s::{NsName, PodName},
+    Clients, InboundServerConfig, Lookup, LookupHandle, ProxyProtocol, ServiceAccountRef,
 };
 use futures::prelude::*;
 use std::{collections::HashMap, iter::FromIterator, sync::Arc};
 use tokio_stream::wrappers::WatchStream;
+use tracing::trace;
 
 #[derive(Clone, Debug)]
 pub struct Server {
-    index: Handle,
+    lookup: LookupHandle,
     drain: linkerd_drain::Watch,
     identity_domain: Arc<str>,
 }
 
 impl Server {
     pub fn new(
-        index: Handle,
+        lookup: LookupHandle,
         drain: linkerd_drain::Watch,
         identity_domain: impl Into<Arc<str>>,
     ) -> Self {
         Self {
-            index,
+            lookup,
             drain,
             identity_domain: identity_domain.into(),
         }
@@ -84,9 +85,9 @@ impl proto::Service for Server {
         let Lookup {
             name: _,
             kubelet_ips,
-            server,
+            rx,
         } = self
-            .index
+            .lookup
             .lookup(ns.clone(), name.clone(), port)
             .ok_or_else(|| {
                 tonic::Status::not_found(format!(
@@ -95,16 +96,28 @@ impl proto::Service for Server {
                 ))
             })?;
 
+        // Traffic is always permitted from the pod's Kubelet IPs.
+        let kubelet_authz = proto::Authorization {
+            networks: kubelet_ips
+                .to_nets()
+                .into_iter()
+                .map(|net| net.to_string())
+                .map(|cidr| proto::Network { cidr })
+                .collect(),
+            labels: HashMap::from_iter(Some(("authn".to_string(), "false".to_string()))),
+            ..Default::default()
+        };
+
         // TODO deduplicate redundant updates.
         // TODO end streams on drain.
         let domain = self.identity_domain.clone();
-        let watch = WatchStream::new(server)
+        let watch = WatchStream::new(rx)
             .map(WatchStream::new)
             .flat_map(move |updates| {
-                let ips = kubelet_ips.clone();
+                let kubelet = kubelet_authz.clone();
                 let domain = domain.clone();
                 updates
-                    .map(move |c| to_config(&ips, c, domain.as_ref()))
+                    .map(move |c| to_config(&kubelet, c, domain.as_ref()))
                     .map(Ok)
             });
 
@@ -113,8 +126,8 @@ impl proto::Service for Server {
 }
 
 fn to_config(
-    kubelet_ips: &KubeletIps,
-    srv: ServerConfig,
+    kubelet_authz: &proto::Authorization,
+    srv: InboundServerConfig,
     identity_domain: &str,
 ) -> proto::InboundProxyConfig {
     // Convert the protocol object into a protobuf response.
@@ -137,74 +150,74 @@ fn to_config(
         },
     };
 
-    let authorizations = srv
+    let server_authzs = srv
         .authorizations
         .into_iter()
-        .map(|a| match *a {
-            Clients::Unauthenticated(ref nets) => proto::Authorization {
-                networks: nets
-                    .iter()
-                    .map(|net| proto::Network {
-                        cidr: net.to_string(),
-                    })
-                    .collect(),
-                labels: HashMap::from_iter(Some(("authn".to_string(), "false".to_string()))),
-                ..Default::default()
-            },
-
-            // Authenticated connections must have TLS and apply to all
-            // networks.
-            Clients::Authenticated {
-                ref service_accounts,
-                ref identities,
-                ref suffixes,
-            } => proto::Authorization {
-                networks: vec![
-                    proto::Network {
-                        cidr: "0.0.0.0/0".to_string(),
-                    },
-                    proto::Network {
-                        cidr: "::/0".to_string(),
-                    },
-                ],
-                tls_terminated: Some(proto::authorization::Tls {
-                    client_id: Some(proto::IdMatch {
-                        identities: identities
-                            .iter()
-                            .map(ToString::to_string)
-                            .chain(
-                                service_accounts
-                                    .iter()
-                                    .map(|sa| sa.identity(identity_domain)),
-                            )
-                            .collect(),
-                        suffixes: suffixes
-                            .iter()
-                            .map(|sfx| proto::Suffix {
-                                parts: sfx.iter().map(ToString::to_string).collect(),
-                            })
-                            .collect(),
-                    }),
-                }),
-                labels: HashMap::from_iter(Some(("authn".to_string(), "true".to_string()))),
-            },
-        })
-        // Traffic is always permitted from the pod's Kubelet IPs.
-        .chain(Some(proto::Authorization {
-            networks: kubelet_ips
-                .to_nets()
-                .into_iter()
-                .map(|net| net.to_string())
-                .map(|cidr| proto::Network { cidr })
-                .collect(),
-            labels: HashMap::from_iter(Some(("authorization".to_string(), "kubelet".to_string()))),
-            ..Default::default()
-        }))
-        .collect();
+        .map(|(_, c)| to_authz(c, identity_domain));
+    trace!(?server_authzs);
 
     proto::InboundProxyConfig {
-        authorizations,
+        authorizations: Some(kubelet_authz.clone())
+            .into_iter()
+            .chain(server_authzs)
+            .collect(),
         protocol: Some(protocol),
         ..Default::default()
     }
+}
+
+fn to_authz(clients: Clients, identity_domain: &str) -> proto::Authorization {
+    match clients {
+        Clients::Unauthenticated(nets) => proto::Authorization {
+            networks: nets
+                .iter()
+                .map(|net| proto::Network {
+                    cidr: net.to_string(),
+                })
+                .collect(),
+            labels: HashMap::from_iter(Some(("authn".to_string(), "false".to_string()))),
+            ..Default::default()
+        },
+
+        // Authenticated connections must have TLS and apply to all
+        // networks.
+        Clients::Authenticated {
+            service_accounts,
+            identities,
+            suffixes,
+        } => proto::Authorization {
+            networks: vec![
+                proto::Network {
+                    cidr: "0.0.0.0/0".to_string(),
+                },
+                proto::Network {
+                    cidr: "::/0".to_string(),
+                },
+            ],
+            tls_terminated: Some(proto::authorization::Tls {
+                client_id: Some(proto::IdMatch {
+                    identities: identities
+                        .iter()
+                        .map(ToString::to_string)
+                        .chain(
+                            service_accounts
+                                .into_iter()
+                                .map(|sa| to_identity(sa, identity_domain)),
+                        )
+                        .collect(),
+                    suffixes: suffixes
+                        .iter()
+                        .map(|sfx| proto::Suffix {
+                            parts: sfx.iter().map(ToString::to_string).collect(),
+                        })
+                        .collect(),
+                }),
+            }),
+            labels: HashMap::from_iter(Some(("authn".to_string(), "true".to_string()))),
+        },
+    }
+}
+
+fn to_identity(ServiceAccountRef { ns, name }: ServiceAccountRef, domain: &str) -> String {
+    format!("{}.{}.serviceaccount.linkerd.{}", ns, name, domain)
 }

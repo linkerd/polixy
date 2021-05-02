@@ -2,6 +2,8 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   name: authorizations.polixy.olix0r.net
+  labels:
+    polixy.olix0r.net/crd: authz
 spec:
   group: polixy.olix0r.net
   names:

@@ -13,6 +13,7 @@ buildEnv {
     cmake
     curl
     docker
+    jq
     kube3d
     git
     (glibcLocales.override { locales = [ "en_US.UTF-8" ]; })
@@ -21,6 +22,7 @@ buildEnv {
     pkg-config
     protobuf
     rustup
+    shellcheck
     stdenv
   ];
 

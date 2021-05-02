@@ -107,6 +107,7 @@ async fn grpc(port: u16, index: index::Handle, drain: linkerd_drain::Watch) -> R
     tokio::pin! {
         let srv = server.serve(addr, close_rx.map(|_| {}));
     }
+    info!(%addr, "gRPC server listening");
     tokio::select! {
         res = (&mut srv) => res?,
         handle = drain.signaled() => {

@@ -31,24 +31,24 @@ pub struct Server {
 
 /// Describes an authenticated client.
 ///
-/// Exactly one of `identities` and `service_account_refs` should be set.
+/// Exactly one of `identities` and `service_accounts` should be set.
 #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Authenticated {
     /// Indicates a Linkerd identity that is authorized to access a server.
     pub identities: Option<Vec<String>>,
     /// Identifies a `ServiceAccount` authorized to access a server.
-    pub service_account_refs: Option<Vec<ServiceAccountRef>>,
+    pub service_accounts: Option<Vec<ServiceAccountRef>>,
 }
 
 /// References a Kubernetes `ServiceAccount` instance.
 ///
 /// If no namespace is specified, the `Authorization`'s namespace is used.
 #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
-#[serde(rename_all = "camelCase")]
 pub struct ServiceAccountRef {
     pub namespace: Option<String>,
     pub name: String,
+    // TODO pub selector: labels::Selector,
 }
 
 /// Describes an unauthenticated client.

@@ -907,7 +907,7 @@ impl Index {
                     }
                 }
 
-                if let Some(sas) = auth.service_account_refs {
+                if let Some(sas) = auth.service_accounts {
                     for sa in sas.into_iter() {
                         let name = sa.name;
                         let ns = sa

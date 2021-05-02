@@ -104,7 +104,10 @@ impl proto::Service for Server {
                 .map(|net| net.to_string())
                 .map(|cidr| proto::Network { cidr })
                 .collect(),
-            labels: HashMap::from_iter(Some(("authn".to_string(), "false".to_string()))),
+            labels: Some(("authn".to_string(), "false".to_string()))
+                .into_iter()
+                .chain(Some(("name".to_string(), "_kubelet".to_string())))
+                .collect(),
             ..Default::default()
         };
 
@@ -153,7 +156,7 @@ fn to_config(
     let server_authzs = srv
         .authorizations
         .into_iter()
-        .map(|(_, c)| to_authz(c, identity_domain));
+        .map(|(n, c)| to_authz(n, c, identity_domain));
     trace!(?server_authzs);
 
     proto::InboundProxyConfig {
@@ -166,7 +169,11 @@ fn to_config(
     }
 }
 
-fn to_authz(clients: Clients, identity_domain: &str) -> proto::Authorization {
+fn to_authz(
+    name: Option<impl ToString>,
+    clients: Clients,
+    identity_domain: &str,
+) -> proto::Authorization {
     match clients {
         Clients::Unauthenticated(nets) => proto::Authorization {
             networks: nets
@@ -213,7 +220,13 @@ fn to_authz(clients: Clients, identity_domain: &str) -> proto::Authorization {
                         .collect(),
                 }),
             }),
-            labels: HashMap::from_iter(Some(("authn".to_string(), "true".to_string()))),
+            labels: Some(("authn".to_string(), "true".to_string()))
+                .into_iter()
+                .chain(Some((
+                    "name".to_string(),
+                    name.map(|n| n.to_string()).unwrap_or_default(),
+                )))
+                .collect(),
         },
     }
 }

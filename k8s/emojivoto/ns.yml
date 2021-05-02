@@ -37,6 +37,6 @@ spec:
   server:
     name: prom
   authenticated:
-    serviceAccountRefs:
+    serviceAccounts:
       - namespace: linkerd-viz
         name: prometheus

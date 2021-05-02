@@ -97,8 +97,7 @@ spec:
                   type: object
                   oneOf:
                     - required: [identities]
-                    - required: [serviceAccountRefs]
-                    #- required: [serviceAccountSelectors]
+                    - required: [serviceAccounts]
                   properties:
 
                     identities:
@@ -114,7 +113,7 @@ spec:
                         type: string
                         pattern: '^(\*|[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*)$'
 
-                    serviceAccountRefs:
+                    serviceAccounts:
                       type: array
                       items:
                         type: object
@@ -123,60 +122,32 @@ spec:
                           namespace:
                             type: string
                             pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+
                           name:
                             type: string
                             pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
 
-                    # TODO
-                    # serviceAccountSelectors:
-                    #   type: array
-                    #   items:
-                    #     type: object
-                    #     oneOf:
-                    #       - required: [matchLabels]
-                    #       - required: [matchExpressions]
-                    #     properties:
-                    #       matchLabels:
-                    #         type: object
-                    #         x-kubernetes-preserve-unknown-fields: true
-                    #       matchExpressions:
-                    #         type: array
-                    #         items:
-                    #           type: object
-                    #           required: [key, operator, values]
-                    #           properties:
-                    #             key:
-                    #               type: string
-                    #             operator:
-                    #               type: string
-                    #               enum: [In, NotIn]
-                    #             values:
-                    #               type: array
-                    #               items:
-                    #                 type: string
-                    #
-                    #       # When unspecified, matches ALL namespaces.
-                    #       namespaceSelector:
-                    #         type: object
-                    #         oneOf:
-                    #           - required: [matchLabels]
-                    #           - required: [matchExpressions]
-                    #         properties:
-                    #           matchLabels:
-                    #             type: object
-                    #             x-kubernetes-preserve-unknown-fields: true
-                    #           matchExpressions:
-                    #             type: array
-                    #             items:
-                    #               type: object
-                    #               required: [key, operator, values]
-                    #               properties:
-                    #                 key:
-                    #                   type: string
-                    #                 operator:
-                    #                   type: string
-                    #                   enum: [In, NotIn]
-                    #                 values:
-                    #                   type: array
-                    #                   items:
-                    #                     type: string
+                      #   selector:
+                      #     type: object
+                      #     oneOf:
+                      #       - required: [matchLabels]
+                      #       - required: [matchExpressions]
+                      #     properties:
+                      #       matchLabels:
+                      #         type: object
+                      #         x-kubernetes-preserve-unknown-fields: true
+                      #       matchExpressions:
+                      #         type: array
+                      #         items:
+                      #           type: object
+                      #           required: [key, operator, values]
+                      #           properties:
+                      #             key:
+                      #               type: string
+                      #             operator:
+                      #               type: string
+                      #               enum: [In, NotIn]
+                      #             values:
+                      #               type: array
+                      #               items:
+                      #                 type: string

@@ -1,3 +1,4 @@
+---
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -7,7 +8,7 @@ metadata:
     app.kubernetes.io/version: v11
   annotations:
     linkerd.io/inject: enabled
-    config.linkerd.io/proxy-log-level: linkerd=trace,info
+    config.linkerd.io/proxy-log-level: info
 ---
 apiVersion: polixy.olix0r.net/v1
 kind: Server

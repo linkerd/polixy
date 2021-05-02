@@ -6,52 +6,31 @@ See [DESIGN.md](./DESIGN.md) for details.
 
 ## Requires
 
-* Kubernetes 1.16+;
-* [Linkerd 2.10+](linkerd.io);
+* A Kubernetes 1.16+ cluster, available via kubectl;
+* [Linkerd 2.10+](linkerd.io)--so that workloads are labeled appropriately;
 
 ## Running
 
-### Install CRDs
-
-```console
-:; kubectl apply -f ./crds
-customresourcedefinition.apiextensions.k8s.io/authorizations.polixy.olix0r.net configured
-customresourcedefinition.apiextensions.k8s.io/servers.polixy.olix0r.net configured
-```
-
-### Install example application
+### Install `polixy.olix0r.net` CRDs
 
 ```sh
-:; kubectl apply -f ./emojivoto/ns.yml && kubectl apply -f ./emojivoto
-namespace/emojivoto created
-server.polixy.olix0r.net/prom created
-authorization.polixy.olix0r.net/prom-prometheus created
-serviceaccount/emoji created
-service/emoji created
-deployment.apps/emoji created
-server.polixy.olix0r.net/emoji-grpc created
-authorization.polixy.olix0r.net/emoji-grpc created
-namespace/emojivoto unchanged
-server.polixy.olix0r.net/prom unchanged
-authorization.polixy.olix0r.net/prom-prometheus unchanged
-serviceaccount/web created
-deployment.apps/vote-bot created
-serviceaccount/voting created
-service/voting created
-deployment.apps/voting created
-server.polixy.olix0r.net/voting-grpc created
-authorization.polixy.olix0r.net/voting-grpc created
-serviceaccount/web configured
-service/web created
-deployment.apps/web created
-server.polixy.olix0r.net/web-http created
-authorization.polixy.olix0r.net/web-public created
+:; kubectl apply -f ./k8s/crds
 ```
 
-### Run the controller
+### Install example application (with policies)
 
 ```sh
-:; cargo run -- controller
+:; kubectl apply -f ./k8s/emojivoto/ns.yml && kubectl apply -f ./k8s/emojivoto
+```
+
+### Run the controller locally
+
+We create a new `polixy` namespace with a `controller` ServiceAccount, with
+limited cluster access, and extract a kubeconfig to the local filesystem to use with the controller:
+
+```sh
+:; kubectl apply -f ./k8s/controller/sa.yml
+:; KUBECONFIG=$(./k8s/controller/kubeconfig.sh) cargo run -- controller
 ```
 
 ### Run a client

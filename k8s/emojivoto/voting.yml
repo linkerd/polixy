@@ -1,21 +1,21 @@
+---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: emoji
+  name: voting
   namespace: emojivoto
   labels:
+    app.kubernetes.io/name: voting
     app.kubernetes.io/part-of: emojivoto
-    app.kubernetes.io/name: emoji
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: emoji
+  name: voting
   namespace: emojivoto
   labels:
+    app.kubernetes.io/name: voting
     app.kubernetes.io/part-of: emojivoto
-    app.kubernetes.io/name: emoji
-    app.kubernetes.io/version: v11
 spec:
   ports:
     - name: grpc
@@ -25,35 +25,35 @@ spec:
       port: 8801
       targetPort: 8801
   selector:
+    app.kubernetes.io/name: voting
     app.kubernetes.io/part-of: emojivoto
-    app.kubernetes.io/name: emoji
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   labels:
+    app.kubernetes.io/name: voting
     app.kubernetes.io/part-of: emojivoto
-    app.kubernetes.io/name: emoji
     app.kubernetes.io/version: v11
-  name: emoji
+  name: voting
   namespace: emojivoto
 spec:
   replicas: 1
   selector:
     matchLabels:
+      app.kubernetes.io/name: voting
       app.kubernetes.io/part-of: emojivoto
-      app.kubernetes.io/name: emoji
   template:
     metadata:
       labels:
+        app.kubernetes.io/name: voting
         app.kubernetes.io/part-of: emojivoto
-        app.kubernetes.io/name: emoji
         app.kubernetes.io/version: v11
     spec:
-      serviceAccountName: emoji
+      serviceAccountName: voting
       containers:
         - name: main
-          image: docker.l5d.io/buoyantio/emojivoto-emoji-svc:v11
+          image: docker.l5d.io/buoyantio/emojivoto-voting-svc:v11
           env:
             - name: GRPC_PORT
               value: "8080"
@@ -76,16 +76,16 @@ apiVersion: polixy.olix0r.net/v1
 kind: Server
 metadata:
   namespace: emojivoto
-  name: emoji-grpc
+  name: voting-grpc
   labels:
     app.kubernetes.io/part-of: emojivoto
-    app.kubernetes.io/name: emoji
+    app.kubernetes.io/name: voting
     app.kubernetes.io/version: v11
 spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/part-of: emojivoto
-      app.kubernetes.io/name: emoji
+      app.kubernetes.io/name: voting
   port: grpc
   proxyProtocol: Grpc
 ---
@@ -93,14 +93,16 @@ apiVersion: polixy.olix0r.net/v1
 kind: Authorization
 metadata:
   namespace: emojivoto
-  name: emoji-grpc
+  name: voting-grpc
   labels:
     app.kubernetes.io/part-of: emojivoto
-    app.kubernetes.io/name: emoji
+    app.kubernetes.io/name: voting
     app.kubernetes.io/version: v11
 spec:
-  # Allow all authenticated clients to access the (read-only) emoji service.
   server:
-    name: emoji-grpc
+    name: voting-grpc
+  # The voting service only allows requests from the web service.
   authenticated:
-    identities: ['*']
+    serviceAccountRefs:
+      - namespace: emojivoto
+        name: web

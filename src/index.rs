@@ -213,16 +213,16 @@ impl Index {
             let res = tokio::select! {
                 // Track the kubelet IPs for all nodes.
                 up = self.nodes.recv() => match up {
-                        watcher::Event::Applied(node) => self.apply_node(node),
-                        watcher::Event::Deleted(node) => self.delete_node(node),
-                        watcher::Event::Restarted(nodes) => self.reset_nodes(nodes),
-                },
+                    watcher::Event::Applied(node) => self.apply_node(node),
+                    watcher::Event::Deleted(node) => self.delete_node(node),
+                    watcher::Event::Restarted(nodes) => self.reset_nodes(nodes),
+                }.context("nodes"),
 
                 up = self.pods.recv() => match up {
-                        watcher::Event::Applied(pod) => self.apply_pod(pod),
-                        watcher::Event::Deleted(pod) => self.delete_pod(pod),
-                        watcher::Event::Restarted(pods) => self.reset_pods(pods),
-                },
+                    watcher::Event::Applied(pod) => self.apply_pod(pod),
+                    watcher::Event::Deleted(pod) => self.delete_pod(pod),
+                    watcher::Event::Restarted(pods) => self.reset_pods(pods),
+                }.context("pods"),
 
                 up = self.servers.recv() => match up {
                     watcher::Event::Applied(srv) => {
@@ -231,13 +231,13 @@ impl Index {
                     }
                     watcher::Event::Deleted(srv) => self.delete_server(srv),
                     watcher::Event::Restarted(srvs) => self.reset_servers(srvs),
-                },
+                }.context("servers"),
 
                 up = self.authorizations.recv() => match up {
                     watcher::Event::Applied(authz) => self.apply_authz(authz),
                     watcher::Event::Deleted(authz) => self.delete_authz(authz),
                     watcher::Event::Restarted(authzs) => self.reset_authzs(authzs),
-                },
+                }.context("authorizations"),
             };
             if let Err(error) = res {
                 debug!(%error);

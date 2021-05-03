@@ -93,6 +93,7 @@ pub struct ServerMeta {
 
 impl Server {
     fn add_authz(&mut self, name: polixy::authz::Name, authz: ClientAuthz) {
+        debug!("Adding authorization to server");
         self.authorizations.insert(Some(name), authz);
         let mut config = self.rx.borrow().clone();
         config.authorizations = self.authorizations.clone();
@@ -101,6 +102,7 @@ impl Server {
 
     fn remove_authz(&mut self, name: polixy::authz::Name) {
         if self.authorizations.remove(&Some(name)).is_some() {
+            debug!("Removing authorization from server");
             let mut config = self.rx.borrow().clone();
             config.authorizations = self.authorizations.clone();
             self.tx.send(config).expect("config must send")
@@ -501,6 +503,8 @@ impl Index {
             .remove(&(ns.clone(), pod.clone()))
             .ok_or_else(|| anyhow!("pod {} doesn't exist in namespace {}", pod, ns))?;
 
+        debug!("Removed pod");
+
         Ok(())
     }
 
@@ -752,18 +756,22 @@ impl Index {
         }
 
         // Reset the server config for all pods that were using this server.
-        for pod in ns.pods.values_mut() {
-            for port in pod.ports.values() {
+        for (pod_name, pod) in ns.pods.iter() {
+            for (port_num, port) in pod.ports.iter() {
                 let mut sn = port.server_name.lock();
                 if sn.as_ref() == Some(&srv_name) {
+                    debug!(pod = %pod_name, port = %port_num, "Removing server from pod");
                     *sn = None;
                     port.tx
                         .send(self.default_config_rx.clone())
                         .expect("pod config receiver must still be held");
+                } else {
+                    trace!(pod = %pod_name, port = %port_num, server = ?sn, "Server does not match");
                 }
             }
         }
 
+        debug!("Removed server");
         Ok(())
     }
 
@@ -978,9 +986,12 @@ impl Index {
             .namespaces
             .get_mut(&ns_name)
             .ok_or_else(|| anyhow!("removing authz from non-existent namespace"))?;
+
         for srv in ns.servers.values_mut() {
             srv.remove_authz(authz_name.clone());
         }
+
+        debug!("Removed authz");
         Ok(())
     }
 

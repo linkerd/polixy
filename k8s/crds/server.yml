@@ -17,6 +17,15 @@ spec:
     - name: v1
       served: true
       storage: true
+
+      additionalPrinterColumns:
+        - jsonPath: .spec.port
+          name: podSelector
+          type: string
+        - jsonPath: .spec.podSelector
+          name: port
+          type: string
+
       schema:
         openAPIV3Schema:
           type: object

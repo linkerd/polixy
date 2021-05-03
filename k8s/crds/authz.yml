@@ -7,16 +7,33 @@ metadata:
     polixy.olix0r.net/crd: authz
 spec:
   group: polixy.olix0r.net
+  scope: Namespaced
+
   names:
     kind: Authorization
     plural: authorizations
     singular: authorization
     shortNames: [authz]
-  scope: Namespaced
+
   versions:
     - name: v1
       served: true
       storage: true
+
+      additionalPrinterColumns:
+        - jsonPath: .spec.server.name
+          name: server
+          type: string
+        - jsonPath: .spec.unauthenticated.networks[*]
+          name: networks
+          type: string
+        - jsonPath: .spec.identities[*]
+          name: identities
+          type: string
+        - jsonPath: .spec.authenticated.serviceAccounts[*]
+          name: service accounts
+          type: string
+
       schema:
         openAPIV3Schema:
           type: object
@@ -48,7 +65,6 @@ spec:
                       type: string
                       pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
 
-                    # XXX Can/should this be left out for now?
                     selector:
                       description: >-
                         A label query over servers on which this authorization applies.
@@ -78,9 +94,9 @@ spec:
 
                 unauthenticated:
                   description: >-
-                    Authorizes unauthenticated clients to connect to a
-                    server. Unauthenticated requests are ALWAYS permitted
-                    from the local kubelet process.
+                    Authorizes unauthenticated clients to connect to a server.
+                    Unauthenticated requests are ALWAYS permitted from the local
+                    kubelet process.
                   type: object
                   required: [networks]
                   properties:

@@ -24,13 +24,13 @@ spec:
         - jsonPath: .spec.server.name
           name: server
           type: string
-        - jsonPath: .spec.unauthenticated.networks[*]
+        - jsonPath: .spec.unauthentication.networks[*]
           name: networks
           type: string
         - jsonPath: .spec.identities[*]
           name: identities
           type: string
-        - jsonPath: .spec.authenticated.serviceAccounts[*]
+        - jsonPath: .spec.authentication.serviceAccounts[*]
           name: service accounts
           type: string
 
@@ -42,11 +42,12 @@ spec:
             spec:
               description: >-
                 Authorizes clients to communicate with Linkerd-proxied servers.
+
               type: object
               required: [server]
               oneOf:
-                - required: [authenticated]
-                - required: [unauthenticated]
+                - required: [client]
+
               properties:
 
                 server:
@@ -55,6 +56,7 @@ spec:
                     authorization applies.
 
                     Only one of `name` or `selector` may be specified.
+
                   type: object
                   oneOf:
                     - required: [name]
@@ -68,6 +70,7 @@ spec:
                     selector:
                       description: >-
                         A label query over servers on which this authorization applies.
+
                       type: object
                       oneOf:
                         - required: [matchLabels]
@@ -92,38 +95,33 @@ spec:
                                 items:
                                   type: string
 
-                unauthenticated:
-                  description: >-
-                    Authorizes unauthenticated clients to connect to a server.
-                    Unauthenticated requests are ALWAYS permitted from the local
-                    kubelet process.
+                client:
                   type: object
-                  required: [networks]
+                  oneOf:
+                    - required: [identities]
+                    - required: [serviceAccounts]
+                    - required: [unauthenticated]
+
                   properties:
-                    networks:
+                    cidrs:
                       description: Authorizes traffic from specified CIDR blocks
                       type: array
                       items:
                         type: string
 
-                authenticated:
-                  description: >-
-                    Authorizes a clients to connect to a server with Linkerd
-                    mTLS identity.
-                  type: object
-                  oneOf:
-                    - required: [identities]
-                    - required: [serviceAccounts]
-                  properties:
+                    unauthenticated:
+                      type: boolean
+                      default: false
 
                     identities:
                       description: >-
-                        Authorizes authenticated clients with the provided
+                        Authorizes authentication clients with the provided
                         identity strings.
 
                         The `*` prefix can be used to match all identities in
                         a domain. An identity string of `*` indicates that
-                        all authenticated clients are authorized.
+                        all authentication clients are authorized.
+
                       type: array
                       items:
                         type: string
@@ -143,27 +141,27 @@ spec:
                             type: string
                             pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
 
-                      #   selector:
-                      #     type: object
-                      #     oneOf:
-                      #       - required: [matchLabels]
-                      #       - required: [matchExpressions]
-                      #     properties:
-                      #       matchLabels:
-                      #         type: object
-                      #         x-kubernetes-preserve-unknown-fields: true
-                      #       matchExpressions:
-                      #         type: array
-                      #         items:
-                      #           type: object
-                      #           required: [key, operator, values]
-                      #           properties:
-                      #             key:
-                      #               type: string
-                      #             operator:
-                      #               type: string
-                      #               enum: [In, NotIn]
-                      #             values:
-                      #               type: array
-                      #               items:
-                      #                 type: string
+                          #selector:
+                          #  type: object
+                          #  oneOf:
+                          #    - required: [matchLabels]
+                          #    - required: [matchExpressions]
+                          #  properties:
+                          #    matchLabels:
+                          #      type: object
+                          #      x-kubernetes-preserve-unknown-fields: true
+                          #    matchExpressions:
+                          #      type: array
+                          #      items:
+                          #        type: object
+                          #        required: [key, operator, values]
+                          #        properties:
+                          #          key:
+                          #            type: string
+                          #          operator:
+                          #            type: string
+                          #            enum: [In, NotIn]
+                          #          values:
+                          #            type: array
+                          #              type: string
+                          #            items:

@@ -19,8 +19,7 @@ pub struct Name(String);
 #[serde(rename_all = "camelCase")]
 pub struct AuthorizationSpec {
     pub server: Server,
-    pub authenticated: Option<Authenticated>,
-    pub unauthenticated: Option<Unauthenticated>,
+    pub client: Client,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
@@ -34,11 +33,13 @@ pub struct Server {
 /// Exactly one of `identities` and `service_accounts` should be set.
 #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct Authenticated {
+pub struct Client {
+    pub cidrs: Option<Vec<String>>,
+    pub unauthenticated: Option<bool>,
     /// Indicates a Linkerd identity that is authorized to access a server.
-    pub identities: Option<Vec<String>>,
+    pub identities: Vec<String>,
     /// Identifies a `ServiceAccount` authorized to access a server.
-    pub service_accounts: Option<Vec<ServiceAccountRef>>,
+    pub service_accounts: Vec<ServiceAccountRef>,
 }
 
 /// References a Kubernetes `ServiceAccount` instance.
@@ -49,12 +50,6 @@ pub struct ServiceAccountRef {
     pub namespace: Option<String>,
     pub name: String,
     // TODO pub selector: labels::Selector,
-}
-
-/// Describes an unauthenticated client.
-#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
-pub struct Unauthenticated {
-    pub networks: Vec<String>,
 }
 
 // === Name ===

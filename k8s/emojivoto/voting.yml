@@ -102,7 +102,7 @@ spec:
   server:
     name: voting-grpc
   # The voting service only allows requests from the web service.
-  authenticated:
+  client:
     serviceAccounts:
       - namespace: emojivoto
         name: web

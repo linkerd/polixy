@@ -103,5 +103,5 @@ spec:
   # Allow all authenticated clients to access the (read-only) emoji service.
   server:
     name: emoji-grpc
-  authenticated:
+  client:
     identities: ['*']

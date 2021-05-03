@@ -1,7 +1,7 @@
 use crate::{
     k8s::{self, polixy},
-    Clients, FromResource, Identity, InboundServerConfig, KubeletIps, Lookup, ProxyProtocol,
-    ServerRx, ServerRxTx, ServerTx, ServiceAccountRef, SharedLookupMap, Suffix,
+    ClientAuthn, ClientAuthz, FromResource, Identity, InboundServerConfig, KubeletIps, Lookup,
+    ProxyProtocol, ServerRx, ServerRxTx, ServerTx, ServiceAccountRef, SharedLookupMap,
 };
 use anyhow::{anyhow, bail, Context, Error, Result};
 use dashmap::mapref::entry::Entry as DashEntry;
@@ -63,7 +63,7 @@ struct PodPort {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Authz {
     servers: ServerSelector,
-    clients: Clients,
+    clients: ClientAuthz,
 }
 
 /// Selects servers for an authorization.
@@ -76,7 +76,7 @@ enum ServerSelector {
 #[derive(Debug)]
 struct Server {
     meta: ServerMeta,
-    authorizations: BTreeMap<Option<polixy::authz::Name>, Clients>,
+    authorizations: BTreeMap<Option<polixy::authz::Name>, ClientAuthz>,
     rx: ServerRx,
     tx: ServerTx,
 }
@@ -92,8 +92,8 @@ pub struct ServerMeta {
 // === impl Server ===
 
 impl Server {
-    fn add_authz(&mut self, name: polixy::authz::Name, clients: Clients) {
-        self.authorizations.insert(Some(name), clients);
+    fn add_authz(&mut self, name: polixy::authz::Name, authz: ClientAuthz) {
+        self.authorizations.insert(Some(name), authz);
         let mut config = self.rx.borrow().clone();
         config.authorizations = self.authorizations.clone();
         self.tx.send(config).expect("config must send")
@@ -121,9 +121,10 @@ impl Index {
             authorizations: Some((
                 None,
                 // Permit all traffic when a `Server` instance is not present.
-                Clients::Unauthenticated(
-                    vec!["0.0.0.0/0".parse().unwrap(), "::/0".parse().unwrap()].into(),
-                ),
+                ClientAuthz {
+                    networks: vec!["0.0.0.0/0".parse().unwrap(), "::/0".parse().unwrap()].into(),
+                    authentication: ClientAuthn::Unauthenticated,
+                },
             ))
             .into_iter()
             .collect(),
@@ -881,76 +882,74 @@ impl Index {
             }
         };
 
-        let clients = match (spec.authenticated, spec.unauthenticated) {
-            (Some(auth), None) => {
-                let mut identities = Vec::new();
-                let mut suffixes = Vec::new();
-                let mut service_accounts = Vec::new();
-
-                if let Some(ids) = auth.identities {
-                    for id in ids.into_iter() {
-                        if id == "*" {
-                            debug!(suffix = %id, "Authenticated");
-                            suffixes.push(Suffix(Arc::new([])));
-                        } else if id.starts_with("*.") {
-                            debug!(suffix = %id, "Authenticated");
-                            let mut parts = id.split('.');
-                            let star = parts.next();
-                            debug_assert_eq!(star, Some("*"));
-                            suffixes.push(Suffix(
-                                parts.map(|p| p.to_string()).collect::<Vec<_>>().into(),
-                            ));
-                        } else {
-                            debug!(%id, "Authenticated");
-                            identities.push(Identity(id.into()));
-                        }
-                    }
-                }
-
-                if let Some(sas) = auth.service_accounts {
-                    for sa in sas.into_iter() {
-                        let name = sa.name;
-                        let ns = sa
-                            .namespace
-                            .map(k8s::NsName::from)
-                            .unwrap_or_else(|| ns_name.clone());
-                        debug!(ns = %ns, serviceaccount = %name, "Authenticated");
-                        // FIXME configurable cluster domain
-                        service_accounts.push(ServiceAccountRef {
-                            ns,
-                            name: name.into(),
-                        });
-                    }
-                }
-
-                if identities.is_empty() && suffixes.is_empty() && service_accounts.is_empty() {
-                    bail!("authorization authorizes no clients");
-                }
-
-                Clients::Authenticated {
-                    identities,
-                    suffixes,
-                    service_accounts,
-                }
+        let networks = if let Some(cidrs) = spec.client.cidrs {
+            let mut nets = Vec::with_capacity(cidrs.len());
+            for s in cidrs.into_iter() {
+                let net = s.parse::<IpNet>()?;
+                debug!(%net, "Unauthenticated");
+                nets.push(net);
             }
-
-            (None, Some(unauth)) if !unauth.networks.is_empty() => {
-                let mut nets = Vec::with_capacity(unauth.networks.len());
-                for s in unauth.networks.into_iter() {
-                    let net = s.parse::<IpNet>()?;
-                    debug!(%net, "Unauthenticated");
-                    nets.push(net);
-                }
-                Clients::Unauthenticated(nets.into())
-            }
-
-            (Some(_), Some(_)) => {
-                bail!("authorization allows both authenticated and unauthenticated clients");
-            }
-            _ => bail!("authorization authorizes no clients"),
+            nets.into()
+        } else {
+            // TODO this should only be cluster-local IPs.
+            vec!["0.0.0.0/0".parse().unwrap(), "::/0".parse().unwrap()].into()
         };
 
-        Ok(Authz { servers, clients })
+        let authentication = if let Some(true) = spec.client.unauthenticated {
+            ClientAuthn::Unauthenticated
+        } else {
+            let mut identities = Vec::new();
+            let mut service_accounts = Vec::new();
+
+            for id in spec.client.identities.into_iter() {
+                if id == "*" {
+                    debug!(suffix = %id, "Authenticated");
+                    identities.push(Identity::Suffix(Arc::new([])));
+                } else if id.starts_with("*.") {
+                    debug!(suffix = %id, "Authenticated");
+                    let mut parts = id.split('.');
+                    let star = parts.next();
+                    debug_assert_eq!(star, Some("*"));
+                    identities.push(Identity::Suffix(
+                        parts.map(|p| p.to_string()).collect::<Vec<_>>().into(),
+                    ));
+                } else {
+                    debug!(%id, "Authenticated");
+                    identities.push(Identity::Name(id.into()));
+                }
+            }
+
+            for sa in spec.client.service_accounts.into_iter() {
+                let name = sa.name;
+                let ns = sa
+                    .namespace
+                    .map(k8s::NsName::from)
+                    .unwrap_or_else(|| ns_name.clone());
+                debug!(ns = %ns, serviceaccount = %name, "Authenticated");
+                // FIXME configurable cluster domain
+                service_accounts.push(ServiceAccountRef {
+                    ns,
+                    name: name.into(),
+                });
+            }
+
+            if identities.is_empty() && service_accounts.is_empty() {
+                bail!("authorization authorizes no clients");
+            }
+
+            ClientAuthn::Authenticated {
+                identities,
+                service_accounts,
+            }
+        };
+
+        Ok(Authz {
+            servers,
+            clients: ClientAuthz {
+                networks,
+                authentication,
+            },
+        })
     }
 
     #[instrument(

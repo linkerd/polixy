@@ -1,7 +1,8 @@
 use super::proto;
 use crate::{
     k8s::{NsName, PodName},
-    Clients, InboundServerConfig, Lookup, LookupHandle, ProxyProtocol, ServiceAccountRef,
+    ClientAuthn, ClientAuthz, Identity, InboundServerConfig, Lookup, LookupHandle, ProxyProtocol,
+    ServiceAccountRef,
 };
 use futures::prelude::*;
 use std::{collections::HashMap, iter::FromIterator, sync::Arc};
@@ -171,63 +172,86 @@ fn to_config(
 
 fn to_authz(
     name: Option<impl ToString>,
-    clients: Clients,
+    ClientAuthz {
+        networks,
+        authentication,
+    }: ClientAuthz,
     identity_domain: &str,
 ) -> proto::Authorization {
-    match clients {
-        Clients::Unauthenticated(nets) => proto::Authorization {
-            networks: nets
-                .iter()
-                .map(|net| proto::Network {
-                    cidr: net.to_string(),
-                })
-                .collect(),
+    let networks = if networks.is_empty() {
+        // TODO use cluster networks (from config).
+        vec![
+            proto::Network {
+                cidr: "0.0.0.0/0".to_string(),
+            },
+            proto::Network {
+                cidr: "::/0".to_string(),
+            },
+        ]
+    } else {
+        networks
+            .iter()
+            .map(|net| proto::Network {
+                cidr: net.to_string(),
+            })
+            .collect()
+    };
+
+    match authentication {
+        ClientAuthn::Unauthenticated => proto::Authorization {
+            networks,
             labels: HashMap::from_iter(Some(("authn".to_string(), "false".to_string()))),
             ..Default::default()
         },
 
         // Authenticated connections must have TLS and apply to all
         // networks.
-        Clients::Authenticated {
+        ClientAuthn::Authenticated {
             service_accounts,
             identities,
-            suffixes,
-        } => proto::Authorization {
-            networks: vec![
-                proto::Network {
-                    cidr: "0.0.0.0/0".to_string(),
-                },
-                proto::Network {
-                    cidr: "::/0".to_string(),
-                },
-            ],
-            tls_terminated: Some(proto::authorization::Tls {
-                client_id: Some(proto::IdMatch {
-                    identities: identities
-                        .iter()
-                        .map(ToString::to_string)
-                        .chain(
-                            service_accounts
-                                .into_iter()
-                                .map(|sa| to_identity(sa, identity_domain)),
-                        )
-                        .collect(),
-                    suffixes: suffixes
-                        .iter()
-                        .map(|sfx| proto::Suffix {
-                            parts: sfx.iter().map(ToString::to_string).collect(),
-                        })
-                        .collect(),
-                }),
-            }),
-            labels: Some(("authn".to_string(), "true".to_string()))
+        } => {
+            let labels = Some(("authn".to_string(), "true".to_string()))
                 .into_iter()
                 .chain(Some((
                     "name".to_string(),
                     name.map(|n| n.to_string()).unwrap_or_default(),
                 )))
-                .collect(),
-        },
+                .collect();
+
+            let suffixes = identities
+                .iter()
+                .filter_map(|i| match i {
+                    Identity::Suffix(s) => Some(proto::Suffix {
+                        parts: s.iter().cloned().collect(),
+                    }),
+                    _ => None,
+                })
+                .collect();
+
+            let identities = identities
+                .iter()
+                .filter_map(|i| match i {
+                    Identity::Name(n) => Some(n.to_string()),
+                    _ => None,
+                })
+                .chain(
+                    service_accounts
+                        .into_iter()
+                        .map(|sa| to_identity(sa, identity_domain)),
+                )
+                .collect();
+
+            proto::Authorization {
+                labels,
+                networks,
+                tls_terminated: Some(proto::authorization::Tls {
+                    client_id: Some(proto::IdMatch {
+                        identities,
+                        suffixes,
+                    }),
+                }),
+            }
+        }
     }
 }
 

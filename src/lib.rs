@@ -36,7 +36,7 @@ pub struct Lookup {
 #[derive(Clone, Debug)]
 pub struct InboundServerConfig {
     pub protocol: ProxyProtocol,
-    pub authorizations: BTreeMap<Option<k8s::polixy::authz::Name>, Clients>,
+    pub authorizations: BTreeMap<Option<k8s::polixy::authz::Name>, ClientAuthz>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,20 +48,25 @@ pub enum ProxyProtocol {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Clients {
-    Unauthenticated(Arc<[IpNet]>),
+pub struct ClientAuthz {
+    pub networks: Arc<[IpNet]>,
+    pub authentication: ClientAuthn,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ClientAuthn {
+    Unauthenticated,
     Authenticated {
         service_accounts: Vec<ServiceAccountRef>,
         identities: Vec<Identity>,
-        suffixes: Vec<Suffix>,
     },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct Identity(Arc<str>);
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct Suffix(Arc<[String]>);
+pub enum Identity {
+    Name(Arc<str>),
+    Suffix(Arc<[String]>),
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ServiceAccountRef {
@@ -94,25 +99,16 @@ impl LookupHandle {
 
 impl fmt::Display for Identity {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-// === impl Suffix ===
-
-impl Suffix {
-    pub fn iter(&self) -> std::slice::Iter<'_, String> {
-        self.0.iter()
-    }
-}
-
-impl fmt::Display for Suffix {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "*")?;
-        for part in self.0.iter() {
-            write!(f, ".{}", part)?;
+        match self {
+            Self::Name(name) => name.fmt(f),
+            Self::Suffix(suffix) => {
+                write!(f, "*")?;
+                for part in suffix.iter() {
+                    write!(f, ".{}", part)?;
+                }
+                Ok(())
+            }
         }
-        Ok(())
     }
 }
 

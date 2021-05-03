@@ -21,16 +21,16 @@ message InboundProxyConfig {
   // port.
   ProxyProtocol protocol = 1;
 
+  // Configures a proxy to allow connections from the specified clients.
+  //
+  // If unset, no connections are permitted.
+  repeated Authz authorizations = 2;
+
   // Descriptive labels to be added to metrics, etc.
   //
   // A control plane SHOULD return the same keys in all policies. That is, we do
   // NOT want to return arbitrary pod labels in this field.
   map<string, string> labels = 3;
-
-  // Configures a proxy to allow connections from the specified clients.
-  //
-  // If unset, no connections are permitted.
-  repeated Authorization authorizations = 2;
 }
 
 message ProxyProtocol {
@@ -57,7 +57,7 @@ message ProxyProtocol {
   }
 }
 
-message Authorization {
+message Authz {
   // Limits this authorization to client addresses in the provided networks.
   //
   // Must have at least one network, otherwise the authorization must be
@@ -65,15 +65,8 @@ message Authorization {
   // match on, i.e., `[0.0.0.0/0, 0::/0]``.
   repeated Network networks = 1;
 
-  // When set, indiciates that TLS must be terminated by the proxy.
-  Tls tls_terminated = 2;
-  message Tls {
-    // If set, requires that the connection is mutually-authetnicated with a
-    // matching client identity.
-    IdMatch client_id = 1;
-
-    // TODO limit versions, algorithms
-  }
+  // Must be set.
+  Authn authentication = 2;
 
   // Descriptive labels to be added to metrics, etc.
   //
@@ -82,18 +75,32 @@ message Authorization {
   map<string, string> labels = 3;
 }
 
-// Matches identities.
-//
-// To match all identities, a suffix i
-message IdMatch {
-  // A list of literal identities.
-  repeated string identities = 1;
+message Authn {
+  oneof permit {
+    PermitUnauthenticated unauthenticated = 1;
 
-  // A list of identity suffixes.
+    // If set, requires that the connection is mutually-authetnicated with a
+    // matching client identity.
+    PermitProxyIdentities proxy_identities = 2;
+  }
+
+  message PermitUnauthenticated {}
+
+  // Matches identities.
   //
-  // If this contains an empty suffix, all identities are matched.
-  repeated Suffix suffixes = 2;
+  // To match all identities, a suffix i
+  message PermitProxyIdentities {
+    // A list of literal identities.
+    repeated Identity identities = 1;
+
+    // A list of identity suffixes.
+    //
+    // If this contains an empty suffix, all identities are matched.
+    repeated Suffix suffixes = 2;
+  }
 }
+
+message Identity { string name = 1; }
 
 // Encodes a DNS-like name suffix as sequence of parts.
 //

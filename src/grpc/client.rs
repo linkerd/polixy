@@ -104,9 +104,9 @@ impl std::convert::TryFrom<proto::InboundProxyConfig> for Inbound {
             .authorizations
             .into_iter()
             .map(
-                |proto::Authorization {
+                |proto::Authz {
                      labels,
-                     tls_terminated,
+                     authentication,
                      networks,
                  }| {
                     if networks.is_empty() {
@@ -121,21 +121,24 @@ impl std::convert::TryFrom<proto::InboundProxyConfig> for Inbound {
                         })
                         .collect::<Result<Vec<IpNet>>>()?;
 
-                    let authn = match tls_terminated {
-                        Some(proto::authorization::Tls {
-                            client_id:
-                                Some(proto::IdMatch {
-                                    identities,
-                                    suffixes,
-                                }),
-                        }) => Authn::Authenticated {
-                            identities,
+                    let authn = match authentication.and_then(|proto::Authn { permit }| permit) {
+                        Some(proto::authn::Permit::Unauthenticated(_)) => Authn::Unauthenticated,
+                        Some(proto::authn::Permit::ProxyIdentities(
+                            proto::authn::PermitProxyIdentities {
+                                identities,
+                                suffixes,
+                            },
+                        )) => Authn::Authenticated {
+                            identities: identities
+                                .into_iter()
+                                .map(|proto::Identity { name }| name)
+                                .collect(),
                             suffixes: suffixes
                                 .into_iter()
                                 .map(|proto::Suffix { parts }| parts)
                                 .collect(),
                         },
-                        _ => Authn::Unauthenticated,
+                        _ => bail!("no authentication provided"),
                     };
 
                     Ok(Authz {

@@ -98,7 +98,7 @@ impl proto::Service for Server {
             })?;
 
         // Traffic is always permitted from the pod's Kubelet IPs.
-        let kubelet_authz = proto::Authorization {
+        let kubelet_authz = proto::Authz {
             networks: kubelet_ips
                 .to_nets()
                 .into_iter()
@@ -130,7 +130,7 @@ impl proto::Service for Server {
 }
 
 fn to_config(
-    kubelet_authz: &proto::Authorization,
+    kubelet_authz: &proto::Authz,
     srv: InboundServerConfig,
     identity_domain: &str,
 ) -> proto::InboundProxyConfig {
@@ -177,7 +177,7 @@ fn to_authz(
         authentication,
     }: ClientAuthz,
     identity_domain: &str,
-) -> proto::Authorization {
+) -> proto::Authz {
     let networks = if networks.is_empty() {
         // TODO use cluster networks (from config).
         vec![
@@ -198,7 +198,7 @@ fn to_authz(
     };
 
     match authentication {
-        ClientAuthn::Unauthenticated => proto::Authorization {
+        ClientAuthn::Unauthenticated => proto::Authz {
             networks,
             labels: HashMap::from_iter(Some(("authn".to_string(), "false".to_string()))),
             ..Default::default()
@@ -231,7 +231,9 @@ fn to_authz(
             let identities = identities
                 .iter()
                 .filter_map(|i| match i {
-                    Identity::Name(n) => Some(n.to_string()),
+                    Identity::Name(n) => Some(proto::Identity {
+                        name: n.to_string(),
+                    }),
                     _ => None,
                 })
                 .chain(
@@ -241,20 +243,24 @@ fn to_authz(
                 )
                 .collect();
 
-            proto::Authorization {
+            proto::Authz {
                 labels,
                 networks,
-                tls_terminated: Some(proto::authorization::Tls {
-                    client_id: Some(proto::IdMatch {
-                        identities,
-                        suffixes,
-                    }),
+                authentication: Some(proto::Authn {
+                    permit: Some(proto::authn::Permit::ProxyIdentities(
+                        proto::authn::PermitProxyIdentities {
+                            identities,
+                            suffixes,
+                        },
+                    )),
                 }),
             }
         }
     }
 }
 
-fn to_identity(ServiceAccountRef { ns, name }: ServiceAccountRef, domain: &str) -> String {
-    format!("{}.{}.serviceaccount.linkerd.{}", ns, name, domain)
+fn to_identity(ServiceAccountRef { ns, name }: ServiceAccountRef, domain: &str) -> proto::Identity {
+    proto::Identity {
+        name: format!("{}.{}.serviceaccount.linkerd.{}", ns, name, domain),
+    }
 }

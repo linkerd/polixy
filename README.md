@@ -37,5 +37,15 @@ limited cluster access, and extract a kubeconfig to the local filesystem to use 
 
 ```sh
 :; pod=$(kubectl get -n emojivoto po -l app.kubernetes.io/name=web -o 'jsonpath={.items[*].metadata.name}')
-:; cargo run -- client watch -n emojivoto $pod 8081
+:; cargo run -- client get -n emojivoto $pod 8080
 ```
+
+```sh
+:; pod=$(kubectl get -n emojivoto po -l app.kubernetes.io/name=voting -o 'jsonpath={.items[*].metadata.name}')
+:; cargo run -- client get -n emojivoto $pod 8080
+```
+
+```sh
+:; pod=$(kubectl get -n emojivoto po -l app.kubernetes.io/name=voting -o 'jsonpath={.items[*].metadata.name}')
+:; cargo run -- client get -n emojivoto $pod 8801
+`

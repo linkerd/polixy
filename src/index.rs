@@ -901,7 +901,7 @@ impl Index {
             let mut identities = Vec::new();
             let mut service_accounts = Vec::new();
 
-            for id in spec.client.identities.into_iter() {
+            for id in spec.client.identities.into_iter().flatten() {
                 if id == "*" {
                     debug!(suffix = %id, "Authenticated");
                     identities.push(Identity::Suffix(Arc::new([])));
@@ -919,7 +919,7 @@ impl Index {
                 }
             }
 
-            for sa in spec.client.service_accounts.into_iter() {
+            for sa in spec.client.service_accounts.into_iter().flatten() {
                 let name = sa.name;
                 let ns = sa
                     .namespace

@@ -35,11 +35,14 @@ pub struct Server {
 #[serde(rename_all = "camelCase")]
 pub struct Client {
     pub cidrs: Option<Vec<String>>,
+
     pub unauthenticated: Option<bool>,
+
     /// Indicates a Linkerd identity that is authorized to access a server.
-    pub identities: Vec<String>,
+    pub identities: Option<Vec<String>>,
+
     /// Identifies a `ServiceAccount` authorized to access a server.
-    pub service_accounts: Vec<ServiceAccountRef>,
+    pub service_accounts: Option<Vec<ServiceAccountRef>>,
 }
 
 /// References a Kubernetes `ServiceAccount` instance.

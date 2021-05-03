@@ -17,12 +17,6 @@ See [DESIGN.md](./DESIGN.md) for details.
 :; kubectl apply -f ./k8s/crds
 ```
 
-### Install example application (with policies)
-
-```sh
-:; kubectl apply -f ./k8s/emojivoto/ns.yml && kubectl apply -f ./k8s/emojivoto
-```
-
 ### Run the controller locally
 
 We create a new `polixy` namespace with a `controller` ServiceAccount, with
@@ -31,6 +25,12 @@ limited cluster access, and extract a kubeconfig to the local filesystem to use 
 ```sh
 :; kubectl apply -f ./k8s/controller/sa.yml
 :; KUBECONFIG=$(./k8s/controller/kubeconfig.sh) cargo run -- controller
+```
+
+### Install example application (with policies)
+
+```sh
+:; kubectl apply -f ./k8s/emojivoto/ns.yml && kubectl apply -f ./k8s/emojivoto
 ```
 
 ### Run a client

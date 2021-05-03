@@ -686,12 +686,14 @@ impl Index {
                         debug!(pod = %pod_name, port = ?srv.meta.port, "Matches");
                         // TODO handle conflicts
                         let mut sn = pod_port.server_name.lock();
-                        debug_assert!(
-                            sn.is_none(),
-                            "pod port matches multiple servers: {} and {}",
-                            srv_name,
-                            sn.as_ref().unwrap(),
-                        );
+                        if let Some(sn) = sn.as_ref() {
+                            debug_assert!(
+                                sn == srv_name,
+                                "pod port matches multiple servers: {} and {}",
+                                sn,
+                                srv_name
+                            );
+                        }
                         *sn = Some(srv_name.clone());
 
                         // It's up to the lookup stream to de-duplicate updates.

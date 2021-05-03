@@ -79,8 +79,11 @@ async fn main() -> Result<()> {
             } => {
                 let mut client = polixy::grpc::Client::connect(server).await?;
                 let mut updates = client.watch_inbound(namespace, pod, port).await?;
-                while let Some(config) = updates.try_next().await? {
-                    println!("{:#?}", config);
+                while let Some(res) = updates.next().await {
+                    match res {
+                        Ok(config) => println!("{:#?}", config),
+                        Err(error) => eprintln!("Update failed: {}", error),
+                    }
                 }
                 eprintln!("Stream closed");
                 Ok(())

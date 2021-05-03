@@ -1,8 +1,9 @@
 use super::proto;
-use anyhow::Result;
+use anyhow::{anyhow, bail, Context, Error, Result};
 use futures::prelude::*;
 use ipnet::IpNet;
-use std::collections::HashMap;
+use std::{collections::HashMap, convert::TryInto};
+use tokio::time;
 
 #[derive(Clone, Debug)]
 pub struct Client {
@@ -18,24 +19,29 @@ pub struct Inbound {
 
 #[derive(Copy, Clone, Debug)]
 pub enum Protocol {
-    Detect,
+    Detect { timeout: time::Duration },
     Opaque,
     Http,
     Grpc,
 }
 
 #[derive(Clone, Debug)]
-pub enum Authz {
-    Unauthenticated {
-        networks: Vec<IpNet>,
-        labels: HashMap<String, String>,
-    },
+pub struct Authz {
+    networks: Vec<IpNet>,
+    authn: Authn,
+    labels: HashMap<String, String>,
+}
+
+#[derive(Clone, Debug)]
+pub enum Authn {
+    Unauthenticated,
     Authenticated {
         identities: Vec<String>,
         suffixes: Vec<Vec<String>>,
-        labels: HashMap<String, String>,
     },
 }
+
+// === impl Client ===
 
 impl Client {
     pub async fn connect<D>(dst: D) -> Result<Self>
@@ -60,60 +66,91 @@ impl Client {
 
         let rsp = self.client.watch_inbound(req).await?;
 
-        let updates = rsp.into_inner().map_err(Into::into).map_ok(|c| {
-            let authorizations = c
-                .authorizations
-                .into_iter()
-                .map(
-                    |proto::Authorization {
-                         labels,
-                         tls_terminated,
-                         networks,
-                     }| match tls_terminated {
+        let updates = rsp
+            .into_inner()
+            .map_err(Into::into)
+            .and_then(|c| future::ready(c.try_into()));
+
+        Ok(updates)
+    }
+}
+
+// === impl Inbound ===
+
+impl std::convert::TryFrom<proto::InboundProxyConfig> for Inbound {
+    type Error = Error;
+
+    fn try_from(proto: proto::InboundProxyConfig) -> Result<Self> {
+        let protocol = match proto.protocol {
+            Some(proto::ProxyProtocol { kind: Some(k) }) => match k {
+                proto::proxy_protocol::Kind::Detect(proto::proxy_protocol::Detect { timeout }) => {
+                    Protocol::Detect {
+                        timeout: match timeout {
+                            Some(t) => t
+                                .try_into()
+                                .map_err(|t| anyhow!("negative detect timeout: {:?}", t))?,
+                            None => bail!("protocol missing detect timeout"),
+                        },
+                    }
+                }
+                proto::proxy_protocol::Kind::Opaque(_) => Protocol::Opaque,
+                proto::proxy_protocol::Kind::Http(_) => Protocol::Http,
+                proto::proxy_protocol::Kind::Grpc(_) => Protocol::Grpc,
+            },
+            _ => bail!("proxy protocol missing"),
+        };
+
+        let authorizations = proto
+            .authorizations
+            .into_iter()
+            .map(
+                |proto::Authorization {
+                     labels,
+                     tls_terminated,
+                     networks,
+                 }| {
+                    if networks.is_empty() {
+                        bail!("networks missing");
+                    }
+                    let networks = networks
+                        .into_iter()
+                        .map(|n| {
+                            n.cidr
+                                .parse()
+                                .with_context(|| format!("invalid network CIDR {:?}", n.cidr))
+                        })
+                        .collect::<Result<Vec<IpNet>>>()?;
+
+                    let authn = match tls_terminated {
                         Some(proto::authorization::Tls {
                             client_id:
                                 Some(proto::IdMatch {
                                     identities,
                                     suffixes,
                                 }),
-                        }) => Authz::Authenticated {
-                            labels,
+                        }) => Authn::Authenticated {
                             identities,
                             suffixes: suffixes
                                 .into_iter()
                                 .map(|proto::Suffix { parts }| parts)
                                 .collect(),
                         },
-                        _ => Authz::Unauthenticated {
-                            labels,
-                            networks: networks
-                                .into_iter()
-                                .filter_map(|n| n.cidr.parse().ok())
-                                .collect(),
-                        },
-                    },
-                )
-                .collect();
+                        _ => Authn::Unauthenticated,
+                    };
 
-            let protocol = c
-                .protocol
-                .and_then(|proto::ProxyProtocol { kind }| {
-                    kind.map(|k| match k {
-                        proto::proxy_protocol::Kind::Detect(_) => Protocol::Detect,
-                        proto::proxy_protocol::Kind::Opaque(_) => Protocol::Opaque,
-                        proto::proxy_protocol::Kind::Http(_) => Protocol::Http,
-                        proto::proxy_protocol::Kind::Grpc(_) => Protocol::Grpc,
+                    Ok(Authz {
+                        networks,
+                        labels,
+                        authn,
                     })
-                })
-                .unwrap_or(Protocol::Detect);
+                },
+            )
+            .collect::<Result<Vec<_>>>()?;
 
-            Inbound {
-                labels: c.labels,
-                authorizations,
-                protocol,
-            }
-        });
-
-        Ok(updates)
+        Ok(Inbound {
+            labels: proto.labels,
+            authorizations,
+            protocol,
+        })
     }
 }

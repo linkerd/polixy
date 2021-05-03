@@ -44,10 +44,7 @@ spec:
                 Authorizes clients to communicate with Linkerd-proxied servers.
 
               type: object
-              required: [server]
-              oneOf:
-                - required: [client]
-
+              required: [server, client]
               properties:
 
                 server:
@@ -101,17 +98,16 @@ spec:
                     - required: [identities]
                     - required: [serviceAccounts]
                     - required: [unauthenticated]
-
                   properties:
                     cidrs:
-                      description: Authorizes traffic from specified CIDR blocks
+                      description: >-
+                        Authorizes traffic from specified CIDR blocks
                       type: array
                       items:
                         type: string
 
                     unauthenticated:
                       type: boolean
-                      default: false
 
                     identities:
                       description: >-

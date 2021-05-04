@@ -99,12 +99,20 @@ spec:
                     - required: [serviceAccounts]
                     - required: [unauthenticated]
                   properties:
-                    cidrs:
+                    networks:
                       description: >-
                         Authorizes traffic from specified CIDR blocks
                       type: array
                       items:
-                        type: string
+                        type: object
+                        required: [cidr]
+                        properties:
+                          cidr:
+                            type: string
+                          except:
+                            type: array
+                            items:
+                              type: string
 
                     unauthenticated:
                       type: boolean

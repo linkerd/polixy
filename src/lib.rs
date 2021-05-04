@@ -49,8 +49,14 @@ pub enum ProxyProtocol {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClientAuthz {
-    pub networks: Arc<[IpNet]>,
+    pub networks: Arc<[ClientNetwork]>,
     pub authentication: ClientAuthn,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClientNetwork {
+    pub net: IpNet,
+    pub except: Vec<IpNet>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

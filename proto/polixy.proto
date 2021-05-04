@@ -111,4 +111,7 @@ message Suffix { repeated string parts = 1; }
 // Describes a network in CIDR-notation.
 //
 // TODO use numeric types rather than a string.
-message Network { string cidr = 1; }
+message Network {
+  string cidr = 1;
+  repeated string except = 2;
+}

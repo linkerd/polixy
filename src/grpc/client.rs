@@ -27,9 +27,15 @@ pub enum Protocol {
 
 #[derive(Clone, Debug)]
 pub struct Authz {
-    networks: Vec<IpNet>,
+    networks: Vec<Network>,
     authn: Authn,
     labels: HashMap<String, String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Network {
+    net: IpNet,
+    except: Vec<IpNet>,
 }
 
 #[derive(Clone, Debug)]
@@ -113,13 +119,21 @@ impl std::convert::TryFrom<proto::InboundProxyConfig> for Inbound {
                         bail!("networks missing");
                     }
                     let networks = networks
-                        .into_iter()
-                        .map(|n| {
-                            n.cidr
+                        .iter()
+                        .map(|proto::Network { cidr, except }| {
+                            let net = cidr
                                 .parse()
-                                .with_context(|| format!("invalid network CIDR {:?}", n.cidr))
+                                .with_context(|| format!("invalid network CIDR {}", cidr))?;
+                            let except = except
+                                .iter()
+                                .map(|cidr| {
+                                    cidr.parse()
+                                        .with_context(|| format!("invalid network CIDR {}", cidr))
+                                })
+                                .collect::<Result<Vec<IpNet>>>()?;
+                            Ok(Network { net, except })
                         })
-                        .collect::<Result<Vec<IpNet>>>()?;
+                        .collect::<Result<Vec<_>>>()?;
 
                     let authn = match authentication.and_then(|proto::Authn { permit }| permit) {
                         Some(proto::authn::Permit::Unauthenticated(_)) => Authn::Unauthenticated,
@@ -138,7 +152,7 @@ impl std::convert::TryFrom<proto::InboundProxyConfig> for Inbound {
                                 .map(|proto::Suffix { parts }| parts)
                                 .collect(),
                         },
-                        _ => bail!("no authentication provided"),
+                        authn => bail!("no authentication provided: {:?}", authn),
                     };
 
                     Ok(Authz {

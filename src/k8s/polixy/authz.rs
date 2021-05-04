@@ -11,7 +11,7 @@ pub struct Name(String);
 /// Authorizes clients to connect to a Server.
 #[kube(
     group = "polixy.olix0r.net",
-    version = "v1",
+    version = "v1alpha1",
     kind = "Authorization",
     namespaced
 )]
@@ -34,7 +34,7 @@ pub struct Server {
 #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Client {
-    pub cidrs: Option<Vec<String>>,
+    pub networks: Option<Vec<Network>>,
 
     pub unauthenticated: Option<bool>,
 
@@ -43,6 +43,12 @@ pub struct Client {
 
     /// Identifies a `ServiceAccount` authorized to access a server.
     pub service_accounts: Option<Vec<ServiceAccountRef>>,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
+pub struct Network {
+    pub cidr: String,
+    pub except: Option<Vec<String>>,
 }
 
 /// References a Kubernetes `ServiceAccount` instance.

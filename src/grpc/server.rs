@@ -1,8 +1,8 @@
 use super::proto;
 use crate::{
     k8s::{NsName, PodName},
-    ClientAuthn, ClientAuthz, Identity, InboundServerConfig, Lookup, LookupHandle, ProxyProtocol,
-    ServiceAccountRef,
+    ClientAuthn, ClientAuthz, ClientNetwork, Identity, InboundServerConfig, Lookup, LookupHandle,
+    ProxyProtocol, ServiceAccountRef,
 };
 use futures::prelude::*;
 use std::{collections::HashMap, iter::FromIterator, sync::Arc};
@@ -102,14 +102,20 @@ impl proto::Service for Server {
             networks: kubelet_ips
                 .to_nets()
                 .into_iter()
-                .map(|net| net.to_string())
-                .map(|cidr| proto::Network { cidr })
+                .map(|net| proto::Network {
+                    cidr: net.to_string(),
+                    except: vec![],
+                })
                 .collect(),
+            authentication: Some(proto::Authn {
+                permit: Some(proto::authn::Permit::Unauthenticated(
+                    proto::authn::PermitUnauthenticated {},
+                )),
+            }),
             labels: Some(("authn".to_string(), "false".to_string()))
                 .into_iter()
                 .chain(Some(("name".to_string(), "_kubelet".to_string())))
                 .collect(),
-            ..Default::default()
         };
 
         // TODO deduplicate redundant updates.
@@ -153,11 +159,13 @@ fn to_config(
             )),
         },
     };
+    trace!(?protocol);
 
     let server_authzs = srv
         .authorizations
         .into_iter()
         .map(|(n, c)| to_authz(n, c, identity_domain));
+    trace!(?kubelet_authz);
     trace!(?server_authzs);
 
     proto::InboundProxyConfig {
@@ -183,16 +191,19 @@ fn to_authz(
         vec![
             proto::Network {
                 cidr: "0.0.0.0/0".to_string(),
+                except: vec![],
             },
             proto::Network {
                 cidr: "::/0".to_string(),
+                except: vec![],
             },
         ]
     } else {
         networks
             .iter()
-            .map(|net| proto::Network {
+            .map(|ClientNetwork { net, except }| proto::Network {
                 cidr: net.to_string(),
+                except: except.iter().map(ToString::to_string).collect(),
             })
             .collect()
     };

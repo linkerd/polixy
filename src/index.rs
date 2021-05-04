@@ -1,7 +1,8 @@
 use crate::{
     k8s::{self, polixy},
-    ClientAuthn, ClientAuthz, FromResource, Identity, InboundServerConfig, KubeletIps, Lookup,
-    ProxyProtocol, ServerRx, ServerRxTx, ServerTx, ServiceAccountRef, SharedLookupMap,
+    ClientAuthn, ClientAuthz, ClientNetwork, FromResource, Identity, InboundServerConfig,
+    KubeletIps, Lookup, ProxyProtocol, ServerRx, ServerRxTx, ServerTx, ServiceAccountRef,
+    SharedLookupMap,
 };
 use anyhow::{anyhow, bail, Context, Error, Result};
 use dashmap::mapref::entry::Entry as DashEntry;
@@ -124,7 +125,17 @@ impl Index {
                 None,
                 // Permit all traffic when a `Server` instance is not present.
                 ClientAuthz {
-                    networks: vec!["0.0.0.0/0".parse().unwrap(), "::/0".parse().unwrap()].into(),
+                    networks: vec![
+                        ClientNetwork {
+                            net: "0.0.0.0/0".parse().unwrap(),
+                            except: vec![],
+                        },
+                        ClientNetwork {
+                            net: "::/0".parse().unwrap(),
+                            except: vec![],
+                        },
+                    ]
+                    .into(),
                     authentication: ClientAuthn::Unauthenticated,
                 },
             ))
@@ -897,17 +908,32 @@ impl Index {
             }
         };
 
-        let networks = if let Some(cidrs) = spec.client.cidrs {
-            let mut nets = Vec::with_capacity(cidrs.len());
-            for s in cidrs.into_iter() {
-                let net = s.parse::<IpNet>()?;
+        let networks = if let Some(networks) = spec.client.networks {
+            let mut nets = Vec::with_capacity(networks.len());
+            for polixy::authz::Network { cidr, except } in networks.into_iter() {
+                let net = cidr.parse::<IpNet>()?;
                 debug!(%net, "Unauthenticated");
-                nets.push(net);
+                let except = except
+                    .into_iter()
+                    .flatten()
+                    .map(|cidr| cidr.parse().map_err(Into::into))
+                    .collect::<Result<Vec<IpNet>>>()?;
+                nets.push(ClientNetwork { net, except });
             }
             nets.into()
         } else {
             // TODO this should only be cluster-local IPs.
-            vec!["0.0.0.0/0".parse().unwrap(), "::/0".parse().unwrap()].into()
+            vec![
+                ClientNetwork {
+                    net: "0.0.0.0/0".parse().unwrap(),
+                    except: vec![],
+                },
+                ClientNetwork {
+                    net: "::/0".parse().unwrap(),
+                    except: vec![],
+                },
+            ]
+            .into()
         };
 
         let authentication = if let Some(true) = spec.client.unauthenticated {

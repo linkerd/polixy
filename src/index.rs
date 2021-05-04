@@ -337,13 +337,18 @@ impl Index {
 
                 let pod_ips = {
                     let ips = if let Some(ips) = status.pod_ips {
-                        ips.into_iter()
-                            .flat_map(|ip| ip.ip)
+                        ips.iter()
+                            .flat_map(|ip| ip.ip.as_ref())
                             .map(|ip| ip.parse().map_err(Into::into))
                             .collect::<Result<Vec<IpAddr>>>()?
-                    } else if let Some(ip) = status.pod_ip {
-                        vec![ip.parse::<IpAddr>()?]
                     } else {
+                        status
+                            .pod_ip
+                            .iter()
+                            .map(|ip| ip.parse::<IpAddr>().map_err(Into::into))
+                            .collect::<Result<Vec<IpAddr>>>()?
+                    };
+                    if ips.is_empty() {
                         bail!("pod missing IP addresses");
                     };
                     PodIps(ips.into())

@@ -4,11 +4,13 @@ package polixy.olix0r.net;
 
 import "google/protobuf/duration.proto";
 
-service ProxyConfigService {
-  rpc WatchInbound(InboundProxyPort) returns (stream InboundProxyConfig) {}
+service Polixy {
+  rpc GetInboundPort(InboundPort) returns (InboundServer) {}
+
+  rpc WatchInboundPort(InboundPort) returns (stream InboundServer) {}
 }
 
-message InboundProxyPort {
+message InboundPort {
   // Identifies a proxy workload (e.g., pod name).
   string workload = 1;
 
@@ -16,7 +18,7 @@ message InboundProxyPort {
   uint32 port = 2;
 }
 
-message InboundProxyConfig {
+message InboundServer {
   // If set, indicates how the proxy should proxy connections on the specified
   // port.
   ProxyProtocol protocol = 1;

@@ -85,7 +85,7 @@ async fn main() -> Result<()> {
                 port,
             } => {
                 let mut client = polixy::grpc::Client::connect(server).await?;
-                let mut updates = client.watch_inbound(namespace, pod, port).await?;
+                let mut updates = client.watch_inbound_port(namespace, pod, port).await?;
                 while let Some(res) = updates.next().await {
                     match res {
                         Ok(config) => println!("{:#?}", config),
@@ -102,12 +102,8 @@ async fn main() -> Result<()> {
                 port,
             } => {
                 let mut client = polixy::grpc::Client::connect(server).await?;
-                let mut updates = client.watch_inbound(namespace, pod, port).await?;
-                if let Some(config) = updates.try_next().await? {
-                    println!("{:#?}", config);
-                } else {
-                    eprintln!("No configuration read");
-                }
+                let server = client.get_inbound_port(namespace, pod, port).await?;
+                println!("{:#?}", server);
                 Ok(())
             }
 
@@ -130,7 +126,7 @@ async fn main() -> Result<()> {
                         let task = tokio::spawn(async move {
                             loop {
                                 match client
-                                    .watch_inbound(namespace.clone(), pod.clone(), port)
+                                    .watch_inbound_port(namespace.clone(), pod.clone(), port)
                                     .await
                                 {
                                     Ok(mut updates) => {

@@ -7,7 +7,7 @@ use tokio::time;
 
 #[derive(Clone, Debug)]
 pub struct Client {
-    client: proto::Client<tonic::transport::Channel>,
+    client: proto::client::PolixyClient<tonic::transport::Channel>,
 }
 
 #[derive(Clone, Debug)]
@@ -55,22 +55,40 @@ impl Client {
         D: std::convert::TryInto<tonic::transport::Endpoint>,
         D::Error: Into<tonic::codegen::StdError>,
     {
-        let client = proto::Client::connect(dst).await?;
+        let client = proto::client::PolixyClient::connect(dst).await?;
         Ok(Client { client })
     }
 
-    pub async fn watch_inbound(
+    pub async fn get_inbound_port(
+        &mut self,
+        ns: String,
+        pod: String,
+        port: u16,
+    ) -> Result<Inbound> {
+        let req = tonic::Request::new(proto::InboundPort {
+            workload: format!("{}:{}", ns, pod),
+            port: port.into(),
+        });
+
+        self.client
+            .get_inbound_port(req)
+            .await?
+            .into_inner()
+            .try_into()
+    }
+
+    pub async fn watch_inbound_port(
         &mut self,
         ns: String,
         pod: String,
         port: u16,
     ) -> Result<impl Stream<Item = Result<Inbound>>> {
-        let req = tonic::Request::new(proto::InboundProxyPort {
+        let req = tonic::Request::new(proto::InboundPort {
             workload: format!("{}:{}", ns, pod),
             port: port.into(),
         });
 
-        let rsp = self.client.watch_inbound(req).await?;
+        let rsp = self.client.watch_inbound_port(req).await?;
 
         let updates = rsp
             .into_inner()
@@ -83,10 +101,10 @@ impl Client {
 
 // === impl Inbound ===
 
-impl std::convert::TryFrom<proto::InboundProxyConfig> for Inbound {
+impl std::convert::TryFrom<proto::InboundServer> for Inbound {
     type Error = Error;
 
-    fn try_from(proto: proto::InboundProxyConfig) -> Result<Self> {
+    fn try_from(proto: proto::InboundServer) -> Result<Self> {
         let protocol = match proto.protocol {
             Some(proto::ProxyProtocol { kind: Some(k) }) => match k {
                 proto::proxy_protocol::Kind::Detect(proto::proxy_protocol::Detect { timeout }) => {

@@ -1,8 +1,8 @@
 use super::proto;
 use crate::{
     k8s::{NsName, PodName},
-    ClientAuthn, ClientAuthz, ClientNetwork, Identity, InboundServerConfig, Lookup, LookupHandle,
-    ProxyProtocol, ServiceAccountRef,
+    ClientAuthn, ClientAuthz, ClientNetwork, Identity, InboundServerConfig, KubeletIps, Lookup,
+    LookupHandle, ProxyProtocol, ServiceAccountRef,
 };
 use futures::prelude::*;
 use std::{collections::HashMap, iter::FromIterator, sync::Arc};
@@ -35,24 +35,12 @@ impl Server {
         shutdown: impl std::future::Future<Output = ()>,
     ) -> Result<(), tonic::transport::Error> {
         tonic::transport::Server::builder()
-            .add_service(proto::Server::new(self))
+            .add_service(proto::server::PolixyServer::new(self))
             .serve_with_shutdown(addr, shutdown)
             .await
     }
-}
 
-#[async_trait::async_trait]
-impl proto::Service for Server {
-    type WatchInboundStream = std::pin::Pin<
-        Box<dyn Stream<Item = Result<proto::InboundProxyConfig, tonic::Status>> + Send + Sync>,
-    >;
-
-    async fn watch_inbound(
-        &self,
-        req: tonic::Request<proto::InboundProxyPort>,
-    ) -> Result<tonic::Response<Self::WatchInboundStream>, tonic::Status> {
-        let proto::InboundProxyPort { workload, port } = req.into_inner();
-
+    fn lookup(&self, workload: String, port: u32) -> Result<Lookup, tonic::Status> {
         // Parse a workload name in the form namespace:name.
         let (ns, name) = {
             let parts = workload.splitn(2, ':').collect::<Vec<_>>();
@@ -78,45 +66,56 @@ impl proto::Service for Server {
 
         // Lookup the configuration for an inbound port. If the pod hasn't (yet)
         // been indexed, return a Not Found error.
-        //
-        // XXX Should we try waiting for the pod to be created? Practically, it
-        // seems unlikely for a pod to request its config for the pod's
-        // existence has been observed; but it's certainly possible (especially
-        // if the index is recovering).
-        let Lookup {
-            name: _,
-            kubelet_ips,
-            rx,
-        } = self
-            .lookup
+        self.lookup
             .lookup(ns.clone(), name.clone(), port)
             .ok_or_else(|| {
                 tonic::Status::not_found(format!(
                     "unknown pod ns={} name={} port={}",
                     ns, name, port
                 ))
-            })?;
+            })
+    }
+}
 
-        // Traffic is always permitted from the pod's Kubelet IPs.
-        let kubelet_authz = proto::Authz {
-            networks: kubelet_ips
-                .to_nets()
-                .into_iter()
-                .map(|net| proto::Network {
-                    cidr: net.to_string(),
-                    except: vec![],
-                })
-                .collect(),
-            authentication: Some(proto::Authn {
-                permit: Some(proto::authn::Permit::Unauthenticated(
-                    proto::authn::PermitUnauthenticated {},
-                )),
-            }),
-            labels: Some(("authn".to_string(), "false".to_string()))
-                .into_iter()
-                .chain(Some(("name".to_string(), "_kubelet".to_string())))
-                .collect(),
-        };
+#[async_trait::async_trait]
+impl proto::server::Polixy for Server {
+    async fn get_inbound_port(
+        &self,
+        req: tonic::Request<proto::InboundPort>,
+    ) -> Result<tonic::Response<proto::InboundServer>, tonic::Status> {
+        let proto::InboundPort { workload, port } = req.into_inner();
+        let Lookup {
+            name: _,
+            kubelet_ips,
+            rx,
+        } = self.lookup(workload, port)?;
+
+        let kubelet = kubelet_authz(kubelet_ips);
+
+        let server = to_server(
+            &kubelet,
+            rx.borrow().borrow().clone(),
+            self.identity_domain.as_ref(),
+        );
+        Ok(tonic::Response::new(server))
+    }
+
+    type WatchInboundPortStream = std::pin::Pin<
+        Box<dyn Stream<Item = Result<proto::InboundServer, tonic::Status>> + Send + Sync>,
+    >;
+
+    async fn watch_inbound_port(
+        &self,
+        req: tonic::Request<proto::InboundPort>,
+    ) -> Result<tonic::Response<Self::WatchInboundPortStream>, tonic::Status> {
+        let proto::InboundPort { workload, port } = req.into_inner();
+        let Lookup {
+            name: _,
+            kubelet_ips,
+            rx,
+        } = self.lookup(workload, port)?;
+
+        let kubelet = kubelet_authz(kubelet_ips);
 
         // TODO deduplicate redundant updates.
         // TODO end streams on drain.
@@ -124,10 +123,10 @@ impl proto::Service for Server {
         let watch = WatchStream::new(rx)
             .map(WatchStream::new)
             .flat_map(move |updates| {
-                let kubelet = kubelet_authz.clone();
+                let kubelet = kubelet.clone();
                 let domain = domain.clone();
                 updates
-                    .map(move |c| to_config(&kubelet, c, domain.as_ref()))
+                    .map(move |c| to_server(&kubelet, c, domain.as_ref()))
                     .map(Ok)
             });
 
@@ -135,11 +134,11 @@ impl proto::Service for Server {
     }
 }
 
-fn to_config(
+fn to_server(
     kubelet_authz: &proto::Authz,
     srv: InboundServerConfig,
     identity_domain: &str,
-) -> proto::InboundProxyConfig {
+) -> proto::InboundServer {
     // Convert the protocol object into a protobuf response.
     let protocol = proto::ProxyProtocol {
         kind: match srv.protocol {
@@ -168,13 +167,36 @@ fn to_config(
     trace!(?kubelet_authz);
     trace!(?server_authzs);
 
-    proto::InboundProxyConfig {
+    proto::InboundServer {
         authorizations: Some(kubelet_authz.clone())
             .into_iter()
             .chain(server_authzs)
             .collect(),
         protocol: Some(protocol),
         ..Default::default()
+    }
+}
+
+fn kubelet_authz(ips: KubeletIps) -> proto::Authz {
+    // Traffic is always permitted from the pod's Kubelet IPs.
+    proto::Authz {
+        networks: ips
+            .to_nets()
+            .into_iter()
+            .map(|net| proto::Network {
+                cidr: net.to_string(),
+                except: vec![],
+            })
+            .collect(),
+        authentication: Some(proto::Authn {
+            permit: Some(proto::authn::Permit::Unauthenticated(
+                proto::authn::PermitUnauthenticated {},
+            )),
+        }),
+        labels: Some(("authn".to_string(), "false".to_string()))
+            .into_iter()
+            .chain(Some(("name".to_string(), "_kubelet".to_string())))
+            .collect(),
     }
 }
 

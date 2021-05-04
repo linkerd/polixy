@@ -24,10 +24,9 @@ message InboundServer {
   // port.
   ProxyProtocol protocol = 1;
 
-  // TODO
-  // // Indicates the IP addresses on which the proxy may receive connections.
-  // // Connections targetting other IP addresses will be dropped.
-  // repeated string server_ips = 2;
+  // Indicates the IP addresses on which the proxy may receive connections.
+  // Connections targetting other IP addresses will be dropped.
+  repeated io.linkerd.proxy.net.IPAddress server_ips = 2;
 
   // Configures a proxy to allow connections from the specified clients.
   //

@@ -2,7 +2,7 @@ use super::proto;
 use anyhow::{anyhow, bail, Context, Error, Result};
 use futures::prelude::*;
 use ipnet::IpNet;
-use std::{collections::HashMap, convert::TryInto};
+use std::{collections::HashMap, convert::TryInto, net::IpAddr};
 use tokio::time;
 
 #[derive(Clone, Debug)]
@@ -15,6 +15,7 @@ pub struct Inbound {
     pub authorizations: Vec<Authz>,
     pub labels: HashMap<String, String>,
     pub protocol: Protocol,
+    pub server_ips: Vec<IpAddr>,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -180,10 +181,17 @@ impl std::convert::TryFrom<proto::InboundServer> for Inbound {
             )
             .collect::<Result<Vec<_>>>()?;
 
+        let server_ips = proto
+            .server_ips
+            .into_iter()
+            .map(|ip| ip.try_into().map_err(Into::into))
+            .collect::<Result<Vec<_>>>()?;
+
         Ok(Inbound {
             labels: proto.labels,
             authorizations,
             protocol,
+            server_ips,
         })
     }
 }

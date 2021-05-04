@@ -1,7 +1,7 @@
 use crate::{
     k8s::{self, polixy},
     ClientAuthn, ClientAuthz, ClientNetwork, FromResource, Identity, InboundServerConfig,
-    KubeletIps, Lookup, ProxyProtocol, ServerRx, ServerRxTx, ServerTx, ServiceAccountRef,
+    KubeletIps, Lookup, PodIps, ProxyProtocol, ServerRx, ServerRxTx, ServerTx, ServiceAccountRef,
     SharedLookupMap,
 };
 use anyhow::{anyhow, bail, Context, Error, Result};
@@ -310,6 +310,7 @@ impl Index {
         let ns_name = k8s::NsName::from_resource(&pod);
         let pod_name = k8s::PodName::from_resource(&pod);
         let spec = pod.spec.ok_or_else(|| anyhow!("pod missing spec"))?;
+        let status = pod.status.ok_or_else(|| anyhow!("pod missing status"))?;
 
         let NsIndex {
             ref mut pods,
@@ -332,6 +333,20 @@ impl Index {
                         .get(&name)
                         .ok_or_else(|| anyhow!("node IP does not exist for node {}", name))?
                         .clone()
+                };
+
+                let pod_ips = {
+                    let ips = if let Some(ips) = status.pod_ips {
+                        ips.into_iter()
+                            .flat_map(|ip| ip.ip)
+                            .map(|ip| ip.parse().map_err(Into::into))
+                            .collect::<Result<Vec<IpAddr>>>()?
+                    } else if let Some(ip) = status.pod_ip {
+                        vec![ip.parse::<IpAddr>()?]
+                    } else {
+                        bail!("pod missing IP addresses");
+                    };
+                    PodIps(ips.into())
                 };
 
                 let mut port_names = PortNames::default();
@@ -375,6 +390,7 @@ impl Index {
                                     Lookup {
                                         rx,
                                         name,
+                                        pod_ips: pod_ips.clone(),
                                         kubelet_ips: kubelet.clone(),
                                     },
                                 );

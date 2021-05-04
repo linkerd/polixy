@@ -29,6 +29,7 @@ type ServerRxTx = watch::Sender<ServerRx>;
 #[derive(Clone, Debug)]
 pub struct Lookup {
     pub name: Option<k8s::polixy::server::PortName>,
+    pub pod_ips: PodIps,
     pub kubelet_ips: KubeletIps,
     pub rx: ServerRxRx,
 }
@@ -81,6 +82,9 @@ pub struct ServiceAccountRef {
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct PodIps(Arc<[IpAddr]>);
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct KubeletIps(Arc<[IpAddr]>);
 
 // === impl LookupHandle ===
@@ -115,6 +119,14 @@ impl fmt::Display for Identity {
                 Ok(())
             }
         }
+    }
+}
+
+// === impl PodIps ===
+
+impl PodIps {
+    pub fn iter(&self) -> std::slice::Iter<'_, IpAddr> {
+        self.0.iter()
     }
 }
 

@@ -2,7 +2,7 @@ use super::proto;
 use crate::{
     k8s::{NsName, PodName},
     ClientAuthn, ClientAuthz, ClientNetwork, Identity, InboundServerConfig, KubeletIps, Lookup,
-    LookupHandle, ProxyProtocol, ServiceAccountRef,
+    LookupHandle, PodIps, ProxyProtocol, ServiceAccountRef,
 };
 use futures::prelude::*;
 use std::{collections::HashMap, iter::FromIterator, sync::Arc};
@@ -86,6 +86,7 @@ impl proto::polixy_server::Polixy for Server {
         let proto::InboundPort { workload, port } = req.into_inner();
         let Lookup {
             name: _,
+            pod_ips,
             kubelet_ips,
             rx,
         } = self.lookup(workload, port)?;
@@ -93,6 +94,7 @@ impl proto::polixy_server::Polixy for Server {
         let kubelet = kubelet_authz(kubelet_ips);
 
         let server = to_server(
+            &pod_ips,
             &kubelet,
             rx.borrow().borrow().clone(),
             self.identity_domain.as_ref(),
@@ -111,6 +113,7 @@ impl proto::polixy_server::Polixy for Server {
         let proto::InboundPort { workload, port } = req.into_inner();
         let Lookup {
             name: _,
+            pod_ips,
             kubelet_ips,
             rx,
         } = self.lookup(workload, port)?;
@@ -123,10 +126,11 @@ impl proto::polixy_server::Polixy for Server {
         let watch = WatchStream::new(rx)
             .map(WatchStream::new)
             .flat_map(move |updates| {
+                let pod_ips = pod_ips.clone();
                 let kubelet = kubelet.clone();
                 let domain = domain.clone();
                 updates
-                    .map(move |c| to_server(&kubelet, c, domain.as_ref()))
+                    .map(move |c| to_server(&pod_ips, &kubelet, c, domain.as_ref()))
                     .map(Ok)
             });
 
@@ -135,6 +139,7 @@ impl proto::polixy_server::Polixy for Server {
 }
 
 fn to_server(
+    pod_ips: &PodIps,
     kubelet_authz: &proto::Authz,
     srv: InboundServerConfig,
     identity_domain: &str,
@@ -168,11 +173,12 @@ fn to_server(
     trace!(?server_authzs);
 
     proto::InboundServer {
+        protocol: Some(protocol),
+        server_ips: pod_ips.iter().copied().map(Into::into).collect(),
         authorizations: Some(kubelet_authz.clone())
             .into_iter()
             .chain(server_authzs)
             .collect(),
-        protocol: Some(protocol),
         ..Default::default()
     }
 }

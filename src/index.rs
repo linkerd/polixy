@@ -127,11 +127,11 @@ impl Index {
                 ClientAuthz {
                     networks: vec![
                         ClientNetwork {
-                            net: "0.0.0.0/0".parse().unwrap(),
+                            net: ipnet::IpNet::V4(Default::default()),
                             except: vec![],
                         },
                         ClientNetwork {
-                            net: "::/0".parse().unwrap(),
+                            net: ipnet::IpNet::V6(Default::default()),
                             except: vec![],
                         },
                     ]
@@ -925,11 +925,11 @@ impl Index {
             // TODO this should only be cluster-local IPs.
             vec![
                 ClientNetwork {
-                    net: "0.0.0.0/0".parse().unwrap(),
+                    net: ipnet::IpNet::V4(Default::default()),
                     except: vec![],
                 },
                 ClientNetwork {
-                    net: "::/0".parse().unwrap(),
+                    net: ipnet::IpNet::V6(Default::default()),
                     except: vec![],
                 },
             ]

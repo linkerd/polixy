@@ -738,6 +738,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "linkerd2-proxy-api"
+version = "0.1.18"
+source = "git+https://github.com/linkerd/linkerd2-proxy-api?branch=ver/network#71ffa897f52ddbd7334692677bf48896b1c39cda"
+dependencies = [
+ "h2",
+ "http",
+ "ipnet",
+ "prost",
+ "prost-types",
+ "tonic",
+ "tonic-build",
+]
+
+[[package]]
 name = "lock_api"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1034,6 +1048,7 @@ dependencies = [
  "kube",
  "kube-runtime",
  "linkerd-drain",
+ "linkerd2-proxy-api",
  "parking_lot",
  "prost",
  "prost-types",

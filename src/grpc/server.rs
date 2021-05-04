@@ -35,7 +35,7 @@ impl Server {
         shutdown: impl std::future::Future<Output = ()>,
     ) -> Result<(), tonic::transport::Error> {
         tonic::transport::Server::builder()
-            .add_service(proto::server::PolixyServer::new(self))
+            .add_service(proto::polixy_server::PolixyServer::new(self))
             .serve_with_shutdown(addr, shutdown)
             .await
     }
@@ -78,7 +78,7 @@ impl Server {
 }
 
 #[async_trait::async_trait]
-impl proto::server::Polixy for Server {
+impl proto::polixy_server::Polixy for Server {
     async fn get_inbound_port(
         &self,
         req: tonic::Request<proto::InboundPort>,
@@ -184,7 +184,7 @@ fn kubelet_authz(ips: KubeletIps) -> proto::Authz {
             .to_nets()
             .into_iter()
             .map(|net| proto::Network {
-                cidr: net.to_string(),
+                net: Some(net.into()),
                 except: vec![],
             })
             .collect(),
@@ -212,11 +212,11 @@ fn to_authz(
         // TODO use cluster networks (from config).
         vec![
             proto::Network {
-                cidr: "0.0.0.0/0".to_string(),
+                net: Some(ipnet::IpNet::V4(Default::default()).into()),
                 except: vec![],
             },
             proto::Network {
-                cidr: "::/0".to_string(),
+                net: Some(ipnet::IpNet::V6(Default::default()).into()),
                 except: vec![],
             },
         ]
@@ -224,8 +224,8 @@ fn to_authz(
         networks
             .iter()
             .map(|ClientNetwork { net, except }| proto::Network {
-                cidr: net.to_string(),
-                except: except.iter().map(ToString::to_string).collect(),
+                net: Some(net.clone().into()),
+                except: except.iter().cloned().map(Into::into).collect(),
             })
             .collect()
     };

@@ -7,7 +7,7 @@ use tokio::time;
 
 #[derive(Clone, Debug)]
 pub struct Client {
-    client: proto::client::PolixyClient<tonic::transport::Channel>,
+    client: proto::polixy_client::PolixyClient<tonic::transport::Channel>,
 }
 
 #[derive(Clone, Debug)]
@@ -55,7 +55,7 @@ impl Client {
         D: std::convert::TryInto<tonic::transport::Endpoint>,
         D::Error: Into<tonic::codegen::StdError>,
     {
-        let client = proto::client::PolixyClient::connect(dst).await?;
+        let client = proto::polixy_client::PolixyClient::connect(dst).await?;
         Ok(Client { client })
     }
 
@@ -137,17 +137,15 @@ impl std::convert::TryFrom<proto::InboundServer> for Inbound {
                         bail!("networks missing");
                     }
                     let networks = networks
-                        .iter()
-                        .map(|proto::Network { cidr, except }| {
-                            let net = cidr
-                                .parse()
-                                .with_context(|| format!("invalid network CIDR {}", cidr))?;
+                        .into_iter()
+                        .map(|proto::Network { net, except }| {
+                            let net = net
+                                .ok_or_else(|| anyhow!("network missing"))?
+                                .try_into()
+                                .context("invalid network")?;
                             let except = except
-                                .iter()
-                                .map(|cidr| {
-                                    cidr.parse()
-                                        .with_context(|| format!("invalid network CIDR {}", cidr))
-                                })
+                                .into_iter()
+                                .map(|net| net.try_into().context("invalid network"))
                                 .collect::<Result<Vec<IpNet>>>()?;
                             Ok(Network { net, except })
                         })

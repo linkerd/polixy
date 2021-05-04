@@ -1,8 +1,9 @@
 syntax = "proto3";
 
-package polixy.olix0r.net;
+package net.olix0r.polixy;
 
 import "google/protobuf/duration.proto";
+import "linkerd/net.proto";
 
 service Polixy {
   rpc GetInboundPort(InboundPort) returns (InboundServer) {}
@@ -26,8 +27,6 @@ message InboundServer {
   // TODO
   // // Indicates the IP addresses on which the proxy may receive connections.
   // // Connections targetting other IP addresses will be dropped.
-  // //
-  // // TODO use numeric IP addresses.
   // repeated string server_ips = 2;
 
   // Configures a proxy to allow connections from the specified clients.
@@ -84,6 +83,12 @@ message Authz {
   map<string, string> labels = 3;
 }
 
+// Describes a network of authorized clients.
+message Network {
+  io.linkerd.proxy.net.IPNetwork net = 1;
+  repeated io.linkerd.proxy.net.IPNetwork except = 2;
+}
+
 message Authn {
   oneof permit {
     PermitUnauthenticated unauthenticated = 1;
@@ -116,11 +121,3 @@ message Identity { string name = 1; }
 // An empty list is equivalent to `.` (matching all names); the list `["foo",
 // "bar"]` is equivalent to "foo.bar." (matching `*.foo.bar`), etc.
 message Suffix { repeated string parts = 1; }
-
-// Describes a network in CIDR-notation.
-//
-// TODO use numeric types rather than a string.
-message Network {
-  string cidr = 1;
-  repeated string except = 2;
-}

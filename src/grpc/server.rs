@@ -218,42 +218,46 @@ fn to_authz(
                 )))
                 .collect();
 
-            let suffixes = identities
-                .iter()
-                .filter_map(|i| match i {
-                    Identity::Suffix(s) => Some(proto::Suffix {
-                        parts: s.iter().cloned().collect(),
-                    }),
-                    _ => None,
-                })
-                .collect();
+            let authn = {
+                let suffixes = identities
+                    .iter()
+                    .filter_map(|i| match i {
+                        Identity::Suffix(s) => Some(proto::Suffix {
+                            parts: s.iter().cloned().collect(),
+                        }),
+                        _ => None,
+                    })
+                    .collect();
 
-            let identities = identities
-                .iter()
-                .filter_map(|i| match i {
-                    Identity::Name(n) => Some(proto::Identity {
-                        name: n.to_string(),
-                    }),
-                    _ => None,
-                })
-                .chain(
-                    service_accounts
-                        .into_iter()
-                        .map(|sa| to_identity(sa, identity_domain)),
-                )
-                .collect();
+                let identities = identities
+                    .iter()
+                    .filter_map(|i| match i {
+                        Identity::Name(n) => Some(proto::Identity {
+                            name: n.to_string(),
+                        }),
+                        _ => None,
+                    })
+                    .chain(
+                        service_accounts
+                            .into_iter()
+                            .map(|sa| to_identity(sa, identity_domain)),
+                    )
+                    .collect();
 
-            proto::Authz {
-                labels,
-                networks,
-                authentication: Some(proto::Authn {
+                proto::Authn {
                     permit: Some(proto::authn::Permit::ProxyIdentities(
                         proto::authn::PermitProxyIdentities {
                             identities,
                             suffixes,
                         },
                     )),
-                }),
+                }
+            };
+
+            proto::Authz {
+                labels,
+                networks,
+                authentication: Some(authn),
             }
         }
     }

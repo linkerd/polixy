@@ -23,16 +23,23 @@ message InboundServer {
   // port.
   ProxyProtocol protocol = 1;
 
+  // TODO
+  // // Indicates the IP addresses on which the proxy may receive connections.
+  // // Connections targetting other IP addresses will be dropped.
+  // //
+  // // TODO use numeric IP addresses.
+  // repeated string server_ips = 2;
+
   // Configures a proxy to allow connections from the specified clients.
   //
   // If unset, no connections are permitted.
-  repeated Authz authorizations = 2;
+  repeated Authz authorizations = 3;
 
   // Descriptive labels to be added to metrics, etc.
   //
   // A control plane SHOULD return the same keys in all policies. That is, we do
   // NOT want to return arbitrary pod labels in this field.
-  map<string, string> labels = 3;
+  map<string, string> labels = 4;
 }
 
 message ProxyProtocol {

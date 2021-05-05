@@ -2,7 +2,7 @@
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
-  name: authorizations.polixy.olix0r.net
+  name: serverauthorizations.polixy.olix0r.net
   labels:
     polixy.olix0r.net/crd: authz
 spec:
@@ -10,10 +10,10 @@ spec:
   scope: Namespaced
 
   names:
-    kind: Authorization
-    plural: authorizations
-    singular: authorization
-    shortNames: [authz]
+    kind: ServerAuthorization
+    plural: serverauthorizations
+    singular: serverauthorization
+    shortNames: [srvauthz]
 
   versions:
     - name: v1alpha1

@@ -90,7 +90,7 @@ spec:
   proxyProtocol: Http
 ---
 apiVersion: polixy.olix0r.net/v1alpha1
-kind: Authorization
+kind: ServerAuthorization
 metadata:
   namespace: emojivoto
   name: web-public

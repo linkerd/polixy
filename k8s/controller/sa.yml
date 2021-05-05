@@ -35,8 +35,8 @@ rules:
   - apiGroups:
       - polixy.olix0r.net
     resources:
-      - authorizations
       - servers
+      - serverauthorizations
     verbs:
       - get
       - list

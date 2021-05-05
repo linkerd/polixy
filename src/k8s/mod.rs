@@ -28,7 +28,7 @@ pub(crate) struct ResourceWatches {
     pub nodes: Watch<Node>,
     pub pods: Watch<Pod>,
     pub servers: Watch<polixy::Server>,
-    pub authorizations: Watch<polixy::Authorization>,
+    pub authorizations: Watch<polixy::ServerAuthorization>,
 }
 
 // === impl ResourceWatches ===

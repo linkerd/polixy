@@ -12,12 +12,12 @@ pub struct Name(String);
 #[kube(
     group = "polixy.olix0r.net",
     version = "v1alpha1",
-    kind = "Authorization",
+    kind = "ServerAuthorization",
     namespaced
 )]
 #[derive(CustomResource, Deserialize, Serialize, Clone, Debug, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct AuthorizationSpec {
+pub struct ServerAuthorizationSpec {
     pub server: Server,
     pub client: Client,
 }
@@ -74,8 +74,8 @@ pub struct ServiceAccountRef {
 
 // === Name ===
 
-impl FromResource<Authorization> for Name {
-    fn from_resource(s: &Authorization) -> Self {
+impl FromResource<ServerAuthorization> for Name {
+    fn from_resource(s: &ServerAuthorization) -> Self {
         Self(s.name())
     }
 }

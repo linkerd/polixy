@@ -24,7 +24,7 @@ communication and to enforce authorization for pod-to-pod communication.
 * Identify reusable components for future server configuration;
 * Keep proxy-facing Kubernetes-agnostic;
 * Support interoperability with SMI `TrafficPolicy`;
-* No impact to HTTP request latencies; and
+* No measurable impact to HTTP request latencies; and
 * Negligible impact to proxy memory usage.
 
 ### Non-goals
@@ -73,6 +73,14 @@ for which the inbound proxy may accept connections. Then, the proxy can watch
 policy updates for each of these ports. This could be completed before a proxy
 starts accepting connections and marks itself as _ready_.
 
+#### Protocol hinting
+
+Linkerd 2.10 introduced a new annotation `config.linkerd.io/opaque-ports`, that
+configures server-side ports to skip protocol detection. With the introduction
+of a server descriptor, we have an opportunity to extend this configuration even
+further by allowing operators to document the protocol being proxied to avoid
+
+<!-- XXX This is really an implementation detail that should be moved lower
 ##### Controller Bootstrapping
 
 The above scheme poses a "*Wyld Stallyns* problem" for the identity
@@ -94,6 +102,7 @@ the identity controller's proxy has very limited discovery needs:
 * It needs to discover policy for its local ports (identity gRPC + admin, proxy
   ports)
 * It attempts to discover a service profile for inbound gRPC requests
+  -->
 
 ### Authorizing clients
 
@@ -148,9 +157,11 @@ networking][pod-ips] for more information.)
 
 If a policy were to block this communication, pods would not start properly. So
 we need to be careful to allow this traffic by default to minimize pain.
-Furthermore, there's really no reason to disallow communication from the
-kubelet--it is necessarily a privileged application that must be trusted by a
-pod. Note, also, that it is not feasible to configure kubelet to run with mTLS
+Furthermore, there's really no benefit to disallowing communication from the
+kubelet--kubelet is necessarily a privileged application that must be trusted by
+a pod.
+
+Note, also, that it is not feasible to configure kubelet to run with mTLS
 identity, as, even if this were possible, it would pose a bootstrapping problem.
 
 #### Default behavior
@@ -172,6 +183,7 @@ In the future, we may want to implement richer default polices (e.g. allowing
 unauthenticated connections from specific networks, requiring identity, etc),
 but this is probably undesirable complexity initially.
 
+<!--
 #### Control plane policies
 
 The core control plane should ship with a set of default policies:
@@ -184,8 +196,7 @@ The core control plane should ship with a set of default policies:
   node-local network.
 
 #### Proxy admin, tap, & inbound policies
-
-### Visibility
+  -->
 
 ## Proposal
 
@@ -193,7 +204,7 @@ The core control plane should ship with a set of default policies:
 
 We propose introducing two new `CustomResourceDefinition`s to Linkerd:
 
-#### [`Server`](crds/server.yml)
+#### [`Server`](k8s/crds/server.yml)
 
 Each `Server` instance:
 
@@ -212,7 +223,9 @@ in an admission controller to prevent resources from being created in this
 state, but it may be difficult to provide exhaustive defenses agains this
 situation.
 
-#### [`Authorization`](crds/authz.yml)
+##### Examples
+
+#### [`ServerAuthorization`](k8s/crds/authz.yml)
 
 Authorizes clients to access `Server`s.
 

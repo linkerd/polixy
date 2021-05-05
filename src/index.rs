@@ -849,7 +849,7 @@ impl Index {
             name = ?authz.metadata.name,
         )
     )]
-    fn apply_authz(&mut self, authz: polixy::Authorization) -> Result<()> {
+    fn apply_authz(&mut self, authz: polixy::ServerAuthorization) -> Result<()> {
         let ns_name = k8s::NsName::from_resource(&authz);
         let authz_name = polixy::authz::Name::from_resource(&authz);
         let authz = Self::mk_authz(&ns_name, authz.spec)
@@ -900,7 +900,10 @@ impl Index {
         Ok(())
     }
 
-    fn mk_authz(ns_name: &k8s::NsName, spec: polixy::authz::AuthorizationSpec) -> Result<Authz> {
+    fn mk_authz(
+        ns_name: &k8s::NsName,
+        spec: polixy::authz::ServerAuthorizationSpec,
+    ) -> Result<Authz> {
         let servers = {
             let polixy::authz::Server { name, selector } = spec.server;
             match (name, selector) {
@@ -1013,7 +1016,7 @@ impl Index {
             name = ?authz.metadata.name,
         )
     )]
-    fn delete_authz(&mut self, authz: polixy::Authorization) -> Result<()> {
+    fn delete_authz(&mut self, authz: polixy::ServerAuthorization) -> Result<()> {
         let ns = k8s::NsName::from_resource(&authz);
         let authz = polixy::authz::Name::from_resource(&authz);
         self.rm_authz(ns.clone(), authz.clone())
@@ -1035,7 +1038,7 @@ impl Index {
     }
 
     #[instrument(skip(self, authzs))]
-    fn reset_authzs(&mut self, authzs: Vec<polixy::Authorization>) -> Result<()> {
+    fn reset_authzs(&mut self, authzs: Vec<polixy::ServerAuthorization>) -> Result<()> {
         let mut prior_authzs = self
             .namespaces
             .iter()

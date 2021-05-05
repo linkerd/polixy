@@ -13,7 +13,7 @@ spec:
       linkerd.io/control-plane-component: destination
 ---
 apiVersion: polixy.olix0r.net/v1alpha1
-kind: Authorization
+kind: ServerAuthorization
 metadata:
   namespace: linkerd
   name: linkerd-sp-validator-https

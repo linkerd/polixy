@@ -6,7 +6,7 @@ metadata:
   name: linkerd-proxy-injector-https
 spec:
   port: 8443
-  proxyProtocol: Opaque
+  proxyProtocol: Tls
   podSelector:
     matchLabels:
       linkerd.io/control-plane-ns: linkerd
@@ -21,4 +21,4 @@ spec:
   server:
     name: linkerd-proxy-injector-https
   client:
-    unauthenticated: passthru
+    unauthenticated: true

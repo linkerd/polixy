@@ -24,7 +24,7 @@ spec:
   port: admin-http
   proxyProtocol: Http
   podSelector:
-    matchExpression:
+    matchExpressions:
       -  key: linkerd.io/control-plane-component
          operator: NotIn
          values: []
@@ -40,6 +40,7 @@ spec:
       matchLabels:
         viz.linkerd.io/prometheus: allow
   client:
-    serviceAccounts:
-      - namespace: linkerd-viz
-        name: prometheus
+    mtls:
+      serviceAccounts:
+        - namespace: linkerd-viz
+          name: prometheus

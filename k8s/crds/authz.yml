@@ -96,8 +96,7 @@ spec:
                   description:  Describes clients authorized to access a server.
                   type: object
                   oneOf:
-                    - required: [identities]
-                    - required: [serviceAccounts]
+                    - required: [mtls]
                     - required: [unauthenticated]
                   properties:
 
@@ -124,63 +123,74 @@ spec:
                         Authorizes unauthenticated clients to access a server.
                       type: boolean
 
-                    identities:
-                      description: >-
-                        Authorizes clients with the provided proxy identity
-                        strings (as provided via MTLS)
+                    mtls:
+                      type: object
+                      oneOf:
+                        - required: [noIdentityRequired]
+                        - required: [identities]
+                        - required: [serviceAccounts]
 
-                        The `*` prefix can be used to match all identities in
-                        a domain. An identity string of `*` indicates that
-                        all authentication clients are authorized.
+                      properties:
+                        noIdentityRequired:
+                          type: boolean
 
-                      type: array
-                      items:
-                        type: string
-                        pattern: '^(\*|[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*)$'
+                        identities:
+                          description: >-
+                            Authorizes clients with the provided proxy identity
+                            strings (as provided via MTLS)
 
-                    serviceAccounts:
-                      description: >-
-                        Authorizes clients with the provided proxy identity
-                        service accounts (as provided via MTLS)
+                            The `*` prefix can be used to match all identities in
+                            a domain. An identity string of `*` indicates that
+                            all authentication clients are authorized.
 
-                      type: array
-                      items:
-                        type: object
-                        required: [name]
-                        properties:
-                          name:
-                            description: The ServiceAccount's name.
+                          type: array
+                          items:
                             type: string
-                            pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+                            pattern: '^(\*|[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*)$'
 
-                          namespace:
-                            description: >-
-                              The ServiceAccount's namespace. If unset, the
-                              authorization's namespace is usd.
-                            type: string
-                            pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+                        serviceAccounts:
+                          description: >-
+                            Authorizes clients with the provided proxy identity
+                            service accounts (as provided via MTLS)
 
-                          #selector:
-                          #  type: object
-                          #  oneOf:
-                          #    - required: [matchLabels]
-                          #    - required: [matchExpressions]
-                          #  properties:
-                          #    matchLabels:
-                          #      type: object
-                          #      x-kubernetes-preserve-unknown-fields: true
-                          #    matchExpressions:
-                          #      type: array
-                          #      items:
-                          #        type: object
-                          #        required: [key, operator, values]
-                          #        properties:
-                          #          key:
-                          #            type: string
-                          #          operator:
-                          #            type: string
-                          #            enum: [In, NotIn]
-                          #          values:
-                          #            type: array
-                          #              type: string
-                          #            items:
+                          type: array
+                          items:
+                            type: object
+                            required: [name]
+                            properties:
+                              name:
+                                description: The ServiceAccount's name.
+                                type: string
+                                pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+
+                              namespace:
+                                description: >-
+                                  The ServiceAccount's namespace. If unset, the
+                                  authorization's namespace is usd.
+                                type: string
+                                pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+
+                              #selector:
+                              #  type: object
+                              #  oneOf:
+                              #    - required: [matchLabels]
+                              #    - required: [matchExpressions]
+                              #  properties:
+                              #    matchLabels:
+                              #      type: object
+                              #      x-kubernetes-preserve-unknown-fields: true
+                              #    matchExpressions:
+                              #      type: array
+                              #      items:
+                              #        type: object
+                              #        required: [key, operator, values]
+                              #        properties:
+                              #          key:
+                              #            type: string
+                              #          operator:
+                              #            type: string
+                              #            enum: [In, NotIn]
+                              #          values:
+                              #            type: array
+                              #              type: string
+                              #            items:

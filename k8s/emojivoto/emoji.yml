@@ -104,4 +104,5 @@ spec:
   server:
     name: emoji-grpc
   client:
-    identities: ['*']
+    mtls:
+      identities: ['*']

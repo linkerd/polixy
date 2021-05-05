@@ -21,4 +21,5 @@ spec:
   server:
     name: linkerd-identity-grpc
   client:
-    unauthenticated: tls
+    mtls:
+      noIdentityRequired: true

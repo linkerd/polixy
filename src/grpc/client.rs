@@ -4,6 +4,7 @@ use futures::prelude::*;
 use ipnet::IpNet;
 use std::{collections::HashMap, convert::TryInto, net::IpAddr};
 use tokio::time;
+use tracing::trace;
 
 #[derive(Clone, Debug)]
 pub struct Client {
@@ -21,9 +22,10 @@ pub struct Inbound {
 #[derive(Copy, Clone, Debug)]
 pub enum Protocol {
     Detect { timeout: time::Duration },
-    Opaque,
     Http,
     Grpc,
+    Opaque,
+    Tls,
 }
 
 #[derive(Clone, Debug)]
@@ -71,11 +73,9 @@ impl Client {
             port: port.into(),
         });
 
-        self.client
-            .get_inbound_port(req)
-            .await?
-            .into_inner()
-            .try_into()
+        let proto = self.client.get_inbound_port(req).await?.into_inner();
+        trace!(?proto);
+        proto.try_into()
     }
 
     pub async fn watch_inbound_port(
@@ -118,9 +118,10 @@ impl std::convert::TryFrom<proto::InboundServer> for Inbound {
                         },
                     }
                 }
-                proto::proxy_protocol::Kind::Opaque(_) => Protocol::Opaque,
                 proto::proxy_protocol::Kind::Http(_) => Protocol::Http,
                 proto::proxy_protocol::Kind::Grpc(_) => Protocol::Grpc,
+                proto::proxy_protocol::Kind::Opaque(_) => Protocol::Opaque,
+                proto::proxy_protocol::Kind::Tls(_) => Protocol::Tls,
             },
             _ => bail!("proxy protocol missing"),
         };

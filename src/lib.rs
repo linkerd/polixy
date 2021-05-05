@@ -43,9 +43,10 @@ pub struct InboundServerConfig {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProxyProtocol {
     Detect { timeout: time::Duration },
-    Opaque,
     Http,
     Grpc,
+    Opaque,
+    Tls,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

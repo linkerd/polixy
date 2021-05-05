@@ -38,6 +38,17 @@ pub struct Client {
 
     pub unauthenticated: Option<bool>,
 
+    pub mtls: Option<Mtls>,
+}
+
+/// Describes an authenticated client.
+///
+/// Exactly one of `identities` and `service_accounts` should be set.
+#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Mtls {
+    pub no_identity_required: Option<bool>,
+
     /// Indicates a Linkerd identity that is authorized to access a server.
     pub identities: Option<Vec<String>>,
 

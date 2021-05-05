@@ -161,6 +161,9 @@ fn to_server(
             ProxyProtocol::Opaque => Some(proto::proxy_protocol::Kind::Opaque(
                 proto::proxy_protocol::Opaque {},
             )),
+            ProxyProtocol::Tls => Some(proto::proxy_protocol::Kind::Tls(
+                proto::proxy_protocol::Tls {},
+            )),
         },
     };
     trace!(?protocol);
@@ -239,8 +242,12 @@ fn to_authz(
     match authentication {
         ClientAuthn::Unauthenticated => proto::Authz {
             networks,
+            authentication: Some(proto::Authn {
+                permit: Some(proto::authn::Permit::Unauthenticated(
+                    proto::authn::PermitUnauthenticated {},
+                )),
+            }),
             labels: HashMap::from_iter(Some(("authn".to_string(), "false".to_string()))),
-            ..Default::default()
         },
 
         // Authenticated connections must have TLS and apply to all

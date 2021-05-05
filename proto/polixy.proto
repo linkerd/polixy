@@ -43,16 +43,13 @@ message InboundServer {
 message ProxyProtocol {
   oneof kind {
     Detect detect = 1;
-    Opaque opaque = 2;
-    Http http = 3;
-    Grpc grpc = 4;
+    Http http = 2;
+    Grpc grpc = 3;
+    Opaque opaque = 4;
+    Tls tls = 5;
   }
 
   message Detect { google.protobuf.Duration timeout = 1; }
-
-  message Opaque {
-    // TODO: opaque TLS settings (versions, algorithms, SNI)
-  }
 
   message Http {
     // TODO: domains -> routes -> policy
@@ -61,6 +58,13 @@ message ProxyProtocol {
 
   message Grpc {
     // TODO: service -> endpoint -> policy
+  }
+
+  message Opaque {
+    // TODO: opaque TLS settings (versions, algorithms, SNI)
+  }
+
+  message Tls {
   }
 }
 

@@ -39,9 +39,10 @@ pub enum Port {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 pub enum ProxyProtocol {
     Detect,
-    Opaque,
     Http,
     Grpc,
+    Opaque,
+    Tls,
 }
 
 // === Name ===

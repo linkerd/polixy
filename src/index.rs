@@ -739,9 +739,10 @@ impl Index {
             Some(polixy::server::ProxyProtocol::Detect) | None => ProxyProtocol::Detect {
                 timeout: time::Duration::from_secs(5),
             },
-            Some(polixy::server::ProxyProtocol::Opaque) => ProxyProtocol::Opaque,
             Some(polixy::server::ProxyProtocol::Http) => ProxyProtocol::Http,
             Some(polixy::server::ProxyProtocol::Grpc) => ProxyProtocol::Grpc,
+            Some(polixy::server::ProxyProtocol::Opaque) => ProxyProtocol::Opaque,
+            Some(polixy::server::ProxyProtocol::Tls) => ProxyProtocol::Tls,
         }
     }
 
@@ -941,48 +942,58 @@ impl Index {
         let authentication = if let Some(true) = spec.client.unauthenticated {
             ClientAuthn::Unauthenticated
         } else {
-            let mut identities = Vec::new();
-            let mut service_accounts = Vec::new();
+            let mtls = spec
+                .client
+                .mtls
+                .ok_or_else(|| anyhow!("client mtls missing"))?;
 
-            for id in spec.client.identities.into_iter().flatten() {
-                if id == "*" {
-                    debug!(suffix = %id, "Authenticated");
-                    identities.push(Identity::Suffix(Arc::new([])));
-                } else if id.starts_with("*.") {
-                    debug!(suffix = %id, "Authenticated");
-                    let mut parts = id.split('.');
-                    let star = parts.next();
-                    debug_assert_eq!(star, Some("*"));
-                    identities.push(Identity::Suffix(
-                        parts.map(|p| p.to_string()).collect::<Vec<_>>().into(),
-                    ));
-                } else {
-                    debug!(%id, "Authenticated");
-                    identities.push(Identity::Name(id.into()));
+            if let Some(true) = mtls.no_identity_required {
+                // XXX FIXME
+                ClientAuthn::Unauthenticated
+            } else {
+                let mut identities = Vec::new();
+                let mut service_accounts = Vec::new();
+
+                for id in mtls.identities.into_iter().flatten() {
+                    if id == "*" {
+                        debug!(suffix = %id, "Authenticated");
+                        identities.push(Identity::Suffix(Arc::new([])));
+                    } else if id.starts_with("*.") {
+                        debug!(suffix = %id, "Authenticated");
+                        let mut parts = id.split('.');
+                        let star = parts.next();
+                        debug_assert_eq!(star, Some("*"));
+                        identities.push(Identity::Suffix(
+                            parts.map(|p| p.to_string()).collect::<Vec<_>>().into(),
+                        ));
+                    } else {
+                        debug!(%id, "Authenticated");
+                        identities.push(Identity::Name(id.into()));
+                    }
                 }
-            }
 
-            for sa in spec.client.service_accounts.into_iter().flatten() {
-                let name = sa.name;
-                let ns = sa
-                    .namespace
-                    .map(k8s::NsName::from)
-                    .unwrap_or_else(|| ns_name.clone());
-                debug!(ns = %ns, serviceaccount = %name, "Authenticated");
-                // FIXME configurable cluster domain
-                service_accounts.push(ServiceAccountRef {
-                    ns,
-                    name: name.into(),
-                });
-            }
+                for sa in mtls.service_accounts.into_iter().flatten() {
+                    let name = sa.name;
+                    let ns = sa
+                        .namespace
+                        .map(k8s::NsName::from)
+                        .unwrap_or_else(|| ns_name.clone());
+                    debug!(ns = %ns, serviceaccount = %name, "Authenticated");
+                    // FIXME configurable cluster domain
+                    service_accounts.push(ServiceAccountRef {
+                        ns,
+                        name: name.into(),
+                    });
+                }
 
-            if identities.is_empty() && service_accounts.is_empty() {
-                bail!("authorization authorizes no clients");
-            }
+                if identities.is_empty() && service_accounts.is_empty() {
+                    bail!("authorization authorizes no clients");
+                }
 
-            ClientAuthn::Authenticated {
-                identities,
-                service_accounts,
+                ClientAuthn::Authenticated {
+                    identities,
+                    service_accounts,
+                }
             }
         };
 

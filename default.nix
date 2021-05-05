@@ -14,6 +14,7 @@ buildEnv {
     curl
     docker
     jq
+    kubectl
     kube3d
     git
     (glibcLocales.override { locales = [ "en_US.UTF-8" ]; })

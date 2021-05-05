@@ -21,4 +21,5 @@ spec:
   server:
     name: linkerd-destination-grpc
   client:
-    identities: ["*"]
+    mtls:
+      identities: ["*"]

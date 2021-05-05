@@ -1,48 +1,66 @@
 # Linkerd policy exploration
 
-## Problem
+Linkerd proxies inbound (server-side) communication to pods and is
+well-positioned to enforce policies that place restrictions on the clients that
+access it.
 
-Linkerd's proxies establish an _identity_ based on Kubernetes's
-`ServiceAccounts` system. This identity allows clients to establish
-mutually-authenticated TLS connections between pods. Currently, this identity
-is opportunistic and operators have little means to require its use.
+All proxy-to-proxy communication is already protected by mutually-authenticated
+TLS, with identities based on each pod's `ServiceAccount`. Currently, this
+identity is opportunistic and operators have little means to require its use or
+to limit access based on this identity.
 
 This document proposes a mechanism for operators to require mTLS
 communication and to enforce authorization for pod-to-pod communication.
 
-## Goals
-
-1. Provides mechanisms for application operators to restrict access to
-   their servers.
-2. Does not complicate getting started with Linkerd.
-3. Leverages existing Kubernetes primitives/patterns wherever possible.
-4. Identifies primitives/patterns that can be re-used for other types of
-   configuration.
-
 ## Design
+
+### Goals
+
+* Define a mechanism for servers operators to authorize clients;
+* Integrate with Linkerd's identity system;
+* Opt-in -- not a required component, especially when getting started;
+* Can be adopted incrementally;
+* Leverage existing Kubernetes primitives/patterns;
+* Identify reusable components for future server configuration;
+* Keep proxy-facing Kubernetes-agnostic;
+* Support interoperability with SMI `TrafficPolicy`;
+* No impact to HTTP request latencies; and
+* Negligible impact to proxy memory usage.
+
+### Non-goals
+
+#### Cluster-wide policy
+
+Cluster-level policy control should be implemented by oeprators that generate or
+restrict application-level policy resources. Schemes for implementing these
+(e.g., OPA/Gatekeeper) are out of scope of this document.
+
+#### Policy based on HTTP metadata
+
+While we shouldn't preclude future support for other types of protocol-aware
+policy, this document only intends to address connection-level policy.
 
 ### Server-centric
 
-Access policies obviously need to be enforced on the server-side in order to
-provide any reasonable guarantees against malfeasant clients. As such, we
-need a means for an inbound proxy to discover policies for its local servers
-(ports that the pod-local containers listen on).
+Access policies need to be enforced on the server-side in order to provide any
+reasonable guarantees against malfeasant clients. As such, we need a means for
+an inbound proxy to discover policies for its local servers (ports that the
+pod-local containers listen on).
 
 While it may be attractive to use Kubernetes `Service`s for this, they are
-really not the right tool for the job. Kubernetes services are more of a
-client-centric concept than a server-centric concept: they define a logical
-target for traffic independent of its actual destination. A server, however,
-has no way to correlate an inbound connection with a service. And it may
-receive traffic that isn't associated with a `Service` at all (kubelet
-probes, for instance).
+really not the right tool for the job: Kubernetes services represent a traffic
+target _for clients_. A server instance, however, has no way to correlate an
+inbound connection with the service the client targeted; and it may receive
+traffic that isn't associated with a `Service` at all.
 
-This points to the introduction of a new custom resource type that
-describes a *server*--matching a port on a set of pods.
+This points to the introduction of a new custom resource type that describes a
+*server*--matching a port on a set of pods.
 
 #### Dynamic Policy Discovery
 
 Outbound proxies perform service discovery based on the target IP:Port of a
-connection. Inbound proxies will similarly need to watch for policy changes.
+connection. Inbound proxies will similarly need to alter policices at runtime
+(i.e., without requiring that the proxy be restarted).
 
 Outbound proxies are lazy and dynamic, as we cannot require an application to
 document all endpoints to which an application connects; but, on the inbound
@@ -50,16 +68,10 @@ side, it's much more reasonable to expect operators to document the ports on
 which an application accepts connections. In fact, this almost always done as
 part of a `Pod` spec.
 
-This means that we can likely configure a proxy (at inject-time) with a list
-of ports for which the inbound proxy may accept connections. Then, the proxy
-can watch policy updates for each of these ports. This could be completed
-before a proxy starts accepting connections and marks itself as _ready_.
-
-The inbound policy API (as well as a validating admission controller) should
-probably be served from the destination controller's pod--proxies already
-have a client to this service, and a policy API does not need any special
-privileges that we would not want the destination controller to have
-otherwise.
+This means that we can configure a proxy (at inject-time) with a list of ports
+for which the inbound proxy may accept connections. Then, the proxy can watch
+policy updates for each of these ports. This could be completed before a proxy
+starts accepting connections and marks itself as _ready_.
 
 ##### Controller Bootstrapping
 
@@ -122,22 +134,31 @@ have not yet established an identity):
 
 ##### Lifecycle probes
 
-We need to expose a means for operators to authorize unauthenticated lifecyle
-probes.
+In Kubernetes, _kubelet_ is a process that runs on each node and is repsonsible
+for orchestrating a pod's lifecycle: it executes and terminates a pod's
+containers and, more importantly for our needs, it may issue networked probes to
+know when a container is _ready_ or _live.
 
-Kubelet is responsible for managing pod lifecycle (including its networking).
-As such, it may initiate network probes from the first address on the node's
-pod network--e.g, if the node's `podCIDR` is `10.0.1.0/24`, then the kubelet
-will initiate connections from `10.0.1.1`. See [this blog post on pod
-networking][pod-ips] for more information.
+Kubelet initiates network probes from the first address on the node's pod
+network--e.g, if the node's `podCIDR` is `10.0.1.0/24`, then the kubelet will
+initiate connections from `10.0.1.1`. (See [this blog post on pod
+networking][pod-ips] for more information.)
 
 [pod-ips]: https://ronaknathani.com/blog/2020/08/how-a-kubernetes-pod-gets-an-ip-address/
+
+If a policy were to block this communication, pods would not start properly. So
+we need to be careful to allow this traffic by default to minimize pain.
+Furthermore, there's really no reason to disallow communication from the
+kubelet--it is necessarily a privileged application that must be trusted by a
+pod. Note, also, that it is not feasible to configure kubelet to run with mTLS
+identity, as, even if this were possible, it would pose a bootstrapping problem.
 
 #### Default behavior
 
 When no policy is configured for a server, the default behavior must be to
-**allow** connections; otherwise policies would have to be created for all
-servers when installing Linkerd.
+**allow** connections--at least from within the cluster; otherwise policies
+would have to be created for all servers when installing Linkerd, posing a
+headache for incremental adoption.
 
 But a default-allow policy isn't exactly ideal from a security point-of-view.
 To ameliorate this, we probably want to support ways to enable a default-deny
@@ -199,15 +220,15 @@ Authorizes clients to access `Server`s.
 
 ## Future work
 
-- Cluster-wide policies
-- Egress policies
-- Timeouts
-- HTTP Route configuration
-- View isolation in the destination service
+* Cluster-wide policies
+* Egress policies
+* Timeouts
+* HTTP Route configuration
+* View isolation in the destination service
 
 ## Prior art
 
-- SMI `TrafficPolicy` -- not port-aware; not workload-aware.
-- `serviceprofiles.linkerd.io/ServiceProfile` -- not port-aware; tied to DNS (service) names
-- `NetworkPolicy` -- not authentication-aware
-- `Role`/`ClusterRole`, `RoleBinding`/`ClusterRoleBinding` -- requires authentication
+* SMI `TrafficPolicy` -- not port-aware; not workload-aware.
+* `serviceprofiles.linkerd.io/ServiceProfile` -- not port-aware; tied to DNS (service) names
+* `NetworkPolicy` -- not authentication-aware
+* `Role`/`ClusterRole`, `RoleBinding`/`ClusterRoleBinding` -- requires authentication

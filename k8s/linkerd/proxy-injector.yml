@@ -1,0 +1,50 @@
+---
+apiVersion: polixy.olix0r.net/v1alpha1
+kind: Server
+metadata:
+  namespace: linkerd
+  name: linkerd-proxy-injector-https
+spec:
+  port: 8443
+  proxyProtocol: Opaque
+  podSelector:
+    matchLabels:
+      linkerd.io/control-plane-ns: linkerd
+      linkerd.io/control-plane-component: proxy-injector
+---
+apiVersion: polixy.olix0r.net/v1alpha1
+kind: Authorization
+metadata:
+  namespace: linkerd
+  name: linkerd-proxy-injector-https
+spec:
+  server:
+    name: linkerd-proxy-injector-https
+  client:
+    unauthenticated: passthru
+---
+apiVersion: polixy.olix0r.net/v1alpha1
+kind: Server
+metadata:
+  namespace: linkerd
+  name: linkerd-sp-validtor-admin
+spec:
+  port: 9995
+  proxyProtocol: Http
+  podSelector:
+    matchLabels:
+      linkerd.io/control-plane-ns: linkerd
+      linkerd.io/control-plane-component: proxy-injector
+---
+apiVersion: polixy.olix0r.net/v1alpha1
+kind: Authorization
+metadata:
+  namespace: linkerd
+  name: linkerd-proxy-injector-admin
+spec:
+  server:
+    name: linkerd-proxy-injector-admin
+  client:
+    serviceAccounts:
+      - namespace: linkerd-viz
+        name: prometheus

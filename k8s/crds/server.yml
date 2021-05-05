@@ -93,7 +93,8 @@ spec:
                   type: string
                   default: Unknown
                   enum:
-                    - Unknown
-                    - Http
-                    - Grpc
-                    - Opaque
+                    - unknown
+                    - http
+                    - grpc
+                    - opaque
+                    - tls

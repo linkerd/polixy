@@ -1,0 +1,25 @@
+---
+apiVersion: polixy.olix0r.net/v1alpha1
+kind: Server
+metadata:
+  namespace: linkerd
+  name: linkerd-proxy-admin
+spec:
+  port: 4191
+  proxyProtocol: Http
+  podSelector:
+    matchLabels:
+      linkerd.io/control-plane-ns: linkerd
+---
+apiVersion: polixy.olix0r.net/v1alpha1
+kind: Authorization
+metadata:
+  namespace: linkerd
+  name: linkerd-proxy-prometheus
+spec:
+  server:
+    name: linkerd-proxy-admin
+  client:
+    serviceAccounts:
+      - namespace: linkerd-viz
+        name: prometheus

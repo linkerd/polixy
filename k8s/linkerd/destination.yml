@@ -1,0 +1,50 @@
+---
+apiVersion: polixy.olix0r.net/v1alpha1
+kind: Server
+metadata:
+  namespace: linkerd
+  name: linkerd-destination-grpc
+spec:
+  port: 8086
+  proxyProtocol: Grpc
+  podSelector:
+    matchLabels:
+      linkerd.io/control-plane-ns: linkerd
+      linkerd.io/control-plane-component: destination
+---
+apiVersion: polixy.olix0r.net/v1alpha1
+kind: Authorization
+metadata:
+  namespace: linkerd
+  name: linkerd-destination-grpc
+spec:
+  server:
+    name: linkerd-destination-grpc
+  client:
+    identities: ["*"]
+---
+apiVersion: polixy.olix0r.net/v1alpha1
+kind: Server
+metadata:
+  namespace: linkerd
+  name: linkerd-destination-admin
+spec:
+  port: 9996
+  proxyProtocol: Http
+  podSelector:
+    matchLabels:
+      linkerd.io/control-plane-ns: linkerd
+      linkerd.io/control-plane-component: destination
+---
+apiVersion: polixy.olix0r.net/v1alpha1
+kind: Authorization
+metadata:
+  namespace: linkerd
+  name: linkerd-destination-admin
+spec:
+  server:
+    name: linkerd-destination-admin
+  client:
+    serviceAccounts:
+      - namespace: linkerd-viz
+        name: prometheus

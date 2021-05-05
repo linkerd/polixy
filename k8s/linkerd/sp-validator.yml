@@ -1,0 +1,50 @@
+---
+apiVersion: polixy.olix0r.net/v1alpha1
+kind: Server
+metadata:
+  namespace: linkerd
+  name: linkerd-sp-validator-https
+spec:
+  port: 8443
+  proxyProtocol: Opaque
+  podSelector:
+    matchLabels:
+      linkerd.io/control-plane-ns: linkerd
+      linkerd.io/control-plane-component: destination
+---
+apiVersion: polixy.olix0r.net/v1alpha1
+kind: Authorization
+metadata:
+  namespace: linkerd
+  name: linkerd-sp-validator-https
+spec:
+  server:
+    name: linkerd-sp-validator-https
+  client:
+    unauthenticated: passthru
+---
+apiVersion: polixy.olix0r.net/v1alpha1
+kind: Server
+metadata:
+  namespace: linkerd
+  name: linkerd-sp-validtor-admin
+spec:
+  port: 9997
+  proxyProtocol: Http
+  podSelector:
+    matchLabels:
+      linkerd.io/control-plane-ns: linkerd
+      linkerd.io/control-plane-component: destination
+---
+apiVersion: polixy.olix0r.net/v1alpha1
+kind: Authorization
+metadata:
+  namespace: linkerd
+  name: linkerd-sp-validator-admin
+spec:
+  server:
+    name: linkerd-sp-validator-admin
+  client:
+    serviceAccounts:
+      - namespace: linkerd-viz
+        name: prometheus

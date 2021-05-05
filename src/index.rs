@@ -47,13 +47,14 @@ struct NsIndex {
 
 #[derive(Debug)]
 struct Pod {
-    port_names: Arc<PortNames>,
     ports: Arc<PodPorts>,
+    ports_by_name: Arc<PortNames>,
     labels: k8s::Labels,
 }
 
-type PortNames = HashMap<polixy::server::PortName, u16>;
-type PodPorts = HashMap<u16, PodPort>;
+type PodPorts = HashMap<u16, Arc<PodPort>>;
+
+type PortNames = HashMap<polixy::server::PortName, PodPorts>;
 
 #[derive(Debug)]
 struct PodPort {
@@ -354,8 +355,8 @@ impl Index {
                     PodIps(ips.into())
                 };
 
-                let mut port_names = PortNames::default();
                 let mut ports = PodPorts::default();
+                let mut ports_by_name = PortNames::default();
                 let mut lookups = HashMap::new();
                 for container in spec.containers.into_iter() {
                     if let Some(ps) = container.ports {
@@ -367,29 +368,26 @@ impl Index {
                                     continue;
                                 }
 
-                                let name = p.name.map(Into::into);
+                                let (tx, rx) = watch::channel(self.default_config_rx.clone());
+                                let pod_port = Arc::new(PodPort {
+                                    tx,
+                                    server_name: Mutex::new(None),
+                                });
+
+                                let name = p.name.map(k8s::polixy::server::PortName::from);
                                 if let Some(name) = name.clone() {
-                                    match port_names.entry(name) {
-                                        HashEntry::Occupied(entry) => {
-                                            debug!(name = %entry.key(), "Port duplicated");
-                                            continue;
-                                        }
+                                    match ports_by_name.entry(name).or_default().entry(port) {
                                         HashEntry::Vacant(entry) => {
-                                            entry.insert(port);
+                                            entry.insert(pod_port.clone());
+                                        }
+                                        HashEntry::Occupied(_) => {
+                                            unreachable!("port numbers must not be duplicated");
                                         }
                                     }
                                 }
 
-                                let (tx, rx) = watch::channel(self.default_config_rx.clone());
-                                trace!(%port, "Adding port");
-                                ports.insert(
-                                    port,
-                                    PodPort {
-                                        server_name: Mutex::new(None),
-                                        tx,
-                                    },
-                                );
-                                trace!(%port, "Adding lookup");
+                                trace!(%port, ?name, "Adding port");
+                                ports.insert(port, pod_port);
                                 lookups.insert(
                                     port,
                                     Lookup {
@@ -405,10 +403,10 @@ impl Index {
                 }
 
                 for (srv_name, server) in servers.iter() {
-                    if let Some(port) =
-                        Self::get_port(&srv_name, &server.meta.port, &port_names, &ports)
-                    {
-                        if server.meta.pod_selector.matches(&labels) {
+                    if server.meta.pod_selector.matches(&labels) {
+                        for port in
+                            Self::get_ports(&server.meta.port, &ports_by_name, &ports).into_iter()
+                        {
                             // TODO handle conflicts
                             *port.server_name.lock() = Some(srv_name.clone());
                             port.tx
@@ -416,20 +414,20 @@ impl Index {
                                 .expect("pod config receiver must be set");
                             debug!(server = %srv_name, "Pod server udpated");
                             trace!(selector = ?server.meta.pod_selector, ?labels);
-                        } else {
-                            trace!(
-                                server = %srv_name,
-                                selector = ?server.meta.pod_selector,
-                                ?labels,
-                                "Does not match",
-                            );
                         }
+                    } else {
+                        trace!(
+                            server = %srv_name,
+                            selector = ?server.meta.pod_selector,
+                            ?labels,
+                            "Does not match",
+                        );
                     }
                 }
 
                 lookups_entry.insert(Arc::new(lookups));
                 pod_entry.insert(Pod {
-                    port_names: port_names.into(),
+                    ports_by_name: ports_by_name.into(),
                     ports: ports.into(),
                     labels,
                 });
@@ -441,10 +439,10 @@ impl Index {
                 if pod_entry.get().labels != labels {
                     for (srv_name, server) in servers.iter() {
                         let pod = pod_entry.get();
-                        if let Some(port) =
-                            Self::get_port(srv_name, &server.meta.port, &pod.port_names, &pod.ports)
-                        {
-                            if server.meta.pod_selector.matches(&labels) {
+                        if server.meta.pod_selector.matches(&labels) {
+                            for port in
+                                Self::get_ports(&server.meta.port, &pod.ports_by_name, &pod.ports)
+                            {
                                 // TODO handle conflicts
                                 *port.server_name.lock() = Some(srv_name.clone());
                                 port.tx
@@ -452,15 +450,15 @@ impl Index {
                                     .expect("pod config receiver must be set");
                                 debug!(server = %srv_name, "Pod server udpated");
                                 trace!(selector = ?server.meta.pod_selector, ?labels);
-                            } else {
-                                trace!(
-                                    server = %srv_name,
-                                    selector = ?server.meta.pod_selector,
-                                    pod = %pod_entry.key(),
-                                    ?labels,
-                                    "Does not match",
-                                );
                             }
+                        } else {
+                            trace!(
+                                server = %srv_name,
+                                selector = ?server.meta.pod_selector,
+                                pod = %pod_entry.key(),
+                                ?labels,
+                                "Does not match",
+                            );
                         }
                     }
 
@@ -474,39 +472,20 @@ impl Index {
         Ok(())
     }
 
-    fn get_port<'p>(
-        server: &polixy::server::Name,
+    fn get_ports(
         port_match: &polixy::server::Port,
-        port_names: &PortNames,
-        ports: &'p PodPorts,
-    ) -> Option<&'p PodPort> {
+        ports_by_name: &PortNames,
+        ports: &PodPorts,
+    ) -> Vec<Arc<PodPort>> {
         match port_match {
-            polixy::server::Port::Number(ref port) => match ports.get(port) {
-                Some(p) => {
-                    debug!(%server, %port, "Matches");
-                    Some(p)
-                }
-                None => {
-                    trace!(%server, %port, "No port on pod");
-                    None
-                }
-            },
-            polixy::server::Port::Name(ref name) => match port_names.get(name) {
-                Some(port) => match ports.get(port) {
-                    Some(p) => {
-                        debug!(%server, %port, %name, "Matches");
-                        Some(p)
-                    }
-                    None => {
-                        trace!(%server, %port, "No port on pod");
-                        None
-                    }
-                },
-                None => {
-                    trace!(%server, %name, "No port on pod");
-                    None
-                }
-            },
+            polixy::server::Port::Number(ref port) => {
+                ports.get(port).into_iter().cloned().collect::<Vec<_>>()
+            }
+            polixy::server::Port::Name(ref name) => ports_by_name
+                .get(name)
+                .into_iter()
+                .flat_map(|p| p.values().cloned())
+                .collect::<Vec<_>>(),
         }
     }
 
@@ -715,11 +694,13 @@ impl Index {
         // all pods and servers.
         for (pod_name, pod) in pods.iter() {
             for (srv_name, srv) in servers.iter() {
-                if let Some(pod_port) =
-                    Self::get_port(&srv_name, &srv.meta.port, &*pod.port_names, &*pod.ports)
-                {
-                    if srv.meta.pod_selector.matches(&pod.labels) {
+                if srv.meta.pod_selector.matches(&pod.labels) {
+                    for pod_port in
+                        Self::get_ports(&srv.meta.port, &*pod.ports_by_name, &*pod.ports)
+                            .into_iter()
+                    {
                         debug!(pod = %pod_name, port = ?srv.meta.port, "Matches");
+
                         // TODO handle conflicts
                         let mut sn = pod_port.server_name.lock();
                         if let Some(sn) = sn.as_ref() {
@@ -739,15 +720,15 @@ impl Index {
                             .expect("pod config receiver is held");
                         debug!(server = %srv_name, "Pod server udpated");
                         trace!(selector = ?srv.meta.pod_selector, labels = ?pod.labels);
-                    } else {
-                        trace!(
-                            server = %srv_name,
-                            pod = %pod_name,
-                            selector = ?srv.meta.pod_selector,
-                            labels = ?pod.labels,
-                            "Does not match",
-                        );
                     }
+                } else {
+                    trace!(
+                        server = %srv_name,
+                        pod = %pod_name,
+                        selector = ?srv.meta.pod_selector,
+                        labels = ?pod.labels,
+                        "Does not match",
+                    );
                 }
             }
         }

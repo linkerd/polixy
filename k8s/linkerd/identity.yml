@@ -22,29 +22,3 @@ spec:
     name: linkerd-identity-grpc
   client:
     unauthenticated: tls
----
-apiVersion: polixy.olix0r.net/v1alpha1
-kind: Server
-metadata:
-  namespace: linkerd
-  name: linkerd-identity-admin
-spec:
-  port: 9990
-  proxyProtocol: Http
-  podSelector:
-    matchLabels:
-      linkerd.io/control-plane-ns: linkerd
-      linkerd.io/control-plane-component: identity
----
-apiVersion: polixy.olix0r.net/v1alpha1
-kind: Authorization
-metadata:
-  namespace: linkerd
-  name: linkerd-identity-admin
-spec:
-  server:
-    name: linkerd-identity-admin
-  client:
-    serviceAccounts:
-      - namespace: linkerd-viz
-        name: prometheus

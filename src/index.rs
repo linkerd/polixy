@@ -28,9 +28,16 @@ pub struct Index {
     node_ips: HashMap<k8s::NodeName, KubeletIps>,
 
     /// A default server config to use when no server matches.
-    default_config_rx: ServerRx,
+    external_config_rx: ServerRx,
     /// Keeps the above server config receiver alive. Never updated.
-    _default_config_tx: ServerTx,
+    _external_config_tx: ServerTx,
+
+    /// A default server config to use when no server matches.
+    #[allow(dead_code)]
+    cluster_config_rx: ServerRx,
+
+    /// Keeps the above server config receiver alive. Never updated.
+    _cluster_config_tx: ServerTx,
 }
 
 #[derive(Debug, Default)]
@@ -115,42 +122,60 @@ impl Server {
 // === impl Index ===
 
 impl Index {
-    pub(crate) fn new(lookups: SharedLookupMap) -> Self {
+    pub(crate) fn new(lookups: SharedLookupMap, cluster_nets: Vec<ipnet::IpNet>) -> Self {
         // A default config to be provided to pods when no matching server
         // exists.
-        let (_default_config_tx, default_config_rx) = watch::channel(InboundServerConfig {
-            protocol: ProxyProtocol::Detect {
-                timeout: time::Duration::from_secs(5),
-            },
-            authorizations: Some((
-                None,
-                // Permit all traffic when a `Server` instance is not present.
-                ClientAuthz {
-                    networks: vec![
-                        ClientNetwork {
-                            net: ipnet::IpNet::V4(Default::default()),
-                            except: vec![],
-                        },
-                        ClientNetwork {
-                            net: ipnet::IpNet::V6(Default::default()),
-                            except: vec![],
-                        },
-                    ]
-                    .into(),
-                    authentication: ClientAuthn::Unauthenticated,
-                },
-            ))
-            .into_iter()
-            .collect(),
-        });
+        let external_nets = [
+            ipnet::IpNet::V4(Default::default()),
+            ipnet::IpNet::V6(Default::default()),
+        ];
+        let (_external_config_tx, external_config_rx) = watch::channel(Self::default_config(
+            ClientAuthn::Unauthenticated,
+            external_nets.iter().copied(),
+        ));
+
+        let (_cluster_config_tx, cluster_config_rx) = watch::channel(Self::default_config(
+            ClientAuthn::Unauthenticated,
+            cluster_nets,
+        ));
 
         Self {
             lookups,
             node_ips: HashMap::default(),
             namespaces: HashMap::default(),
 
-            default_config_rx,
-            _default_config_tx,
+            cluster_config_rx,
+            _cluster_config_tx,
+
+            external_config_rx,
+            _external_config_tx,
+        }
+    }
+
+    fn default_config(
+        authentication: ClientAuthn,
+        nets: impl IntoIterator<Item = ipnet::IpNet>,
+    ) -> InboundServerConfig {
+        InboundServerConfig {
+            protocol: ProxyProtocol::Detect {
+                timeout: time::Duration::from_secs(5),
+            },
+            authorizations: Some((
+                None,
+                ClientAuthz {
+                    networks: nets
+                        .into_iter()
+                        .map(|net| ClientNetwork {
+                            net,
+                            except: vec![],
+                        })
+                        .collect::<Vec<_>>()
+                        .into(),
+                    authentication,
+                },
+            ))
+            .into_iter()
+            .collect(),
         }
     }
 
@@ -368,7 +393,7 @@ impl Index {
                                     continue;
                                 }
 
-                                let (tx, rx) = watch::channel(self.default_config_rx.clone());
+                                let (tx, rx) = watch::channel(self.external_config_rx.clone());
                                 let pod_port = Arc::new(PodPort {
                                     tx,
                                     server_name: Mutex::new(None),
@@ -777,7 +802,7 @@ impl Index {
                     debug!(pod = %pod_name, port = %port_num, "Removing server from pod");
                     *sn = None;
                     port.tx
-                        .send(self.default_config_rx.clone())
+                        .send(self.external_config_rx.clone())
                         .expect("pod config receiver must still be held");
                 } else {
                     trace!(pod = %pod_name, port = %port_num, server = ?sn, "Server does not match");

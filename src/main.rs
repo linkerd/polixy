@@ -12,6 +12,10 @@ enum Command {
         port: u16,
         #[structopt(long, default_value = "cluster.local")]
         identity_domain: String,
+
+        /// Network CIDRs of pod IPs
+        #[structopt(long, default_value = "10.42.0.0/16")]
+        cluster_networks: Vec<ipnet::IpNet>,
     },
     Client {
         #[structopt(long, default_value = "http://127.0.0.1:8910")]
@@ -53,6 +57,7 @@ async fn main() -> Result<()> {
         Command::Controller {
             port,
             identity_domain,
+            cluster_networks,
         } => {
             let (drain_tx, drain_rx) = linkerd_drain::channel();
 
@@ -60,7 +65,7 @@ async fn main() -> Result<()> {
                 .await
                 .context("failed to initialize kubernetes client")?;
 
-            let (handle, index_task) = polixy::LookupHandle::run(client);
+            let (handle, index_task) = polixy::LookupHandle::run(client, cluster_networks);
             let index_task = tokio::spawn(index_task);
 
             let grpc = tokio::spawn(grpc(port, handle, drain_rx, identity_domain));

@@ -91,12 +91,15 @@ pub struct KubeletIps(Arc<[IpAddr]>);
 // === impl LookupHandle ===
 
 impl LookupHandle {
-    pub fn run(client: kube::Client) -> (Self, impl std::future::Future<Output = anyhow::Error>) {
+    pub fn run(
+        client: kube::Client,
+        cluster_networks: Vec<ipnet::IpNet>,
+    ) -> (Self, impl std::future::Future<Output = anyhow::Error>) {
         let lookups = SharedLookupMap::default();
 
         // Watches Nodes, Pods, Servers, and Authorizations to update the lookup map
         // with an entry for each linkerd-injected pod.
-        let idx = index::Index::new(lookups.clone());
+        let idx = index::Index::new(lookups.clone(), cluster_networks);
 
         (Self(lookups), idx.index(k8s::ResourceWatches::new(client)))
     }

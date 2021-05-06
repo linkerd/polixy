@@ -89,12 +89,12 @@ spec:
                   description: >-
                     Configures protocol discovery for inbound connections.
 
-                    Supercedes the `config.linkerd.io/opaque-ports` annotation.
+                    Supersedes the `config.linkerd.io/opaque-ports` annotation.
                   type: string
-                  default: UNKNOWN
+                  default: unknown
                   enum:
-                    - UNKNOWN
+                    - unknown
                     - HTTP
-                    - GRPC
-                    - OPAQUE
+                    - gRPC
+                    - opaque
                     - TLS

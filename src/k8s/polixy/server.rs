@@ -37,12 +37,16 @@ pub enum Port {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
-#[serde(rename_all = "UPPERCASE")]
 pub enum ProxyProtocol {
-    Detect,
+    #[serde(rename = "unknown")]
+    Unknown,
+    #[serde(rename = "HTTP")]
     Http,
+    #[serde(rename = "gRPC")]
     Grpc,
+    #[serde(rename = "opaque")]
     Opaque,
+    #[serde(rename = "TLS")]
     Tls,
 }
 

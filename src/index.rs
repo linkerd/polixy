@@ -761,7 +761,7 @@ impl Index {
 
     fn mk_protocol(p: Option<&polixy::server::ProxyProtocol>) -> ProxyProtocol {
         match p {
-            Some(polixy::server::ProxyProtocol::Detect) | None => ProxyProtocol::Detect {
+            Some(polixy::server::ProxyProtocol::Unknown) | None => ProxyProtocol::Detect {
                 timeout: time::Duration::from_secs(5),
             },
             Some(polixy::server::ProxyProtocol::Http) => ProxyProtocol::Http,

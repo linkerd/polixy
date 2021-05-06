@@ -12,7 +12,7 @@ pub struct Name(String);
 
 /// Describes a server interface exposed by a set of pods.
 #[kube(
-    group = "polixy.olix0r.net",
+    group = "polixy.l5d.io",
     version = "v1alpha1",
     kind = "Server",
     namespaced

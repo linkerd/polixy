@@ -33,7 +33,7 @@ rules:
       - list
       - watch
   - apiGroups:
-      - polixy.olix0r.net
+      - polixy.l5d.io
     resources:
       - servers
       - serverauthorizations

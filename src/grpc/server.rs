@@ -153,10 +153,10 @@ fn to_server(
                 },
             )),
             ProxyProtocol::Http => Some(proto::proxy_protocol::Kind::Http(
-                proto::proxy_protocol::Http {},
+                proto::proxy_protocol::Http::default(),
             )),
             ProxyProtocol::Grpc => Some(proto::proxy_protocol::Kind::Grpc(
-                proto::proxy_protocol::Grpc {},
+                proto::proxy_protocol::Grpc::default(),
             )),
             ProxyProtocol::Opaque => Some(proto::proxy_protocol::Kind::Opaque(
                 proto::proxy_protocol::Opaque {},

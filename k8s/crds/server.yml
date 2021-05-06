@@ -91,10 +91,10 @@ spec:
 
                     Supercedes the `config.linkerd.io/opaque-ports` annotation.
                   type: string
-                  default: Unknown
+                  default: UNKNOWN
                   enum:
-                    - Unknown
-                    - Http
-                    - Grpc
-                    - Opaque
-                    - Tls
+                    - UNKNOWN
+                    - HTTP
+                    - GRPC
+                    - OPAQUE
+                    - TLS

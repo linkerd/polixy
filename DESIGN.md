@@ -80,30 +80,6 @@ configures server-side ports to skip protocol detection. With the introduction
 of a server descriptor, we have an opportunity to extend this configuration even
 further by allowing operators to document the protocol being proxied to avoid
 
-<!-- XXX This is really an implementation detail that should be moved lower
-##### Controller Bootstrapping
-
-The above scheme poses a "*Wyld Stallyns* problem" for the identity
-controller: the identity controller needs to discover inbound policy in order
-to start issuing certificates, but the destination controller cannot accept
-connections until it obtains a certificate from the identity controller.
-
-We want the identity controller to remain in a distinct deployment, separate
-from the other controller containers, as it requires access to signing
-secrets that these other processes should not be able to access.
-
-We'll need to figure out a way for the identity controller to startup without
-requiring access to the destination controller. One approach could be to
-serve a specialized version of the API endpoints--only for the identity
-controller's proxy--from the identity controller. This only feasible because
-the identity controller's proxy has very limited discovery needs:
-
-* It only initiates outbound connections to the Kubernetes API (on 443).
-* It needs to discover policy for its local ports (identity gRPC + admin, proxy
-  ports)
-* It attempts to discover a service profile for inbound gRPC requests
-  -->
-
 ### Authorizing clients
 
 We've identified the need for _server_ resources; but we haven't yet
@@ -153,7 +129,7 @@ network--e.g, if the node's `podCIDR` is `10.0.1.0/24`, then the kubelet will
 initiate connections from `10.0.1.1`. (See [this blog post on pod
 networking][pod-ips] for more information.)
 
-[pod-ips]: https://ronaknathani.com/blog/2020/08/how-a-kubernetes-pod-gets-an-ip-address/
+[pod-ips]: https://web.archive.org/web/20201211005235/https://ronaknathani.com/blog/2020/08/how-a-kubernetes-pod-gets-an-ip-address/
 
 If a policy were to block this communication, pods would not start properly. So
 we need to be careful to allow this traffic by default to minimize pain.
@@ -183,6 +159,76 @@ In the future, we may want to implement richer default polices (e.g. allowing
 unauthenticated connections from specific networks, requiring identity, etc),
 but this is probably undesirable complexity initially.
 
+## Proposal
+
+### Resources
+
+We propose introducing two new `CustomResourceDefinition`s to Linkerd:
+
+#### [`Server`](k8s/crds/server.yml)
+
+Each `Server` instance:
+
+* Selects over pods by label
+* Matches ports by name or value
+* Optionally indicates how the proxy should detect the protocol of these
+  streams
+
+##### Handling conflicts
+
+It's possible for multiple `Server` instances to conflict by matching the
+same workloads + port, much in the way that it's possible for multiple
+`Deployment` instances to match the same pods. This behavior is undefined.
+Operators must not create conflicting servers.
+
+It should be possible to detect this situation at `Server`-creation time--at
+least, we should be able to detect overlapping label selectors for the same
+port. It may **not** be feasible to reliably detect servers that match the same
+_port_, however, as named ports may only conflict with numbered pots at
+pod-creation time. So, the validating webhook could potentially prevent the
+creation of these pods, or we'll need
+
+##### Examples
+
+#### [`ServerAuthorization`](k8s/crds/authz.yml)
+
+Authorizes clients to access `Server`s.
+
+![Policy resources](./img/resources.png "Policy resources")
+
+### Deployment
+
+* A new _server policy_ controller is added to the control plane, responsible
+  for serving a gRPC API to proxies for discovery; and also serving a validating
+  admission controller to validate server/authz resources.
+* The proxy injector is modified to configure proxies with:
+  * The location & identity of the API server;
+  * A "workload coordinate", potentially reusing the destination controller's
+    "context token", which encodes at least the namespace and pod name.
+  * A comma-seperated list of numeric container ports for the pod.
+
+#### Identity Controller Bootstrapping
+
+The above scheme poses a "*Wyld Stallyns* problem" for the identity
+controller: the identity controller needs to discover inbound policy in order
+to start issuing certificates, but the destination controller cannot accept
+connections until it obtains a certificate from the identity controller.
+
+We want the identity controller to remain in a distinct deployment, separate
+from the other controller containers, as it requires access to signing
+secrets that these other processes should not be able to access.
+
+We'll need to figure out a way for the identity controller to startup without
+requiring access to the destination controller. One approach could be to
+serve a specialized version of the API endpoints--only for the identity
+controller's proxy--from the identity controller. This only feasible because
+the identity controller's proxy has very limited discovery needs:
+
+* It only initiates outbound connections to the Kubernetes API (on 443).
+* It needs to discover policy for its local ports (identity gRPC + admin, proxy
+  ports)
+* It attempts to discover a service profile for inbound gRPC requests
+
 <!--
 #### Control plane policies
 
@@ -197,39 +243,6 @@ The core control plane should ship with a set of default policies:
 
 #### Proxy admin, tap, & inbound policies
   -->
-
-## Proposal
-
-### Resources
-
-We propose introducing two new `CustomResourceDefinition`s to Linkerd:
-
-#### [`Server`](k8s/crds/server.yml)
-
-Each `Server` instance:
-
-* Selects over pods by label
-* Matches a single port by name or value
-* Optionally indicates how the proxy should detect the protocol of these
-  streams
-
-It's possible for multiple `Server` instances to conflict by matching the
-same workloads + ports, much in the way that it's possible for multiple
-`Deployment` instances to match the same pods. This behavior is undefined. We
-cannot necessarily detect this situation at `Server`-creation time (due to
-the nature of label selector expressions), so this situation should be
-flagged by `linkerd check`. It may also make sense to try to handle this
-in an admission controller to prevent resources from being created in this
-state, but it may be difficult to provide exhaustive defenses agains this
-situation.
-
-##### Examples
-
-#### [`ServerAuthorization`](k8s/crds/authz.yml)
-
-Authorizes clients to access `Server`s.
-
-![Policy resources](./img/resources.png "Policy resources")
 
 ## Future work
 

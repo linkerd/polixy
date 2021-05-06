@@ -947,7 +947,7 @@ impl Index {
         } else {
             let mtls = spec
                 .client
-                .mtls
+                .mesh_tls
                 .ok_or_else(|| anyhow!("client mtls missing"))?;
 
             if let Some(true) = mtls.no_identity_required {

@@ -103,6 +103,6 @@ spec:
     name: voting-grpc
   # The voting service only allows requests from the web service.
   client:
-    mtls:
+    meshTLS:
       serviceAccounts:
         - name: web

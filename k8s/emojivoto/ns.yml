@@ -37,7 +37,7 @@ spec:
   server:
     name: prom
   client:
-    mtls:
+    meshTLS:
       serviceAccounts:
         - namespace: linkerd-viz
           name: prometheus

@@ -96,7 +96,7 @@ spec:
                   description:  Describes clients authorized to access a server.
                   type: object
                   oneOf:
-                    - required: [mtls]
+                    - required: [meshTLS]
                     - required: [unauthenticated]
                   properties:
 
@@ -123,7 +123,7 @@ spec:
                         Authorizes unauthenticated clients to access a server.
                       type: boolean
 
-                    mtls:
+                    meshTLS:
                       type: object
                       oneOf:
                         - required: [noIdentityRequired]
@@ -133,6 +133,13 @@ spec:
                       properties:
                         noIdentityRequired:
                           type: boolean
+                          description: >-
+                            Indicates that no client identity is required for
+                            communication.
+
+                            This is mostly important for the identity
+                            controller, which must terminate TLS connections
+                            from clients that do not yet have a certificate.
 
                         identities:
                           description: >-

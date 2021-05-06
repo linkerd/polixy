@@ -104,5 +104,5 @@ spec:
   server:
     name: emoji-grpc
   client:
-    mtls:
+    meshTLS:
       identities: ['*']

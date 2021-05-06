@@ -52,11 +52,17 @@ message ProxyProtocol {
   message Detect { google.protobuf.Duration timeout = 1; }
 
   message Http {
+    // Disables the setting of informational headers on this server.
+    bool disable_informational_headers = 1;
+
     // TODO: domains -> routes -> policy
     // TODO: HTTP version? (and orig-proto upgrades)?
   }
 
   message Grpc {
+    // Disables the setting of informational headers on this server.
+    bool disable_informational_headers = 1;
+
     // TODO: service -> endpoint -> policy
   }
 

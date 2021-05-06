@@ -1,16 +1,14 @@
 # Linkerd policy exploration
 
-Linkerd proxies inbound (server-side) communication to pods and is
-well-positioned to enforce policies that place restrictions on the clients that
-access it.
+Linkerd proxies inbound (server-side) communication to pods and is well-positioned to enforce
+policies that place restrictions on the clients that may access it.
 
-All proxy-to-proxy communication is already protected by mutually-authenticated
-TLS, with identities based on each pod's `ServiceAccount`. Currently, this
-identity is opportunistic and operators have little means to require its use or
-to limit access based on this identity.
+All proxy-to-proxy communication is already protected by mutually-authenticated TLS, with identities
+based on each pod's `ServiceAccount`. Currently, this identity is opportunistic and operators have
+little means to require its use or to limit access based on this identity.
 
-This document proposes a mechanism for operators to require mTLS
-communication and to enforce authorization for pod-to-pod communication.
+This document proposes a mechanism for operators to configure inbound proxies enforce authorization
+for pod-to-pod communication.
 
 ## Design
 
@@ -18,7 +16,7 @@ communication and to enforce authorization for pod-to-pod communication.
 
 * Define a mechanism for servers operators to authorize clients;
 * Integrate with Linkerd's identity system;
-* Opt-in -- not a required component, especially when getting started;
+* Opt-in -- not required, especially when getting started;
 * Can be adopted incrementally;
 * Leverage existing Kubernetes primitives/patterns;
 * Identify reusable components for future server configuration;
@@ -31,133 +29,117 @@ communication and to enforce authorization for pod-to-pod communication.
 
 #### Cluster-wide policy
 
-Cluster-level policy control should be implemented by oeprators that generate or
-restrict application-level policy resources. Schemes for implementing these
-(e.g., OPA/Gatekeeper) are out of scope of this document.
+Cluster-level policy control should be implemented by operators that generate or restrict
+application-level policy resources. Schemes for implementing these (e.g., OPA/Gatekeeper) are out of
+scope of this document.
 
 #### Policy based on HTTP metadata
 
-While we shouldn't preclude future support for other types of protocol-aware
-policy, this document only intends to address connection-level policy.
+While we shouldn't preclude future support for other types of protocol-aware policy, this initial
+design is only intends to address connection-level policy.
 
 ### Server-centric
 
-Access policies need to be enforced on the server-side in order to provide any
-reasonable guarantees against malfeasant clients. As such, we need a means for
-an inbound proxy to discover policies for its local servers (ports that the
-pod-local containers listen on).
+Access policies need to be enforced on the server-side in order to provide any reasonable guarantees
+against malfeasant clients. As such, we need a means for an inbound proxy to discover policies for
+its local servers (ports that the pod-local containers listen on).
 
-While it may be attractive to use Kubernetes `Service`s for this, they are
-really not the right tool for the job: Kubernetes services represent a traffic
-target _for clients_. A server instance, however, has no way to correlate an
-inbound connection with the service the client targeted; and it may receive
-traffic that isn't associated with a `Service` at all.
+While it may be attractive to use Kubernetes `Service`s for this, they are really not the right tool
+for the job: Kubernetes services represent a traffic target _for clients_. A server instance,
+however, has no way to correlate an inbound connection with the service the client targeted; and it
+may receive traffic that isn't associated with a `Service` at all.
 
-This points to the introduction of a new custom resource type that describes a
-*server*--matching a port on a set of pods.
+This points to the introduction of a new custom resource type that describes a *server*--matching a
+port on a set of pods.
 
 #### Dynamic Policy Discovery
 
-Outbound proxies perform service discovery based on the target IP:Port of a
-connection. Inbound proxies will similarly need to alter policices at runtime
-(i.e., without requiring that the proxy be restarted).
+Outbound proxies perform service discovery based on the target IP:Port of a connection. Inbound
+proxies will similarly need to adapt to policies at runtime (i.e., without requiring that the proxy
+be restarted).
 
-Outbound proxies are lazy and dynamic, as we cannot require an application to
-document all endpoints to which an application connects; but, on the inbound
-side, it's much more reasonable to expect operators to document the ports on
-which an application accepts connections. In fact, this almost always done as
-part of a `Pod` spec.
+Outbound proxies are lazy and dynamic, as we cannot require applications to document all endpoints
+to which they may connect; but, on the inbound side, it's reasonable to expect operators to document
+the ports on which an application accepts connections. In fact, this almost always done in each
+pod's spec.
 
-This means that we can configure a proxy (at inject-time) with a list of ports
-for which the inbound proxy may accept connections. Then, the proxy can watch
-policy updates for each of these ports. This could be completed before a proxy
-starts accepting connections and marks itself as _ready_.
+This will allow proxies to discovery policies at startup-time and block the pod's readiness based on
+this availability.
 
 #### Protocol hinting
 
-Linkerd 2.10 introduced a new annotation `config.linkerd.io/opaque-ports`, that
-configures server-side ports to skip protocol detection. With the introduction
-of a server descriptor, we have an opportunity to extend this configuration even
-further by allowing operators to document the protocol being proxied to avoid
+Linkerd 2.10 introduced the `config.linkerd.io/opaque-ports` annotation that configures server-side
+ports to skip protocol detection. With the introduction of a server descriptor, we have an
+opportunity to extend this configuration even further by allowing operators to document the protocol
+being proxied to avoid detection overhead (and their related timeouts).
+
+Clients can similarly discover these protocols via the Destination API.
 
 ### Authorizing clients
 
-We've identified the need for _server_ resources; but we haven't yet
-described how access policy is defined.
+Clients fall into two broad categories:
 
-When policy is configured for a server, connections are denied by default.
-This supports a secure default and allows authorizations to be purely
-addititive. This eliminates any need for ordering/precedence in authorization
-policies. Authoriztions simply grant access for a class of clients to connect
-to a server (or servers).
+1. Meshed clients communicating with mutual-authenticated TLS;
+2. Un-meshed clients communicating without (mesh-aware) authentication.
 
-There are two fundamental classes of clients:
-
-1. Clients authenticated with Linkerd's mutual identity (via mTLS)
-2. Unauthenticated clients
+Operators may need to permit
 
 #### Authenticated clients
 
-Meshed clients automatically authenticate to servers via mTLS so that the
-client's identity is available to the server. An operator may restrict access
-to all authenticated clients or a subset of authenticated clients.
+Meshed clients automatically authenticate to servers via mTLS so that the client's identity is
+available to the server. An operator may restrict access to all authenticated clients or a subset of
+authenticated clients.
 
-Authenticated clients may be matched by `ServiceAccount` (because Linkerd's
-identity system builds on `ServiceAccount`s) or, in order to support
-multicluster use cases where no local `ServiceAccount` exists for a client,
-raw Linkerd identity strings may be used to identify clients.
+Authenticated clients may be matched by `ServiceAccount` or, more generally, Linkerd identity names.
+DNS-like identity names are encoded into each proxy's certificate, and each certificate is created
+using the pod's `ServiceAccount` in the form
+`<serviceaccount>.<namespace>.serviceaccount.linkerd.<identity-domain>`.
 
-#### Unauthenticated clients
+It's most natural to authorize authenticated clients by referring to service accounts directly;
+however, we probably also want to support matching identity names as well. For instance, when
+authorizing clients to connect to multi-cluster gateways, we cannot reference service accounts in
+other clusters. Instead we might want to express matches like `*.<identity-domain>` to match all
+clients in an identity domain or `*.<namespace>.serviceaccount.linkerd.<identity-domain>` to match
+all clients in a specific namespace.
 
-Operators may authorize access to unmeshed clients (and meshed clients that
-have not yet established an identity):
+#### Lifecycle probes
 
-* from the local kubelet
-* by network (CIDR)
-* by pod selector
-* constraining TLS settings (i.e. requiring TLSv1.3, signature algorithms, etc)
+In Kubernetes, _kubelet_ is a process that runs on each node and is responsible for orchestrating a
+pod's lifecycle: it executes and terminates a pod's containers and, more importantly for our needs,
+it may issue networked probes to know when a container is _ready_ or _live.
 
-##### Lifecycle probes
+It is not feasible to configure kubelet to run within the mesh, so we can only identify this traffic
+by its source IP.  Kubelet initiates network probes from the first address on the node's pod
+network--e.g., if the node's `podCIDR` is `10.0.1.0/24`, then the kubelet will initiate connections
+from `10.0.1.1`. (See [this blog post on pod networking][pod-ips] for more information.)
 
-In Kubernetes, _kubelet_ is a process that runs on each node and is repsonsible
-for orchestrating a pod's lifecycle: it executes and terminates a pod's
-containers and, more importantly for our needs, it may issue networked probes to
-know when a container is _ready_ or _live.
-
-Kubelet initiates network probes from the first address on the node's pod
-network--e.g, if the node's `podCIDR` is `10.0.1.0/24`, then the kubelet will
-initiate connections from `10.0.1.1`. (See [this blog post on pod
-networking][pod-ips] for more information.)
-
-[pod-ips]: https://web.archive.org/web/20201211005235/https://ronaknathani.com/blog/2020/08/how-a-kubernetes-pod-gets-an-ip-address/
-
-If a policy were to block this communication, pods would not start properly. So
-we need to be careful to allow this traffic by default to minimize pain.
-Furthermore, there's really no benefit to disallowing communication from the
-kubelet--kubelet is necessarily a privileged application that must be trusted by
-a pod.
-
-Note, also, that it is not feasible to configure kubelet to run with mTLS
-identity, as, even if this were possible, it would pose a bootstrapping problem.
+If a policy were to block this communication, pods would not start properly. So we need to be
+careful to allow this traffic by default to minimize pain. Furthermore, there's really no benefit to
+disallowing communication from the kubelet--kubelet is necessarily a privileged application that
+must be trusted by a pod.
 
 #### Default behavior
 
-When no policy is configured for a server, the default behavior must be to
-**allow** connections--at least from within the cluster; otherwise policies
-would have to be created for all servers when installing Linkerd, posing a
-headache for incremental adoption.
+We must not require that all servers are described, as this would dramatically complicate getting
+started with Linkerd. To support incremental adoption of Linkerd in general, and specifically
+policies, we need to allow traffic by default.
 
-But a default-allow policy isn't exactly ideal from a security point-of-view.
-To ameliorate this, we probably want to support ways to enable a default-deny
-mode:
+As soon as a Server is described, however, we can require that clients must be explicitly authorized
+to communicate with the server.
 
-* At install-time, users can configure the default behavior (allow vs deny).
-* Namespace-level and workload-level annotations configure a proxy's default
-  behavior.
+But a default-allow policy isn't desirable from a security point-of-view. If an operator has taken
+the time to document all servers in a cluster, they may not want a subsequent misconfiguration to
+expose servers without authentication. So, we probably want to support a few different default
+modes:
 
-In the future, we may want to implement richer default polices (e.g. allowing
-unauthenticated connections from specific networks, requiring identity, etc),
-but this is probably undesirable complexity initially.
+1. Allow unauthenticated from everywhere
+2. Allow unauthenticated from within the cluster
+3. Allow mesh-authenticated from everywhere
+4. Allow mesh-authenticated from within the cluster
+5. Deny
+
+This default setting should be configurable when installing Linkerd, and it probably should be
+configurable per-namespace as well.
 
 ## Proposal
 
@@ -171,22 +153,19 @@ Each `Server` instance:
 
 * Selects over pods by label
 * Matches ports by name or value
-* Optionally indicates how the proxy should detect the protocol of these
-  streams
+* Optionally indicates how the proxy should detect the protocol of these streams
 
 ##### Handling conflicts
 
-It's possible for multiple `Server` instances to conflict by matching the
-same workloads + port, much in the way that it's possible for multiple
-`Deployment` instances to match the same pods. This behavior is undefined.
-Operators must not create conflicting servers.
+It's possible for multiple `Server` instances to conflict by matching the same workloads + port,
+much in the way that it's possible for multiple `Deployment` instances to match the same pods. This
+behavior is undefined.  Operators must not create conflicting servers.
 
-It should be possible to detect this situation at `Server`-creation time--at
-least, we should be able to detect overlapping label selectors for the same
-port. It may **not** be feasible to reliably detect servers that match the same
-_port_, however, as named ports may only conflict with numbered pots at
-pod-creation time. So, the validating webhook could potentially prevent the
-creation of these pods, or we'll need
+It should be possible to detect this situation at `Server`-creation time--at least, we should be
+able to detect overlapping label selectors for the same port. It may **not** be feasible to reliably
+detect servers that match the same _port_, however, as named ports may only conflict with numbered
+pots at pod-creation time. So, the validating webhook could potentially prevent the creation of
+these pods, or we'll need
 
 ##### Examples
 
@@ -196,37 +175,85 @@ Authorizes clients to access `Server`s.
 
 ![Policy resources](./img/resources.png "Policy resources")
 
-### Deployment
+### Overview
 
-* A new _server policy_ controller is added to the control plane, responsible
-  for serving a gRPC API to proxies for discovery; and also serving a validating
-  admission controller to validate server/authz resources.
+* A new _server policy_ controller is added to the control plane, responsible for serving a gRPC API
+  to proxies for discovery and for validating resources as they are created (via
+  `ValidatingAdmissionWebhook`).
 * The proxy injector is modified to configure proxies with:
   * The location & identity of the API server;
-  * A "workload coordinate", potentially reusing the destination controller's
-    "context token", which encodes at least the namespace and pod name.
-  * A comma-seperated list of numeric container ports for the pod.
+  * A "workload coordinate", potentially reusing the destination controller's "context token", which
+    encodes at least the namespace and pod name.
+  * A comma-separated list of numeric container ports for the pod.
+ccccijhedk
+  * The prtvikvegfncevejvdknbjftdttlutdlrn
+  oxy does not permit connections for ports that are not documented in the pod spec.
+  * The proxy no longer forwards inbound connections on localhost. Instead, the discovered
+    configuration indicates the IPs on which connections are permitted, and the proxy only forwards
+    connections targeting these IPs. This may interfere with complicated networking schemes (e.g.
+    Docker-in-Docker); but we're probably better off figuring out how to support these networking
+    overlays in proxy-init, etc.
+  * Protocol detection is informed by discovery:
+    * HTTP:
+      * When a connection is authorized, requests are [annotated with headers](#headers).
+      * When a connection is not authorized, HTTP responses are emitted with the status `403 Forbidden`.
+    * gRPC:
+      * When a connection is authorized, requests are [annotated with headers](#headers).
+      * When a connection is not authorized, gRPC responses are emitted with a header :w
+      `grpc-status: PERMISSION_DENIED`
+
+#### HTTP/gRPC headers <a id="headers" />
+
+Proxies should surface informational headers to the application describing authorized clients for
+Servers with a `proxyProtocol` value of `HTTP` or `gRPC`.
+
+Use of these headers may be disabled by setting a server annotation:
+
+```yaml
+apiVersion: polixy.olix0r.net/v1alpha1
+kind: Server
+metadata:
+  annotations:
+    http.linkerd.io/informational-headers: disabled
+```
+
+##### `l5d-connection-secure: true | false`
+
+The `l5d-connection-secure` indicates whether the client connected to the server via meshed TLS.
+When the value is `true`, the `l5d-client-id` header may also be set to indicate the client's
+identity.
+
+This header is always set by the proxy (when informational headers are not disabled).
+
+##### `l5d-client-id: <client-id>`
+
+The `l5d-client-id` header is only set when the client has been authenticated via meshed TLS. Its
+value is the client's identity, e.g. `default.default.serviceaccount.linkerd.cluster.local`
+
+##### `forwarded: for=<client-ip>;by=<server-addr>`
+
+[RFC 7239](https://tools.ietf.org/html/rfc7239) standardizes use of the `forwarded` header to
+replace `x-forwarded-*` headers. In order to inform the client of the client's IP address, the proxy
+appends a `
 
 #### Identity Controller Bootstrapping
 
-The above scheme poses a "*Wyld Stallyns* problem" for the identity
-controller: the identity controller needs to discover inbound policy in order
-to start issuing certificates, but the destination controller cannot accept
-connections until it obtains a certificate from the identity controller.
+The above scheme poses a "*Wyld Stallyns* problem" for the identity controller: the identity
+controller needs to discover inbound policy in order to start issuing certificates, but the
+destination controller cannot accept connections until it obtains a certificate from the identity
+controller.
 
-We want the identity controller to remain in a distinct deployment, separate
-from the other controller containers, as it requires access to signing
-secrets that these other processes should not be able to access.
+We want the identity controller to remain in a distinct deployment, separate from the other
+controller containers, as it requires access to signing secrets that these other processes should
+not be able to access.
 
-We'll need to figure out a way for the identity controller to startup without
-requiring access to the destination controller. One approach could be to
-serve a specialized version of the API endpoints--only for the identity
-controller's proxy--from the identity controller. This only feasible because
-the identity controller's proxy has very limited discovery needs:
+We'll need to figure out a way for the identity controller to startup without requiring access to
+the destination controller. One approach could be to serve a specialized version of the API
+endpoints--only for the identity controller's proxy--from the identity controller. This only
+feasible because the identity controller's proxy has very limited discovery needs:
 
 * It only initiates outbound connections to the Kubernetes API (on 443).
-* It needs to discover policy for its local ports (identity gRPC + admin, proxy
-  ports)
+* It needs to discover policy for its local ports (identity gRPC + admin, proxy ports)
 * It attempts to discover a service profile for inbound gRPC requests
 
 <!--
@@ -246,15 +273,16 @@ The core control plane should ship with a set of default policies:
 
 ## Future work
 
-* Cluster-wide policies
+* HTTP route authorization
 * Egress policies
-* Timeouts
-* HTTP Route configuration
 * View isolation in the destination service
 
 ## Prior art
 
-* SMI `TrafficPolicy` -- not port-aware; not workload-aware.
-* `serviceprofiles.linkerd.io/ServiceProfile` -- not port-aware; tied to DNS (service) names
-* `NetworkPolicy` -- not authentication-aware
-* `Role`/`ClusterRole`, `RoleBinding`/`ClusterRoleBinding` -- requires authentication
+* SMI `TrafficPolicy`
+* `serviceprofiles.linkerd.io/ServiceProfile`
+* `NetworkPolicy`
+* `Role`/`ClusterRole`, `RoleBinding`/`ClusterRoleBinding`
+
+<!-- references -->
+[pod-ips]: https://web.archive.org/web/20201211005235/https://ronaknathani.com/blog/2020/08/how-a-kubernetes-pod-gets-an-ip-address/

@@ -301,7 +301,7 @@ The core control plane should ship with a set of default policies:
 
 ### Why not `access.smi-spec.org`?
 
-There's a few things that don't... mesh ;)
+There are a few things that don't... mesh ;)
 
 #### Ports
 

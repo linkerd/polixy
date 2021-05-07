@@ -360,6 +360,8 @@ can define its access policies.
 * How do policies interact with the multi-cluster gateway?
 * How do policies interact with tap servers?
 * How do policies interact with admin servers?
+* Do we want to stick with a [controller written in Rust](./src)? Or would it be better to
+  re-implement this with `client-go`?
 
 ## Future work
 

@@ -1,6 +1,5 @@
 use crate::FromResource;
-use kube::Resource;
-use kube::{api::ListParams, Api};
+use kube::{api::ListParams, Api, Resource};
 use kube_runtime::watcher;
 use std::fmt;
 
@@ -12,7 +11,7 @@ pub use self::{
     labels::Labels,
     watch::{Event, Watch},
 };
-pub use k8s_openapi::api::core::v1::{Node, Pod};
+pub use k8s_openapi::api::core::v1::{Namespace, Node, Pod};
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct NodeName(String);
@@ -25,6 +24,7 @@ pub struct PodName(String);
 
 /// Resource watches.
 pub(crate) struct ResourceWatches {
+    //pub namespaces: Watch<Namespace>,
     pub nodes: Watch<Node>,
     pub pods: Watch<Pod>,
     pub servers: Watch<polixy::Server>,
@@ -36,6 +36,7 @@ pub(crate) struct ResourceWatches {
 impl ResourceWatches {
     pub fn new(client: kube::Client) -> Self {
         Self {
+            //namespaces: watcher(Api::all(client.clone()), ListParams::default()).into(),
             nodes: watcher(Api::all(client.clone()), ListParams::default()).into(),
             pods: watcher(
                 Api::all(client.clone()),
@@ -79,6 +80,12 @@ impl<T: Resource> FromResource<T> for NsName {
 impl<T: Into<String>> From<T> for NsName {
     fn from(ns: T) -> Self {
         Self(ns.into())
+    }
+}
+
+impl NsName {
+    pub fn from_ns(ns: &Namespace) -> Self {
+        ns.name().into()
     }
 }
 

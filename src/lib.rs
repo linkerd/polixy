@@ -2,6 +2,7 @@ pub mod grpc;
 mod index;
 mod k8s;
 
+use anyhow::{anyhow, Error, Result};
 use dashmap::DashMap;
 use ipnet::IpNet;
 use std::{
@@ -14,6 +15,14 @@ use tokio::{sync::watch, time};
 
 trait FromResource<T> {
     fn from_resource(resource: &T) -> Self;
+}
+
+#[derive(Copy, Clone, Debug)]
+pub enum DefaultMode {
+    AllowExternal,
+    AllowCluster,
+    AllowAuthenticated,
+    Deny,
 }
 
 #[derive(Clone, Debug)]
@@ -95,12 +104,13 @@ impl LookupHandle {
     pub fn run(
         client: kube::Client,
         cluster_networks: Vec<ipnet::IpNet>,
+        default_mode: DefaultMode,
     ) -> (Self, impl std::future::Future<Output = anyhow::Error>) {
         let lookups = SharedLookupMap::default();
 
         // Watches Nodes, Pods, Servers, and Authorizations to update the lookup map
         // with an entry for each linkerd-injected pod.
-        let idx = index::Index::new(lookups.clone(), cluster_networks);
+        let idx = index::Index::new(lookups.clone(), cluster_networks, default_mode);
 
         (Self(lookups), idx.index(k8s::ResourceWatches::new(client)))
     }
@@ -140,5 +150,21 @@ impl PodIps {
 impl KubeletIps {
     pub fn to_nets(&self) -> Vec<IpNet> {
         self.0.iter().copied().map(IpNet::from).collect()
+    }
+}
+
+// === impl DefaultMode ===
+
+impl std::str::FromStr for DefaultMode {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "allow-external" => Ok(Self::AllowExternal),
+            "allow-cluster" => Ok(Self::AllowCluster),
+            "allow-authenticated" => Ok(Self::AllowAuthenticated),
+            "deny" => Ok(Self::Deny),
+            s => Err(anyhow!("invalid mode: {}", s)),
+        }
     }
 }

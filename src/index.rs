@@ -1,8 +1,8 @@
 use crate::{
     k8s::{self, polixy},
-    ClientAuthn, ClientAuthz, ClientNetwork, FromResource, Identity, InboundServerConfig,
-    KubeletIps, Lookup, PodIps, ProxyProtocol, ServerRx, ServerRxTx, ServerTx, ServiceAccountRef,
-    SharedLookupMap,
+    ClientAuthn, ClientAuthz, ClientNetwork, DefaultMode, FromResource, Identity,
+    InboundServerConfig, KubeletIps, Lookup, PodIps, ProxyProtocol, ServerRx, ServerRxTx, ServerTx,
+    ServiceAccountRef, SharedLookupMap,
 };
 use anyhow::{anyhow, bail, Context, Error, Result};
 use dashmap::mapref::entry::Entry as DashEntry;
@@ -27,17 +27,24 @@ pub struct Index {
     /// Cached Node IPs.
     node_ips: HashMap<k8s::NodeName, KubeletIps>,
 
-    /// A default server config to use when no server matches.
-    external_config_rx: ServerRx,
-    /// Keeps the above server config receiver alive. Never updated.
-    _external_config_tx: ServerTx,
+    defaults: Defaults,
+}
 
-    /// A default server config to use when no server matches.
-    #[allow(dead_code)]
-    cluster_config_rx: ServerRx,
+/// Default server configs to use when no server matches.
+struct Defaults {
+    default_mode: DefaultMode,
 
-    /// Keeps the above server config receiver alive. Never updated.
-    _cluster_config_tx: ServerTx,
+    external_rx: ServerRx,
+    _external_tx: ServerTx,
+
+    cluster_rx: ServerRx,
+    _cluster_tx: ServerTx,
+
+    authenticated_rx: ServerRx,
+    _authenticated_tx: ServerTx,
+
+    deny_rx: ServerRx,
+    _deny_tx: ServerTx,
 }
 
 #[derive(Debug, Default)]
@@ -119,42 +126,58 @@ impl Server {
     }
 }
 
-// === impl Index ===
+// === impl Defaults ===
 
-impl Index {
-    pub(crate) fn new(lookups: SharedLookupMap, cluster_nets: Vec<ipnet::IpNet>) -> Self {
-        // A default config to be provided to pods when no matching server
-        // exists.
-        let external_nets = [
+impl Defaults {
+    fn new(cluster_nets: Vec<ipnet::IpNet>, default_mode: DefaultMode) -> Self {
+        let all_nets = [
             ipnet::IpNet::V4(Default::default()),
             ipnet::IpNet::V6(Default::default()),
         ];
-        let (_external_config_tx, external_config_rx) = watch::channel(Self::default_config(
+
+        // A default config to be provided to pods when no matching server
+        // exists.
+        let (_external_tx, external_rx) = watch::channel(Self::config(
+            all_nets.iter().copied(),
             ClientAuthn::Unauthenticated,
-            external_nets.iter().copied(),
         ));
 
-        let (_cluster_config_tx, cluster_config_rx) = watch::channel(Self::default_config(
+        let (_cluster_tx, cluster_rx) = watch::channel(Self::config(
+            cluster_nets.iter().cloned(),
             ClientAuthn::Unauthenticated,
-            cluster_nets,
         ));
+
+        let (_authenticated_tx, authenticated_rx) = watch::channel(Self::config(
+            cluster_nets,
+            ClientAuthn::Authenticated {
+                identities: vec![Identity::Suffix(vec![].into())],
+                service_accounts: vec![],
+            },
+        ));
+
+        let (_deny_tx, deny_rx) = watch::channel(InboundServerConfig {
+            protocol: ProxyProtocol::Detect {
+                timeout: time::Duration::from_secs(5),
+            },
+            authorizations: Default::default(),
+        });
 
         Self {
-            lookups,
-            node_ips: HashMap::default(),
-            namespaces: HashMap::default(),
-
-            cluster_config_rx,
-            _cluster_config_tx,
-
-            external_config_rx,
-            _external_config_tx,
+            default_mode,
+            external_rx,
+            _external_tx,
+            cluster_rx,
+            _cluster_tx,
+            authenticated_rx,
+            _authenticated_tx,
+            deny_rx,
+            _deny_tx,
         }
     }
 
-    fn default_config(
-        authentication: ClientAuthn,
+    fn config(
         nets: impl IntoIterator<Item = ipnet::IpNet>,
+        authentication: ClientAuthn,
     ) -> InboundServerConfig {
         InboundServerConfig {
             protocol: ProxyProtocol::Detect {
@@ -179,6 +202,33 @@ impl Index {
         }
     }
 
+    fn rx(&self) -> ServerRx {
+        match self.default_mode {
+            DefaultMode::AllowExternal => self.external_rx.clone(),
+            DefaultMode::AllowCluster => self.cluster_rx.clone(),
+            DefaultMode::AllowAuthenticated => self.authenticated_rx.clone(),
+            DefaultMode::Deny => self.deny_rx.clone(),
+        }
+    }
+}
+
+// === impl Index ===
+
+impl Index {
+    pub(crate) fn new(
+        lookups: SharedLookupMap,
+        cluster_nets: Vec<ipnet::IpNet>,
+        default_mode: DefaultMode,
+    ) -> Self {
+        Self {
+            lookups,
+            node_ips: HashMap::default(),
+            namespaces: HashMap::default(),
+
+            defaults: Defaults::new(cluster_nets, default_mode),
+        }
+    }
+
     /// Drives indexing for all resource types.
     ///
     /// This is all driven on a single task, so it's not necessary for any of the
@@ -189,6 +239,7 @@ impl Index {
     #[instrument(skip(self, resources), fields(result))]
     pub(crate) async fn index(mut self, resources: k8s::ResourceWatches) -> Error {
         let k8s::ResourceWatches {
+            //mut namespaces,
             mut nodes,
             mut pods,
             mut servers,
@@ -197,6 +248,13 @@ impl Index {
 
         loop {
             let res = tokio::select! {
+                // // Track namespace-level annotations
+                // up = namespaces.recv() => match up {
+                //     k8s::Event::Applied(ns) => self.apply_ns(ns).context("apply"),
+                //     k8s::Event::Deleted(ns) => self.delete_ns(ns).context("delete"),
+                //     k8s::Event::Restarted(nss) => self.reset_ns(nss).context("reset"),
+                // }.context("nodes"),
+
                 // Track the kubelet IPs for all nodes.
                 up = nodes.recv() => match up {
                     k8s::Event::Applied(node) => self.apply_node(node).context("apply"),
@@ -230,6 +288,64 @@ impl Index {
             }
         }
     }
+
+    // // === Namespace indexing ===
+
+    // #[instrument(
+    //     skip(self, ns),
+    //     fields(ns = ?ns.metadata.name)
+    // )]
+    // fn apply_ns(&mut self, ns: k8s::Namespace) -> Result<()> {
+    //     let name = k8s::NsName::from_ns(&ns);
+
+    //     match self.namespaces.entry(name) {
+    //         HashEntry::Vacant(entry) => {
+    //             todo!()
+    //         }
+    //         HashEntry::Occupied(_) => {
+    //             todo!()
+    //         }
+    //     }
+
+    //     Ok(())
+    // }
+
+    // #[instrument(
+    //     skip(self, ns),
+    //     fields(ns = ?ns.metadata.name)
+    // )]
+    // fn delete_ns(&mut self, ns: k8s::Namespace) -> Result<()> {
+    //     let name = k8s::NsName::from_ns(&ns);
+    //     if self.namespaces.remove(&name).is_some() {
+    //         debug!("Deleted");
+    //     } else {
+    //         bail!("node {} already deleted", name);
+    //     }
+    //     Ok(())
+    // }
+
+    // #[instrument(skip(self, nss))]
+    // fn reset_ns(&mut self, nss: Vec<k8s::Namespace>) -> Result<()> {
+    //     // Avoid rebuilding data for nodes that have not changed.
+    //     let mut prior_names = self.namespaces.keys().cloned().collect::<HashSet<_>>();
+
+    //     let mut result = Ok(());
+    //     for ns in nss.into_iter() {
+    //         let name = k8s::NsName::from_ns(&ns);
+    //         prior_names.remove(&ns);
+    //         if let Err(error) = self.apply_ns(ns) {
+    //             warn!(%name, %error, "Failed to apply node");
+    //             result = Err(error);
+    //         }
+    //     }
+
+    //     for name in prior_names.into_iter() {
+    //         debug!(?name, "Removing defunct namespace");
+    //         todo!()
+    //     }
+
+    //     result
+    // }
 
     // === Node->IP indexing ===
 
@@ -393,7 +509,7 @@ impl Index {
                                     continue;
                                 }
 
-                                let (tx, rx) = watch::channel(self.external_config_rx.clone());
+                                let (tx, rx) = watch::channel(self.defaults.rx());
                                 let pod_port = Arc::new(PodPort {
                                     tx,
                                     server_name: Mutex::new(None),
@@ -803,7 +919,7 @@ impl Index {
                     debug!(pod = %pod_name, port = %port_num, "Removing server from pod");
                     *sn = None;
                     port.tx
-                        .send(self.external_config_rx.clone())
+                        .send(self.defaults.rx())
                         .expect("pod config receiver must still be held");
                 } else {
                     trace!(pod = %pod_name, port = %port_num, server = ?sn, "Server does not match");

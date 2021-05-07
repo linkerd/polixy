@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use futures::{future, prelude::*};
+use polixy::DefaultMode;
 use structopt::StructOpt;
 //use tokio::{sync::watch, time};
 use tracing::{debug, info, instrument};
@@ -16,6 +17,9 @@ enum Command {
         /// Network CIDRs of pod IPs
         #[structopt(long, default_value = "10.42.0.0/16")]
         cluster_networks: Vec<ipnet::IpNet>,
+
+        #[structopt(long, default_value = "allow-external")]
+        default_mode: DefaultMode,
     },
     Client {
         #[structopt(long, default_value = "http://127.0.0.1:8910")]
@@ -58,6 +62,7 @@ async fn main() -> Result<()> {
             port,
             identity_domain,
             cluster_networks,
+            default_mode,
         } => {
             let (drain_tx, drain_rx) = linkerd_drain::channel();
 
@@ -65,7 +70,8 @@ async fn main() -> Result<()> {
                 .await
                 .context("failed to initialize kubernetes client")?;
 
-            let (handle, index_task) = polixy::LookupHandle::run(client, cluster_networks);
+            let (handle, index_task) =
+                polixy::LookupHandle::run(client, cluster_networks, default_mode);
             let index_task = tokio::spawn(index_task);
 
             let grpc = tokio::spawn(grpc(port, handle, drain_rx, identity_domain));

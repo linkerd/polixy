@@ -43,7 +43,7 @@ pub struct Lookup {
     pub rx: ServerRxRx,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InboundServerConfig {
     pub protocol: ProxyProtocol,
     pub authorizations: BTreeMap<Option<k8s::polixy::authz::Name>, ClientAuthz>,

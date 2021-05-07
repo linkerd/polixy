@@ -128,7 +128,6 @@ impl proto::polixy_server::Polixy for Server {
     }
 }
 
-// TODO deduplicate redundant updates.
 fn response_stream(
     pod_ips: PodIps,
     kubelet_ips: KubeletIps,
@@ -137,31 +136,48 @@ fn response_stream(
     mut port_rx: ServerRxRx,
 ) -> impl Stream<Item = Result<proto::InboundServer, tonic::Status>> + Send + 'static {
     let kubelet = kubelet_authz(kubelet_ips);
-    let mut server_rx = port_rx.borrow().clone();
 
     async_stream::try_stream! {
         tokio::pin! {
             let shutdown = drain.signaled();
         }
 
+        let mut server_rx = port_rx.borrow().clone();
+        let mut prior = None;
         loop {
-            let server = to_server(&pod_ips, &kubelet, server_rx.borrow().clone(), domain.as_ref());
-            yield server;
+            let server = server_rx.borrow().clone();
+
+            // Deduplicate identical updates (i.e., especially after the controller reconnects to
+            // the k8s API).
+            if prior.as_ref() != Some(&server) {
+                prior = Some(server.clone());
+                yield to_server(&pod_ips, &kubelet, server, domain.as_ref());
+            }
 
             tokio::select! {
-                _ = (&mut shutdown) => {
-                    return;
-                }
+                // When the port is updated with a new server, update the server watch.
                 res = port_rx.changed() => {
+                    // If the port watch closed, end the stream.
                     if res.is_err() {
                         return;
                     }
+                    // Otherwise, update the server watch.
                     server_rx = port_rx.borrow().clone();
                 }
+
+                // Wait for the current server watch to update.
                 res = server_rx.changed() => {
+                    // If the server was deleted (the server watch closes), get an updated server
+                    // watch.
                     if res.is_err() {
                         server_rx = port_rx.borrow().clone();
                     }
+                }
+
+                // If the server starts shutting down, close the stream so that it doesn't hold the
+                // server open.
+                _ = (&mut shutdown) => {
+                    return;
                 }
             }
         }

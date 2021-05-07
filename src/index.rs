@@ -7,6 +7,7 @@ use crate::{
 use anyhow::{anyhow, bail, Context, Error, Result};
 use dashmap::mapref::entry::Entry as DashEntry;
 use ipnet::IpNet;
+use k8s_openapi::Metadata;
 use parking_lot::Mutex;
 use std::{
     collections::{hash_map::Entry as HashEntry, BTreeMap, HashMap, HashSet},
@@ -27,13 +28,12 @@ pub struct Index {
     /// Cached Node IPs.
     node_ips: HashMap<k8s::NodeName, KubeletIps>,
 
+    default_mode: DefaultMode,
     defaults: Defaults,
 }
 
 /// Default server configs to use when no server matches.
 struct Defaults {
-    default_mode: DefaultMode,
-
     external_rx: ServerRx,
     _external_tx: ServerTx,
 
@@ -49,6 +49,8 @@ struct Defaults {
 
 #[derive(Debug, Default)]
 struct NsIndex {
+    default_mode: Option<DefaultMode>,
+
     /// Caches pod labels so we can differentiate innocuous updates (like status
     /// changes) from label changes that could impact server indexing.
     pods: HashMap<k8s::PodName, Pod>,
@@ -129,7 +131,7 @@ impl Server {
 // === impl Defaults ===
 
 impl Defaults {
-    fn new(cluster_nets: Vec<ipnet::IpNet>, default_mode: DefaultMode) -> Self {
+    fn new(cluster_nets: Vec<ipnet::IpNet>) -> Self {
         let all_nets = [
             ipnet::IpNet::V4(Default::default()),
             ipnet::IpNet::V6(Default::default()),
@@ -163,7 +165,6 @@ impl Defaults {
         });
 
         Self {
-            default_mode,
             external_rx,
             _external_tx,
             cluster_rx,
@@ -202,8 +203,8 @@ impl Defaults {
         }
     }
 
-    fn rx(&self) -> ServerRx {
-        match self.default_mode {
+    fn rx(&self, mode: DefaultMode) -> ServerRx {
+        match mode {
             DefaultMode::AllowExternal => self.external_rx.clone(),
             DefaultMode::AllowCluster => self.cluster_rx.clone(),
             DefaultMode::AllowAuthenticated => self.authenticated_rx.clone(),
@@ -225,7 +226,8 @@ impl Index {
             node_ips: HashMap::default(),
             namespaces: HashMap::default(),
 
-            defaults: Defaults::new(cluster_nets, default_mode),
+            default_mode,
+            defaults: Defaults::new(cluster_nets),
         }
     }
 
@@ -239,7 +241,7 @@ impl Index {
     #[instrument(skip(self, resources), fields(result))]
     pub(crate) async fn index(mut self, resources: k8s::ResourceWatches) -> Error {
         let k8s::ResourceWatches {
-            //mut namespaces,
+            mut namespaces,
             mut nodes,
             mut pods,
             mut servers,
@@ -248,12 +250,12 @@ impl Index {
 
         loop {
             let res = tokio::select! {
-                // // Track namespace-level annotations
-                // up = namespaces.recv() => match up {
-                //     k8s::Event::Applied(ns) => self.apply_ns(ns).context("apply"),
-                //     k8s::Event::Deleted(ns) => self.delete_ns(ns).context("delete"),
-                //     k8s::Event::Restarted(nss) => self.reset_ns(nss).context("reset"),
-                // }.context("nodes"),
+                // Track namespace-level annotations
+                up = namespaces.recv() => match up {
+                    k8s::Event::Applied(ns) => self.apply_ns(ns).context("apply"),
+                    k8s::Event::Deleted(ns) => self.delete_ns(ns).context("delete"),
+                    k8s::Event::Restarted(nss) => self.reset_ns(nss).context("reset"),
+                }.context("namespaces"),
 
                 // Track the kubelet IPs for all nodes.
                 up = nodes.recv() => match up {
@@ -291,61 +293,85 @@ impl Index {
 
     // // === Namespace indexing ===
 
-    // #[instrument(
-    //     skip(self, ns),
-    //     fields(ns = ?ns.metadata.name)
-    // )]
-    // fn apply_ns(&mut self, ns: k8s::Namespace) -> Result<()> {
-    //     let name = k8s::NsName::from_ns(&ns);
+    #[instrument(
+        skip(self, ns),
+        fields(ns = ?ns.metadata.name)
+    )]
+    fn apply_ns(&mut self, ns: k8s::Namespace) -> Result<()> {
+        let name = k8s::NsName::from_ns(&ns);
 
-    //     match self.namespaces.entry(name) {
-    //         HashEntry::Vacant(entry) => {
-    //             todo!()
-    //         }
-    //         HashEntry::Occupied(_) => {
-    //             todo!()
-    //         }
-    //     }
+        let mode = if let Some(anns) = ns.metadata().annotations.as_ref() {
+            if let Some(ann) = anns.get("polixy.l5d.io/default-mode") {
+                Some(ann.parse::<DefaultMode>()?)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
-    //     Ok(())
-    // }
+        let ns = self.namespaces.entry(name).or_default();
+        if mode == ns.default_mode {
+            return Ok(());
+        }
 
-    // #[instrument(
-    //     skip(self, ns),
-    //     fields(ns = ?ns.metadata.name)
-    // )]
-    // fn delete_ns(&mut self, ns: k8s::Namespace) -> Result<()> {
-    //     let name = k8s::NsName::from_ns(&ns);
-    //     if self.namespaces.remove(&name).is_some() {
-    //         debug!("Deleted");
-    //     } else {
-    //         bail!("node {} already deleted", name);
-    //     }
-    //     Ok(())
-    // }
+        ns.default_mode = mode;
 
-    // #[instrument(skip(self, nss))]
-    // fn reset_ns(&mut self, nss: Vec<k8s::Namespace>) -> Result<()> {
-    //     // Avoid rebuilding data for nodes that have not changed.
-    //     let mut prior_names = self.namespaces.keys().cloned().collect::<HashSet<_>>();
+        // Update the default server on all pod ports without an associated named server.
+        let rx = self.defaults.rx(mode.unwrap_or(self.default_mode));
+        for pod in ns.pods.values() {
+            for p in pod.ports.values() {
+                let srv = p.server_name.lock();
+                if srv.is_none() && p.tx.send(rx.clone()).is_err() {
+                    warn!(server = ?*srv, "Failed to update server");
+                }
+            }
+        }
 
-    //     let mut result = Ok(());
-    //     for ns in nss.into_iter() {
-    //         let name = k8s::NsName::from_ns(&ns);
-    //         prior_names.remove(&ns);
-    //         if let Err(error) = self.apply_ns(ns) {
-    //             warn!(%name, %error, "Failed to apply node");
-    //             result = Err(error);
-    //         }
-    //     }
+        Ok(())
+    }
 
-    //     for name in prior_names.into_iter() {
-    //         debug!(?name, "Removing defunct namespace");
-    //         todo!()
-    //     }
+    #[instrument(
+        skip(self, ns),
+        fields(ns = ?ns.metadata.name)
+    )]
+    fn delete_ns(&mut self, ns: k8s::Namespace) -> Result<()> {
+        let name = k8s::NsName::from_ns(&ns);
+        self.rm_ns(&name)
+    }
 
-    //     result
-    // }
+    fn rm_ns(&mut self, name: &k8s::NsName) -> Result<()> {
+        if self.namespaces.remove(name).is_none() {
+            bail!("node {} already deleted", name);
+        }
+        debug!("Deleted");
+        Ok(())
+    }
+
+    #[instrument(skip(self, nss))]
+    fn reset_ns(&mut self, nss: Vec<k8s::Namespace>) -> Result<()> {
+        // Avoid rebuilding data for nodes that have not changed.
+        let mut prior_names = self.namespaces.keys().cloned().collect::<HashSet<_>>();
+
+        let mut result = Ok(());
+        for ns in nss.into_iter() {
+            let name = k8s::NsName::from_ns(&ns);
+            prior_names.remove(&name);
+            if let Err(error) = self.apply_ns(ns) {
+                warn!(%name, %error, "Failed to apply namespace");
+                result = Err(error);
+            }
+        }
+
+        for name in prior_names.into_iter() {
+            debug!(?name, "Removing defunct namespace");
+            if let Err(error) = self.rm_ns(&name) {
+                result = Err(error);
+            }
+        }
+
+        result
+    }
 
     // === Node->IP indexing ===
 
@@ -455,6 +481,7 @@ impl Index {
         let status = pod.status.ok_or_else(|| anyhow!("pod missing status"))?;
 
         let NsIndex {
+            default_mode,
             ref mut pods,
             ref mut servers,
             ..
@@ -509,7 +536,9 @@ impl Index {
                                     continue;
                                 }
 
-                                let (tx, rx) = watch::channel(self.defaults.rx());
+                                let server_rx =
+                                    self.defaults.rx(default_mode.unwrap_or(self.default_mode));
+                                let (tx, rx) = watch::channel(server_rx);
                                 let pod_port = Arc::new(PodPort {
                                     tx,
                                     server_name: Mutex::new(None),
@@ -724,6 +753,7 @@ impl Index {
             ref pods,
             authzs: ref ns_authzs,
             ref mut servers,
+            default_mode: _,
         } = self.namespaces.entry(ns_name).or_default();
 
         match servers.entry(srv_name) {
@@ -918,8 +948,11 @@ impl Index {
                 if sn.as_ref() == Some(&srv_name) {
                     debug!(pod = %pod_name, port = %port_num, "Removing server from pod");
                     *sn = None;
+                    let rx = self
+                        .defaults
+                        .rx(ns.default_mode.unwrap_or(self.default_mode));
                     port.tx
-                        .send(self.defaults.rx())
+                        .send(rx)
                         .expect("pod config receiver must still be held");
                 } else {
                     trace!(pod = %pod_name, port = %port_num, server = ?sn, "Server does not match");

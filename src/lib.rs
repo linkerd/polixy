@@ -17,7 +17,7 @@ trait FromResource<T> {
     fn from_resource(resource: &T) -> Self;
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum DefaultMode {
     AllowExternal,
     AllowCluster,

@@ -24,7 +24,7 @@ pub struct PodName(String);
 
 /// Resource watches.
 pub(crate) struct ResourceWatches {
-    //pub namespaces: Watch<Namespace>,
+    pub namespaces: Watch<Namespace>,
     pub nodes: Watch<Node>,
     pub pods: Watch<Pod>,
     pub servers: Watch<polixy::Server>,
@@ -36,7 +36,7 @@ pub(crate) struct ResourceWatches {
 impl ResourceWatches {
     pub fn new(client: kube::Client) -> Self {
         Self {
-            //namespaces: watcher(Api::all(client.clone()), ListParams::default()).into(),
+            namespaces: watcher(Api::all(client.clone()), ListParams::default()).into(),
             nodes: watcher(Api::all(client.clone()), ListParams::default()).into(),
             pods: watcher(
                 Api::all(client.clone()),

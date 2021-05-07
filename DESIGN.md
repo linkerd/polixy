@@ -82,8 +82,6 @@ Clients fall into two broad categories:
 1. Meshed clients communicating with mutual-authenticated TLS;
 2. Un-meshed clients communicating without (mesh-aware) authentication.
 
-Operators may need to permit
-
 #### Authenticated clients
 
 Meshed clients automatically authenticate to servers via mTLS so that the client's identity is
@@ -175,7 +173,7 @@ ClientHello and it should skip HTTP-level detection.
 ##### `proxyProtocol: HTTP/1 | HTTP/2 | gRPC`
 
 Indicates that the server supports the referenced HTTP variant. gRPC is provided as a special case
-for HTTP/2 to support future specializations
+for HTTP/2 to support future specialization.
 
 ##### Handling conflicts
 
@@ -187,7 +185,7 @@ It should be possible to detect this situation at `Server`-creation time--at lea
 able to detect overlapping label selectors for the same port. It may **not** be feasible to reliably
 detect servers that match the same _port_, however, as named ports may only conflict with numbered
 pots at pod-creation time. So, the validating webhook could potentially prevent the creation of
-these pods, or we'll need
+these pods, or we'll need to implement CLI checks that detect this situation.
 
 #### [`ServerAuthorization`](k8s/crds/authz.yml)
 
@@ -227,6 +225,7 @@ Authorizes clients to access `Server`s.
       * When a connection is authorized, requests are [annotated with headers](#headers).
       * When a connection is not authorized, gRPC responses are emitted with a header
         `grpc-status: PERMISSION_DENIED`
+  * Unauthenticated connections are _always_ permitted from the kubelet.
 
 #### HTTP/gRPC headers <a name="headers"></a>
 
@@ -254,7 +253,7 @@ This header is always set by the proxy (when informational headers are not disab
 ##### `l5d-client-id: <client-id>`
 
 The `l5d-client-id` header is only set when the client has been authenticated via meshed TLS. Its
-value is the client's identity, e.g. `default.default.serviceaccount.linkerd.cluster.local`
+value is the client's identity, e.g. `default.default.serviceaccount.linkerd.cluster.local`.
 
 ##### `forwarded: for=<client-ip>;by=<server-addr>`
 

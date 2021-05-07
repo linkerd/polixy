@@ -225,10 +225,10 @@ Authorizes clients to access `Server`s.
       * When a connection is not authorized, HTTP responses are emitted with the status `403 Forbidden`.
     * gRPC:
       * When a connection is authorized, requests are [annotated with headers](#headers).
-      * When a connection is not authorized, gRPC responses are emitted with a header :w
+      * When a connection is not authorized, gRPC responses are emitted with a header
         `grpc-status: PERMISSION_DENIED`
 
-#### HTTP/gRPC headers <a id="headers" />
+#### HTTP/gRPC headers <a name="headers"></a>
 
 Proxies should surface informational headers to the application describing authorized clients for
 Servers with a `proxyProtocol` value of `HTTP` or `gRPC`.
@@ -282,18 +282,21 @@ feasible because the identity controller's proxy has very limited discovery need
 * It needs to discover policy for its local ports (identity gRPC + admin, proxy ports)
 * It attempts to discover a service profile for inbound gRPC requests
 
-<!--
 #### Control plane policies
 
 The core control plane should ship with a set of default policies:
 
-* The identity controller requires mutually authenticated requests.
+* The destination controller requires mutually authenticated requests.
+  [[k8s/linkerd/destination.yml](./k8s/linkerd/destination.yml)]
 * The identity controller requires secured connections that may not be
   authenticated (because clients have not yet received identity).
-* Webhook connections must be secured.
+  [[k8s/linkerd/identity.yml](./k8s/linkerd/identity.yml)]
+* Webhook connections must use TLS.
+  [[k8s/linkerd/proxy-injector.yml](./k8s/linkerd/proxy-injector.yml)]
 * Admin server connections must be authenticated or originate from the
-  node-local network.
+  node-local network. [[k8s/linkerd/proxy-injector.yml](./k8s/linkerd/proxy-injector.yml)]
 
+<!--
 #### Proxy admin, tap, & inbound policies
   -->
 
@@ -310,7 +313,7 @@ services, etc.
 
 #### Destinations
 
-SMI binds iP
+SMI binds policy to destinations as follows:
 
 ```yaml
 kind: TrafficTarget
@@ -325,14 +328,38 @@ spec:
   ...
 ```
 
+This is a bit awkward for a few reasons:
+
+* These targets need not exist in the same namespace as the policies? So it appears as if policies
+  can be created in unrelated namespaces (by unrelated owners), and it's not clear how these
+  policies should be applied.
+* While it makes sense for us to bind clients to `ServiceAccounts`--this is how we authenticate pods
+  to the identity service--it's unnatural and unnecessary to do this for servers. All pods that
+  share a service account need not have the same access patterns. For instance, it's common for all
+  pods in a namespace to share a common (`default`) `ServiceAccount`, though the pods serve varying
+  APIs to multitude of clients.
+
+We _really_ want to bind policies to pod-and-port pairs (as described by our `Server` resource). And
+we _really_ want all authorizations to _only_ be defined in the same namespace as the server. It
+makes no sense to support (inbound) policies defined in other namespaces--only a service's owners
+can define its access policies.
+
 ## Open questions
 
 * What should we call the API group? `polixy` is a placeholder (policy + olix0r). We should change
   this to something a bit more concrete. This name should probably match the controller's name.
-* How do we provide interop with SMI? I.e. something that reads TrafficTarget
-  resources and generates Linkerd resources (and vice-versa?). It will probably be clunky but it seems
-  doable.
+* How do we provide interop with SMI? I.e. something that reads TrafficTarget resources and
+  generates Linkerd resources (and vice-versa?). It will probably be clunky but it seems doable.
 * How will we support HTTP routes & gRPC services? How does authorization work for these?
+* What Linkerd CLI tools do we need to interact with policies?
+* Do we need `check`s for policies?
+* How are policies reflected in metrics/tap?
+* How do we restrict requests to the controller? I.e. API clients should not be able to request
+  policies for servers they do not serve; but we still may need to support non-proxy clients for
+  tooling.
+* How do policies interact with the multi-cluster gateway?
+* How do policies interact with tap servers?
+* How do policies interact with admin servers?
 
 ## Future work
 

@@ -167,12 +167,12 @@ is performed. This is the default behavior in current proxy versions.
 Equivalent to setting the port in `config.linkerd.io/opaque-ports` -- indicates that the server
 should not do any protocol detection (and neither should meshed clients).
 
-###### `proxyProtocol: TLS`
+##### `proxyProtocol: TLS`
 
 Indicates that the server terminates TLS. The proxy may require that all connections include a TLS
 ClientHello and it should skip HTTP-level detection.
 
-###### `proxyProtocol: HTTP/1 | HTTP/2 | gRPC`
+##### `proxyProtocol: HTTP/1 | HTTP/2 | gRPC`
 
 Indicates that the server supports the referenced HTTP variant. gRPC is provided as a special case
 for HTTP/2 to support future specializations

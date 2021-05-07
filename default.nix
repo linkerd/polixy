@@ -16,6 +16,7 @@ buildEnv {
     jq
     kubectl
     kube3d
+    loc
     git
     (glibcLocales.override { locales = [ "en_US.UTF-8" ]; })
     gnupg

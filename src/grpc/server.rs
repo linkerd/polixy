@@ -2,11 +2,10 @@ use super::proto;
 use crate::{
     k8s::{NsName, PodName},
     ClientAuthn, ClientAuthz, ClientNetwork, Identity, InboundServerConfig, KubeletIps, Lookup,
-    LookupHandle, PodIps, ProxyProtocol, ServiceAccountRef,
+    LookupHandle, PodIps, ProxyProtocol, ServerRxRx, ServiceAccountRef,
 };
 use futures::prelude::*;
 use std::{collections::HashMap, iter::FromIterator, sync::Arc};
-use tokio_stream::wrappers::WatchStream;
 use tracing::trace;
 
 #[derive(Clone, Debug)]
@@ -118,23 +117,54 @@ impl proto::polixy_server::Polixy for Server {
             rx,
         } = self.lookup(workload, port)?;
 
-        let kubelet = kubelet_authz(kubelet_ips);
-
-        // TODO deduplicate redundant updates.
-        // TODO end streams on drain.
-        let domain = self.identity_domain.clone();
-        let watch = WatchStream::new(rx)
-            .map(WatchStream::new)
-            .flat_map(move |updates| {
-                let pod_ips = pod_ips.clone();
-                let kubelet = kubelet.clone();
-                let domain = domain.clone();
-                updates
-                    .map(move |c| to_server(&pod_ips, &kubelet, c, domain.as_ref()))
-                    .map(Ok)
-            });
-
+        let watch = response_stream(
+            pod_ips,
+            kubelet_ips,
+            self.identity_domain.clone(),
+            self.drain.clone(),
+            rx,
+        );
         Ok(tonic::Response::new(Box::pin(watch)))
+    }
+}
+
+// TODO deduplicate redundant updates.
+fn response_stream(
+    pod_ips: PodIps,
+    kubelet_ips: KubeletIps,
+    domain: Arc<str>,
+    drain: linkerd_drain::Watch,
+    mut port_rx: ServerRxRx,
+) -> impl Stream<Item = Result<proto::InboundServer, tonic::Status>> + Send + 'static {
+    let kubelet = kubelet_authz(kubelet_ips);
+    let mut server_rx = port_rx.borrow().clone();
+
+    async_stream::try_stream! {
+        tokio::pin! {
+            let shutdown = drain.signaled();
+        }
+
+        loop {
+            let server = to_server(&pod_ips, &kubelet, server_rx.borrow().clone(), domain.as_ref());
+            yield server;
+
+            tokio::select! {
+                _ = (&mut shutdown) => {
+                    return;
+                }
+                res = port_rx.changed() => {
+                    if res.is_err() {
+                        return;
+                    }
+                    server_rx = port_rx.borrow().clone();
+                }
+                res = server_rx.changed() => {
+                    if res.is_err() {
+                        server_rx = port_rx.borrow().clone();
+                    }
+                }
+            }
+        }
     }
 }
 

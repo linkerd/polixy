@@ -87,7 +87,7 @@ spec:
       app.kubernetes.io/part-of: emojivoto
       app.kubernetes.io/name: web
   port: http
-  proxyProtocol: Http
+  proxyProtocol: HTTP/1
 ---
 apiVersion: polixy.l5d.io/v1alpha1
 kind: ServerAuthorization

@@ -6,7 +6,7 @@ metadata:
   name: linkerd-sp-validator-https
 spec:
   port: 8443
-  proxyProtocol: Tls
+  proxyProtocol: TLS
   podSelector:
     matchLabels:
       linkerd.io/control-plane-ns: linkerd

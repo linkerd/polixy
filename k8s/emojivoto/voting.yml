@@ -87,7 +87,7 @@ spec:
       app.kubernetes.io/part-of: emojivoto
       app.kubernetes.io/name: voting
   port: grpc
-  proxyProtocol: Grpc
+  proxyProtocol: gRPC
 ---
 apiVersion: polixy.l5d.io/v1alpha1
 kind: ServerAuthorization

@@ -8,7 +8,7 @@ metadata:
     viz.linkerd.io/prometheus: allow
 spec:
   port: linkerd-admin
-  proxyProtocol: Http
+  proxyProtocol: HTTP/1
   podSelector:
     matchLabels:
       linkerd.io/control-plane-ns: linkerd
@@ -22,7 +22,7 @@ metadata:
     viz.linkerd.io/prometheus: allow
 spec:
   port: admin-http
-  proxyProtocol: Http
+  proxyProtocol: HTTP/1
   podSelector:
     matchExpressions:
       -  key: linkerd.io/control-plane-component

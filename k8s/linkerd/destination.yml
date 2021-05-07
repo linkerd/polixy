@@ -6,7 +6,7 @@ metadata:
   name: linkerd-destination-grpc
 spec:
   port: 8086
-  proxyProtocol: Grpc
+  proxyProtocol: gRPC
   podSelector:
     matchLabels:
       linkerd.io/control-plane-ns: linkerd

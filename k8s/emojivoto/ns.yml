@@ -23,7 +23,7 @@ spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/part-of: emojivoto
-  proxyProtocol: Http
+  proxyProtocol: HTTP/1
 ---
 apiVersion: polixy.l5d.io/v1alpha1
 kind: ServerAuthorization

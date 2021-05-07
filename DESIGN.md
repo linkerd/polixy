@@ -307,8 +307,8 @@ There's a few things that don't... mesh ;)
 #### Ports
 
 SMI isn't port-aware. Our `Server` abstraction gives us a useful, extensible building block that
-let's attach configuration to pod-ports. In the same way that we can attach authorizations to a
-`Server`, we'll be able to extend the server API to support, for instance, HTTP routes, gRPC
+allows us to attach configuration to pod-ports. In the same way that we can attach authorizations to
+a `Server`, we'll be able to extend the server API to support, for instance, HTTP routes, gRPC
 services, etc.
 
 #### Destinations

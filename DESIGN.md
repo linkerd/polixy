@@ -147,6 +147,8 @@ configurable per-namespace as well.
 
 We propose introducing two new `CustomResourceDefinition`s to Linkerd:
 
+![Policy resources](./img/resources.png "Policy resources")
+
 #### [`Server`](k8s/crds/server.yml)
 
 Each `Server` instance:
@@ -154,6 +156,26 @@ Each `Server` instance:
 * Selects over pods by label
 * Matches ports by name or value
 * Optionally indicates how the proxy should detect the protocol of these streams
+
+##### `proxyProtocol: unknown`
+
+If no proxy protocol is set (or `unknown` is set explicitly), the proxy's (HTTP) protocol detection
+is performed. This is the default behavior in current proxy versions.
+
+##### `proxyProtocol: opaque`
+
+Equivalent to setting the port in `config.linkerd.io/opaque-ports` -- indicates that the server
+should not do any protocol detection (and neither should meshed clients).
+
+###### `proxyProtocol: TLS`
+
+Indicates that the server terminates TLS. The proxy may require that all connections include a TLS
+ClientHello and it should skip HTTP-level detection.
+
+###### `proxyProtocol: HTTP/1 | HTTP/2 | gRPC`
+
+Indicates that the server supports the referenced HTTP variant. gRPC is provided as a special case
+for HTTP/2 to support future specializations
 
 ##### Handling conflicts
 
@@ -167,13 +189,19 @@ detect servers that match the same _port_, however, as named ports may only conf
 pots at pod-creation time. So, the validating webhook could potentially prevent the creation of
 these pods, or we'll need
 
-##### Examples
-
 #### [`ServerAuthorization`](k8s/crds/authz.yml)
 
 Authorizes clients to access `Server`s.
 
-![Policy resources](./img/resources.png "Policy resources")
+* References servers in the same namespace by name or label selector.
+* Scoped to source IP networks. If no networks are specified, the authorization applies to clients
+  in all networks.
+* Indicates whether connections may be unauthenticated (i.e. without mesh TLS); or
+* Expresses mesh TLS requirements:
+  * By referencing service accounts (in arbitrary namespaces); or
+  * By matching identity strings (including globbed suffix matches); or
+  * Not requiring client identities at all -- only relevant for the `identity` controller that must
+    serve requests to clients that have not yet obtained an identity.
 
 ### Overview
 
@@ -185,9 +213,7 @@ Authorizes clients to access `Server`s.
   * A "workload coordinate", potentially reusing the destination controller's "context token", which
     encodes at least the namespace and pod name.
   * A comma-separated list of numeric container ports for the pod.
-ccccijhedk
-  * The prtvikvegfncevejvdknbjftdttlutdlrn
-  oxy does not permit connections for ports that are not documented in the pod spec.
+  * The proxy does not permit connections for ports that are not documented in the pod spec.
   * The proxy no longer forwards inbound connections on localhost. Instead, the discovered
     configuration indicates the IPs on which connections are permitted, and the proxy only forwards
     connections targeting these IPs. This may interfere with complicated networking schemes (e.g.
@@ -200,7 +226,7 @@ ccccijhedk
     * gRPC:
       * When a connection is authorized, requests are [annotated with headers](#headers).
       * When a connection is not authorized, gRPC responses are emitted with a header :w
-      `grpc-status: PERMISSION_DENIED`
+        `grpc-status: PERMISSION_DENIED`
 
 #### HTTP/gRPC headers <a id="headers" />
 
@@ -214,7 +240,7 @@ apiVersion: polixy.l5d.io/v1alpha1
 kind: Server
 metadata:
   annotations:
-    http.linkerd.io/informational-headers: disabled
+    polixy.l5d.io/http-informational-headers: disabled
 ```
 
 ##### `l5d-connection-secure: true | false`
@@ -271,18 +297,48 @@ The core control plane should ship with a set of default policies:
 #### Proxy admin, tap, & inbound policies
   -->
 
+### Why not `access.smi-spec.org`?
+
+There's a few things that don't... mesh ;)
+
+#### Ports
+
+SMI isn't port-aware. Our `Server` abstraction gives us a useful, extensible building block that
+let's attach configuration to pod-ports. In the same way that we can attach authorizations to a
+`Server`, we'll be able to extend the server API to support, for instance, HTTP routes, gRPC
+services, etc.
+
+#### Destinations
+
+SMI binds iP
+
+```yaml
+kind: TrafficTarget
+metadata:
+  name: target
+  namespace: default
+spec:
+  destination:
+    kind: ServiceAccount
+    name: service-a
+    namespace: default
+  ...
+```
+
+## Open questions
+
+* What should we call the API group? `polixy` is a placeholder (policy + olix0r). We should change
+  this to something a bit more concrete. This name should probably match the controller's name.
+* How do we provide interop with SMI? I.e. something that reads TrafficTarget
+  resources and generates Linkerd resources (and vice-versa?). It will probably be clunky but it seems
+  doable.
+* How will we support HTTP routes & gRPC services? How does authorization work for these?
+
 ## Future work
 
 * HTTP route authorization
 * Egress policies
 * View isolation in the destination service
-
-## Prior art
-
-* SMI `TrafficPolicy`
-* `serviceprofiles.linkerd.io/ServiceProfile`
-* `NetworkPolicy`
-* `Role`/`ClusterRole`, `RoleBinding`/`ClusterRoleBinding`
 
 <!-- references -->
 [pod-ips]: https://web.archive.org/web/20201211005235/https://ronaknathani.com/blog/2020/08/how-a-kubernetes-pod-gets-an-ip-address/

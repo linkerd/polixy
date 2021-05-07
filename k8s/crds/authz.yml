@@ -126,12 +126,12 @@ spec:
                     meshTLS:
                       type: object
                       oneOf:
-                        - required: [noIdentityRequired]
+                        - required: [unauthenticatedTLS]
                         - required: [identities]
                         - required: [serviceAccounts]
 
                       properties:
-                        noIdentityRequired:
+                        unauthenticatedTLS:
                           type: boolean
                           description: >-
                             Indicates that no client identity is required for

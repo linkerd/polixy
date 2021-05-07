@@ -764,7 +764,8 @@ impl Index {
             Some(polixy::server::ProxyProtocol::Unknown) | None => ProxyProtocol::Detect {
                 timeout: time::Duration::from_secs(5),
             },
-            Some(polixy::server::ProxyProtocol::Http) => ProxyProtocol::Http,
+            Some(polixy::server::ProxyProtocol::Http1) => ProxyProtocol::Http1,
+            Some(polixy::server::ProxyProtocol::Http2) => ProxyProtocol::Http2,
             Some(polixy::server::ProxyProtocol::Grpc) => ProxyProtocol::Grpc,
             Some(polixy::server::ProxyProtocol::Opaque) => ProxyProtocol::Opaque,
             Some(polixy::server::ProxyProtocol::Tls) => ProxyProtocol::Tls,
@@ -975,7 +976,7 @@ impl Index {
                 .mesh_tls
                 .ok_or_else(|| anyhow!("client mtls missing"))?;
 
-            if let Some(true) = mtls.no_identity_required {
+            if let Some(true) = mtls.unauthenticated_tls {
                 // XXX FIXME
                 ClientAuthn::Unauthenticated
             } else {

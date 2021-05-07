@@ -22,4 +22,4 @@ spec:
     name: linkerd-identity-grpc
   client:
     meshTLS:
-      noIdentityRequired: true
+      unauthenticatedTLS: true

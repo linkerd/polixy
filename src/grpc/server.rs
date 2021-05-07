@@ -152,8 +152,11 @@ fn to_server(
                     timeout: Some(timeout.into()),
                 },
             )),
-            ProxyProtocol::Http => Some(proto::proxy_protocol::Kind::Http(
-                proto::proxy_protocol::Http::default(),
+            ProxyProtocol::Http1 => Some(proto::proxy_protocol::Kind::Http1(
+                proto::proxy_protocol::Http1::default(),
+            )),
+            ProxyProtocol::Http2 => Some(proto::proxy_protocol::Kind::Http2(
+                proto::proxy_protocol::Http2::default(),
             )),
             ProxyProtocol::Grpc => Some(proto::proxy_protocol::Kind::Grpc(
                 proto::proxy_protocol::Grpc::default(),

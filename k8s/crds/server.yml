@@ -94,7 +94,8 @@ spec:
                   default: unknown
                   enum:
                     - unknown
-                    - HTTP
+                    - HTTP/1
+                    - HTTP/2
                     - gRPC
                     - opaque
                     - TLS

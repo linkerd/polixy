@@ -40,8 +40,10 @@ pub enum Port {
 pub enum ProxyProtocol {
     #[serde(rename = "unknown")]
     Unknown,
-    #[serde(rename = "HTTP")]
-    Http,
+    #[serde(rename = "HTTP/1")]
+    Http1,
+    #[serde(rename = "HTTP/2")]
+    Http2,
     #[serde(rename = "gRPC")]
     Grpc,
     #[serde(rename = "opaque")]

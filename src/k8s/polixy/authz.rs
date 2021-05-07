@@ -48,7 +48,8 @@ pub struct Client {
 #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct MeshTls {
-    pub no_identity_required: Option<bool>,
+    #[serde(rename = "unauthenticatedTLS")]
+    pub unauthenticated_tls: Option<bool>,
 
     /// Indicates a Linkerd identity that is authorized to access a server.
     pub identities: Option<Vec<String>>,

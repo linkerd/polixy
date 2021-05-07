@@ -43,21 +43,31 @@ message InboundServer {
 message ProxyProtocol {
   oneof kind {
     Detect detect = 1;
-    Http http = 2;
-    Grpc grpc = 3;
-    Opaque opaque = 4;
-    Tls tls = 5;
+    Opaque opaque = 2;
+    Tls tls = 3;
+    Http1 http1 = 4;
+    Http2 http2 = 5;
+    Grpc grpc = 6;
   }
 
   message Detect { google.protobuf.Duration timeout = 1; }
 
-  message Http {
+  message Http1 {
     // Disables the setting of informational headers on this server.
     bool disable_informational_headers = 1;
 
     // TODO: domains -> routes -> policy
     // TODO: HTTP version? (and orig-proto upgrades)?
   }
+
+  message Http2 {
+    // Disables the setting of informational headers on this server.
+    bool disable_informational_headers = 1;
+
+    // TODO: domains -> routes -> policy
+    // TODO: HTTP version? (and orig-proto upgrades)?
+  }
+
 
   message Grpc {
     // Disables the setting of informational headers on this server.

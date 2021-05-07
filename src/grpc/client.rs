@@ -22,7 +22,8 @@ pub struct Inbound {
 #[derive(Copy, Clone, Debug)]
 pub enum Protocol {
     Detect { timeout: time::Duration },
-    Http,
+    Http1,
+    Http2,
     Grpc,
     Opaque,
     Tls,
@@ -118,7 +119,8 @@ impl std::convert::TryFrom<proto::InboundServer> for Inbound {
                         },
                     }
                 }
-                proto::proxy_protocol::Kind::Http(_) => Protocol::Http,
+                proto::proxy_protocol::Kind::Http1(_) => Protocol::Http1,
+                proto::proxy_protocol::Kind::Http2(_) => Protocol::Http2,
                 proto::proxy_protocol::Kind::Grpc(_) => Protocol::Grpc,
                 proto::proxy_protocol::Kind::Opaque(_) => Protocol::Opaque,
                 proto::proxy_protocol::Kind::Tls(_) => Protocol::Tls,

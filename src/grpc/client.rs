@@ -177,8 +177,8 @@ impl std::convert::TryFrom<proto::InboundServer> for Inbound {
 
                     Ok(Authz {
                         networks,
-                        labels,
                         authn,
+                        labels,
                     })
                 },
             )

@@ -792,10 +792,10 @@ impl Index {
                 });
                 debug!(authzs = ?authorizations.keys());
                 entry.insert(Server {
-                    tx,
-                    rx,
                     meta,
                     authorizations,
+                    rx,
+                    tx,
                 });
             }
 

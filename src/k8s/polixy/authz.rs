@@ -9,13 +9,13 @@ use std::fmt;
 pub struct Name(String);
 
 /// Authorizes clients to connect to a Server.
+#[derive(CustomResource, Deserialize, Serialize, Clone, Debug, JsonSchema)]
 #[kube(
     group = "polixy.l5d.io",
     version = "v1alpha1",
     kind = "ServerAuthorization",
     namespaced
 )]
-#[derive(CustomResource, Deserialize, Serialize, Clone, Debug, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerAuthorizationSpec {
     pub server: Server,

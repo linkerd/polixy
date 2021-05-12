@@ -6,6 +6,7 @@ buildEnv {
   paths = [
     binutils
     cacert
+    cargo-deny
     cargo-fuzz
     cargo-udeps
     cargo-watch

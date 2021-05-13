@@ -5,6 +5,7 @@ use tracing::info;
 
 pub use kube_runtime::watcher::{Event, Result};
 
+/// Wraps an event stream that never terminates.
 pub struct Watch<T>(Pin<Box<dyn Stream<Item = Result<Event<T>>> + Send + 'static>>);
 
 // === impl Watch ===
@@ -19,6 +20,9 @@ where
 }
 
 impl<T> Watch<T> {
+    /// Receive the next event in the stream.
+    ///
+    /// If the stream fails, log the error and sleep for 1s before polling for a reset event.
     pub async fn recv(&mut self) -> Event<T> {
         loop {
             match self

@@ -23,17 +23,16 @@ pub struct Index {
     lookups: SharedLookupMap,
 
     /// Holds per-namespace pod/server/authorization indexes.
-    namespaces: HashMap<k8s::NsName, NsIndex>,
+    namespaces: Namespaces,
 
     /// Cached Node IPs.
     node_ips: HashMap<k8s::NodeName, KubeletIps>,
 
-    default_mode: DefaultMode,
-    defaults: Defaults,
+    default_mode_rxs: DefaultModeRxs,
 }
 
 /// Default server configs to use when no server matches.
-struct Defaults {
+struct DefaultModeRxs {
     external_rx: ServerRx,
     _external_tx: ServerTx,
 
@@ -47,9 +46,15 @@ struct Defaults {
     _deny_tx: ServerTx,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
+struct Namespaces {
+    default_mode: DefaultMode,
+    index: HashMap<k8s::NsName, NsIndex>,
+}
+
+#[derive(Debug)]
 struct NsIndex {
-    default_mode: Option<DefaultMode>,
+    default_mode: DefaultMode,
 
     /// Caches pod labels so we can differentiate innocuous updates (like status
     /// changes) from label changes that could impact server indexing.
@@ -128,9 +133,9 @@ impl Server {
     }
 }
 
-// === impl Defaults ===
+// === impl DefaultModeRxs ===
 
-impl Defaults {
+impl DefaultModeRxs {
     fn new(cluster_nets: Vec<ipnet::IpNet>) -> Self {
         let all_nets = [
             ipnet::IpNet::V4(Default::default()),
@@ -203,13 +208,27 @@ impl Defaults {
         }
     }
 
-    fn rx(&self, mode: DefaultMode) -> ServerRx {
+    fn get(&self, mode: DefaultMode) -> ServerRx {
         match mode {
             DefaultMode::AllowExternal => self.external_rx.clone(),
             DefaultMode::AllowCluster => self.cluster_rx.clone(),
             DefaultMode::AllowAuthenticated => self.authenticated_rx.clone(),
             DefaultMode::Deny => self.deny_rx.clone(),
         }
+    }
+}
+
+// === impl Namespaces ===
+
+impl Namespaces {
+    fn get_or_default(&mut self, name: k8s::NsName) -> &mut NsIndex {
+        let default_mode = self.default_mode;
+        self.index.entry(name).or_insert_with(|| NsIndex {
+            default_mode,
+            pods: HashMap::default(),
+            servers: HashMap::default(),
+            authzs: HashMap::default(),
+        })
     }
 }
 
@@ -221,13 +240,15 @@ impl Index {
         cluster_nets: Vec<ipnet::IpNet>,
         default_mode: DefaultMode,
     ) -> Self {
+        let namespaces = Namespaces {
+            default_mode,
+            index: HashMap::default(),
+        };
         Self {
             lookups,
+            namespaces,
             node_ips: HashMap::default(),
-            namespaces: HashMap::default(),
-
-            default_mode,
-            defaults: Defaults::new(cluster_nets),
+            default_mode_rxs: DefaultModeRxs::new(cluster_nets),
         }
     }
 
@@ -291,39 +312,41 @@ impl Index {
         }
     }
 
-    // // === Namespace indexing ===
+    // === Namespace indexing ===
 
     #[instrument(
         skip(self, ns),
         fields(ns = ?ns.metadata.name)
     )]
     fn apply_ns(&mut self, ns: k8s::Namespace) -> Result<()> {
-        let name = k8s::NsName::from_ns(&ns);
-
+        // Read the `default-mode` annotation from the ns metadata, which indicates the default
+        // behavior for pod-ports in the namespace that lack a server instance.
         let mode = if let Some(anns) = ns.metadata().annotations.as_ref() {
             if let Some(ann) = anns.get("polixy.l5d.io/default-mode") {
-                Some(ann.parse::<DefaultMode>()?)
+                ann.parse::<DefaultMode>()?
             } else {
-                None
+                self.namespaces.default_mode
             }
         } else {
-            None
+            self.namespaces.default_mode
         };
 
-        let ns = self.namespaces.entry(name).or_default();
-        if mode == ns.default_mode {
-            return Ok(());
-        }
+        // Get the cached namespace index (or load the default).
+        let ns = self.namespaces.get_or_default(k8s::NsName::from_ns(&ns));
 
-        ns.default_mode = mode;
+        // If the mode is changed (or non-default), update all of the pod-ports that don't don't
+        // have an associated server instance. This allows us to dynamically update the default
+        // behavior after pods have been created.
+        if mode != ns.default_mode {
+            ns.default_mode = mode;
 
-        // Update the default server on all pod ports without an associated named server.
-        let rx = self.defaults.rx(mode.unwrap_or(self.default_mode));
-        for pod in ns.pods.values() {
-            for p in pod.ports.values() {
-                let srv = p.server_name.lock();
-                if srv.is_none() && p.tx.send(rx.clone()).is_err() {
-                    warn!(server = ?*srv, "Failed to update server");
+            let rx = self.default_mode_rxs.get(mode);
+            for pod in ns.pods.values() {
+                for p in pod.ports.values() {
+                    let srv = p.server_name.lock();
+                    if srv.is_none() && p.tx.send(rx.clone()).is_err() {
+                        warn!(server = ?*srv, "Failed to update server");
+                    }
                 }
             }
         }
@@ -341,9 +364,10 @@ impl Index {
     }
 
     fn rm_ns(&mut self, name: &k8s::NsName) -> Result<()> {
-        if self.namespaces.remove(name).is_none() {
+        if self.namespaces.index.remove(name).is_none() {
             bail!("node {} already deleted", name);
         }
+
         debug!(%name, "Deleted");
         Ok(())
     }
@@ -351,7 +375,12 @@ impl Index {
     #[instrument(skip(self, nss))]
     fn reset_ns(&mut self, nss: Vec<k8s::Namespace>) -> Result<()> {
         // Avoid rebuilding data for nodes that have not changed.
-        let mut prior_names = self.namespaces.keys().cloned().collect::<HashSet<_>>();
+        let mut prior_names = self
+            .namespaces
+            .index
+            .keys()
+            .cloned()
+            .collect::<HashSet<_>>();
 
         let mut result = Ok(());
         for ns in nss.into_iter() {
@@ -485,7 +514,7 @@ impl Index {
             ref mut pods,
             ref mut servers,
             ..
-        } = self.namespaces.entry(ns_name.clone()).or_default();
+        } = self.namespaces.get_or_default(ns_name.clone());
 
         let lookups_entry = self.lookups.entry((ns_name, pod_name.clone()));
 
@@ -536,8 +565,7 @@ impl Index {
                                     continue;
                                 }
 
-                                let server_rx =
-                                    self.defaults.rx(default_mode.unwrap_or(self.default_mode));
+                                let server_rx = self.default_mode_rxs.get(*default_mode);
                                 let (tx, rx) = watch::channel(server_rx);
                                 let pod_port = Arc::new(PodPort {
                                     tx,
@@ -674,6 +702,7 @@ impl Index {
 
     fn rm_pod(&mut self, ns: &k8s::NsName, pod: &k8s::PodName) -> Result<()> {
         self.namespaces
+            .index
             .get_mut(ns)
             .ok_or_else(|| anyhow!("namespace {} doesn't exist", ns))?
             .pods
@@ -693,6 +722,7 @@ impl Index {
     fn reset_pods(&mut self, pods: Vec<k8s::Pod>) -> Result<()> {
         let mut prior_pod_labels = self
             .namespaces
+            .index
             .iter()
             .map(|(n, ns)| {
                 let pods = ns
@@ -748,18 +778,17 @@ impl Index {
         let srv_name = polixy::server::Name::from_resource(&srv);
         let labels = k8s::Labels::from(srv.metadata.labels);
         let port = srv.spec.port;
+        let protocol = Self::mk_protocol(srv.spec.proxy_protocol.as_ref());
 
         let NsIndex {
             ref pods,
             authzs: ref ns_authzs,
             ref mut servers,
             default_mode: _,
-        } = self.namespaces.entry(ns_name).or_default();
+        } = self.namespaces.get_or_default(ns_name);
 
         match servers.entry(srv_name) {
             HashEntry::Vacant(entry) => {
-                let protocol = Self::mk_protocol(srv.spec.proxy_protocol.as_ref());
-
                 let mut authorizations = BTreeMap::new();
                 for (authz_name, a) in ns_authzs.iter() {
                     let matches = match a.servers {
@@ -932,10 +961,10 @@ impl Index {
     }
 
     fn rm_server(&mut self, ns_name: k8s::NsName, srv_name: polixy::server::Name) -> Result<()> {
-        let ns = self
-            .namespaces
-            .get_mut(&ns_name)
-            .ok_or_else(|| anyhow!("removing server from non-existent namespace {}", ns_name))?;
+        let ns =
+            self.namespaces.index.get_mut(&ns_name).ok_or_else(|| {
+                anyhow!("removing server from non-existent namespace {}", ns_name)
+            })?;
 
         if ns.servers.remove(&srv_name).is_none() {
             bail!("removing non-existent server {}", srv_name);
@@ -948,9 +977,7 @@ impl Index {
                 if sn.as_ref() == Some(&srv_name) {
                     debug!(pod = %pod_name, port = %port_num, "Removing server from pod");
                     *sn = None;
-                    let rx = self
-                        .defaults
-                        .rx(ns.default_mode.unwrap_or(self.default_mode));
+                    let rx = self.default_mode_rxs.get(ns.default_mode);
                     port.tx
                         .send(rx)
                         .expect("pod config receiver must still be held");
@@ -968,6 +995,7 @@ impl Index {
     fn reset_servers(&mut self, srvs: Vec<polixy::Server>) -> Result<()> {
         let mut prior_servers = self
             .namespaces
+            .index
             .iter()
             .map(|(n, ns)| {
                 let servers = ns
@@ -1034,7 +1062,7 @@ impl Index {
             ref mut authzs,
             ref mut servers,
             ..
-        } = self.namespaces.entry(ns_name).or_default();
+        } = self.namespaces.get_or_default(ns_name);
 
         match authzs.entry(authz_name) {
             HashEntry::Vacant(entry) => {
@@ -1201,6 +1229,7 @@ impl Index {
     fn rm_authz(&mut self, ns_name: k8s::NsName, authz_name: polixy::authz::Name) -> Result<()> {
         let ns = self
             .namespaces
+            .index
             .get_mut(&ns_name)
             .ok_or_else(|| anyhow!("removing authz from non-existent namespace"))?;
 
@@ -1216,6 +1245,7 @@ impl Index {
     fn reset_authzs(&mut self, authzs: Vec<polixy::ServerAuthorization>) -> Result<()> {
         let mut prior_authzs = self
             .namespaces
+            .index
             .iter()
             .map(|(n, ns)| (n.clone(), ns.authzs.clone()))
             .collect::<HashMap<_, _>>();

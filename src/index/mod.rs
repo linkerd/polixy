@@ -270,11 +270,10 @@ impl Index {
 
     /// Drives indexing for all resource types.
     ///
-    /// This is all driven on a single task, so it's not necessary for any of the
-    /// indexing logic to worry about concurrent access for the internal indexing
-    /// structures.  All updates are published to the shared `lookups` map after
-    /// indexing ocrurs; but the indexing task is soley responsible for mutating
-    /// it. The associated `Handle` is used for reads against this.
+    /// This is all driven on a single task, so it's not necessary for any of the indexing logic to
+    /// worry about concurrent access for the internal indexing structures.  All updates are
+    /// published to the shared `lookups` map after indexing occurs; but the indexing task is solely
+    /// responsible for mutating it. The associated `Handle` is used for reads against this.
     #[instrument(skip(self, resources), fields(result))]
     pub(crate) async fn index(mut self, resources: k8s::ResourceWatches) -> Error {
         let k8s::ResourceWatches {

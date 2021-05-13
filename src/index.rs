@@ -252,38 +252,35 @@ impl Index {
             let res = tokio::select! {
                 // Track namespace-level annotations
                 up = namespaces.recv() => match up {
-                    k8s::Event::Applied(ns) => self.apply_ns(ns).context("apply"),
-                    k8s::Event::Deleted(ns) => self.delete_ns(ns).context("delete"),
-                    k8s::Event::Restarted(nss) => self.reset_ns(nss).context("reset"),
-                }.context("namespaces"),
+                    k8s::Event::Applied(ns) => self.apply_ns(ns).context("applying a namespace"),
+                    k8s::Event::Deleted(ns) => self.delete_ns(ns).context("deleting a namespace"),
+                    k8s::Event::Restarted(nss) => self.reset_ns(nss).context("resetting namespaces"),
+                },
 
                 // Track the kubelet IPs for all nodes.
                 up = nodes.recv() => match up {
-                    k8s::Event::Applied(node) => self.apply_node(node).context("apply"),
-                    k8s::Event::Deleted(node) => self.delete_node(node).context("delete"),
-                    k8s::Event::Restarted(nodes) => self.reset_nodes(nodes).context("reset"),
-                }.context("nodes"),
+                    k8s::Event::Applied(node) => self.apply_node(node).context("applying a node"),
+                    k8s::Event::Deleted(node) => self.delete_node(node).context("deleting a node"),
+                    k8s::Event::Restarted(nodes) => self.reset_nodes(nodes).context("resetting nodes"),
+                },
 
                 up = pods.recv() => match up {
-                    k8s::Event::Applied(pod) => self.apply_pod(pod).context("apply"),
-                    k8s::Event::Deleted(pod) => self.delete_pod(pod).context("delete"),
-                    k8s::Event::Restarted(pods) => self.reset_pods(pods).context("reset"),
-                }.context("pods"),
+                    k8s::Event::Applied(pod) => self.apply_pod(pod).context("applying a pod"),
+                    k8s::Event::Deleted(pod) => self.delete_pod(pod).context("deleting a pod"),
+                    k8s::Event::Restarted(pods) => self.reset_pods(pods).context("resetting pods"),
+                },
 
                 up = servers.recv() => match up {
-                    k8s::Event::Applied(srv) => {
-                        self.apply_server(srv);
-                        Ok(())
-                    }
-                    k8s::Event::Deleted(srv) => self.delete_server(srv).context("delete"),
-                    k8s::Event::Restarted(srvs) => self.reset_servers(srvs).context("reset"),
-                }.context("servers"),
+                    k8s::Event::Applied(srv) => Ok(self.apply_server(srv)),
+                    k8s::Event::Deleted(srv) => self.delete_server(srv).context("deleting a server"),
+                    k8s::Event::Restarted(srvs) => self.reset_servers(srvs).context("resetting servers"),
+                },
 
                 up = authorizations.recv() => match up {
-                    k8s::Event::Applied(authz) => self.apply_authz(authz).context("apply"),
-                    k8s::Event::Deleted(authz) => self.delete_authz(authz).context("delete"),
-                    k8s::Event::Restarted(authzs) => self.reset_authzs(authzs).context("reset"),
-                }.context("authorizations"),
+                    k8s::Event::Applied(authz) => self.apply_authz(authz).context("applying an authorization"),
+                    k8s::Event::Deleted(authz) => self.delete_authz(authz).context("deleting an authorization"),
+                    k8s::Event::Restarted(authzs) => self.reset_authzs(authzs).context("resetting authorizations"),
+                },
             };
             if let Err(error) = res {
                 warn!(?error);

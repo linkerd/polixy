@@ -27,6 +27,7 @@ impl Index {
         let pod_name = k8s::PodName::from_resource(&pod);
         let spec = pod.spec.ok_or_else(|| anyhow!("pod missing spec"))?;
         let status = pod.status.ok_or_else(|| anyhow!("pod missing status"))?;
+        let labels = k8s::Labels::from(pod.metadata.labels);
 
         let NsIndex {
             default_mode,
@@ -39,8 +40,6 @@ impl Index {
 
         match (pods.index.entry(pod_name), lookups_entry) {
             (HashEntry::Vacant(pod_entry), DashEntry::Vacant(lookups_entry)) => {
-                let labels = k8s::Labels::from(pod.metadata.labels);
-
                 let kubelet = {
                     let name = spec
                         .node_name
@@ -151,8 +150,6 @@ impl Index {
             }
 
             (HashEntry::Occupied(mut pod_entry), DashEntry::Occupied(_)) => {
-                let labels = k8s::Labels::from(pod.metadata.labels);
-
                 if pod_entry.get().labels != labels {
                     for (srv_name, server) in servers.index.iter() {
                         let pod = pod_entry.get();

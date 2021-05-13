@@ -1,7 +1,5 @@
 use futures::prelude::*;
-use kube::api::Resource;
-use serde::de::DeserializeOwned;
-use std::{fmt, hash::Hash, pin::Pin};
+use std::pin::Pin;
 use tokio::time;
 use tracing::info;
 
@@ -20,11 +18,7 @@ where
     }
 }
 
-impl<T> Watch<T>
-where
-    T: Resource + Clone + DeserializeOwned + fmt::Debug + Send + Sync + 'static,
-    T::DynamicType: Clone + Eq + Hash + Default,
-{
+impl<T> Watch<T> {
     pub async fn recv(&mut self) -> Event<T> {
         loop {
             match self

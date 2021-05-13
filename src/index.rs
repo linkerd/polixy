@@ -271,7 +271,10 @@ impl Index {
                 },
 
                 up = servers.recv() => match up {
-                    k8s::Event::Applied(srv) => Ok(self.apply_server(srv)),
+                    k8s::Event::Applied(srv) => {
+                        self.apply_server(srv);
+                        Ok(())
+                    }
                     k8s::Event::Deleted(srv) => self.delete_server(srv).context("deleting a server"),
                     k8s::Event::Restarted(srvs) => self.reset_servers(srvs).context("resetting servers"),
                 },
@@ -341,7 +344,7 @@ impl Index {
         if self.namespaces.remove(name).is_none() {
             bail!("node {} already deleted", name);
         }
-        debug!("Deleted");
+        debug!(%name, "Deleted");
         Ok(())
     }
 

@@ -806,26 +806,7 @@ impl Index {
 
         match servers.index.entry(srv_name) {
             HashEntry::Vacant(entry) => {
-                let mut authorizations = BTreeMap::new();
-                for (authz_name, a) in ns_authzs.index.iter() {
-                    let matches = match a.servers {
-                        ServerSelector::Name(ref n) => {
-                            trace!(r#ref = %n, name = %entry.key());
-                            n == entry.key()
-                        }
-                        ServerSelector::Selector(ref s) => {
-                            trace!(selector = ?s, ?labels);
-                            s.matches(&labels)
-                        }
-                    };
-                    if matches {
-                        debug!(authz = %authz_name, %matches);
-                        authorizations.insert(Some(authz_name.clone()), a.clients.clone());
-                    } else {
-                        trace!(authz = %authz_name, %matches);
-                    }
-                }
-
+                let authorizations = ns_authzs.collect_by_server(entry.key(), &labels);
                 let meta = ServerMeta {
                     labels,
                     port,
@@ -846,8 +827,6 @@ impl Index {
             }
 
             HashEntry::Occupied(mut entry) => {
-                let protocol = Self::mk_protocol(srv.spec.proxy_protocol.as_ref());
-
                 // If something about the server changed, we need to update the
                 // config to reflect the change.
                 if entry.get().meta.labels != labels || entry.get().meta.protocol == protocol {
@@ -857,26 +836,7 @@ impl Index {
                     let mut config = entry.get().rx.borrow().clone();
 
                     if entry.get().meta.labels != labels {
-                        let mut authorizations = BTreeMap::new();
-                        for (authz_name, a) in ns_authzs.index.iter() {
-                            let matches = match a.servers {
-                                ServerSelector::Name(ref n) => {
-                                    trace!(r#ref = %n, name = %entry.key());
-                                    n == entry.key()
-                                }
-                                ServerSelector::Selector(ref s) => {
-                                    trace!(selector = ?s, ?labels);
-                                    s.matches(&labels)
-                                }
-                            };
-                            if matches {
-                                debug!(authz = %authz_name, %matches);
-                                authorizations.insert(Some(authz_name.clone()), a.clients.clone());
-                            } else {
-                                trace!(authz = %authz_name, %matches);
-                            }
-                        }
-
+                        let authorizations = ns_authzs.collect_by_server(entry.key(), &labels);
                         debug!(authzs = ?authorizations.keys());
                         config.authorizations = authorizations.clone();
                         entry.get_mut().meta.labels = labels;
@@ -1303,5 +1263,38 @@ impl Index {
         }
 
         result
+    }
+}
+
+// === impl AuthzIndex ===
+
+impl AuthzIndex {
+    fn collect_by_server(
+        &self,
+        name: &k8s::polixy::server::Name,
+        labels: &k8s::Labels,
+    ) -> BTreeMap<Option<k8s::polixy::authz::Name>, ClientAuthz> {
+        let mut authorizations = BTreeMap::new();
+
+        for (authz_name, a) in self.index.iter() {
+            let matches = match a.servers {
+                ServerSelector::Name(ref n) => {
+                    trace!(r#ref = %n, %name);
+                    n == name
+                }
+                ServerSelector::Selector(ref s) => {
+                    trace!(selector = ?s, ?labels);
+                    s.matches(&labels)
+                }
+            };
+            if matches {
+                debug!(authz = %authz_name, %matches);
+                authorizations.insert(Some(authz_name.clone()), a.clients.clone());
+            } else {
+                trace!(authz = %authz_name, %matches);
+            }
+        }
+
+        authorizations
     }
 }

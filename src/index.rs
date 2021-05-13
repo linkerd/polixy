@@ -58,12 +58,17 @@ struct NsIndex {
 
     /// Caches pod labels so we can differentiate innocuous updates (like status
     /// changes) from label changes that could impact server indexing.
-    pods: HashMap<k8s::PodName, Pod>,
+    pods: PodIndex,
 
     /// Caches a watch for each server.
-    servers: HashMap<polixy::server::Name, Server>,
+    servers: SrvIndex,
 
-    authzs: HashMap<polixy::authz::Name, Authz>,
+    authzs: AuthzIndex,
+}
+
+#[derive(Debug, Default)]
+struct PodIndex {
+    index: HashMap<k8s::PodName, Pod>,
 }
 
 #[derive(Debug)]
@@ -83,6 +88,11 @@ struct PodPort {
     tx: ServerRxTx,
 }
 
+#[derive(Debug, Default)]
+struct AuthzIndex {
+    index: HashMap<polixy::authz::Name, Authz>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Authz {
     servers: ServerSelector,
@@ -94,6 +104,11 @@ struct Authz {
 enum ServerSelector {
     Name(polixy::server::Name),
     Selector(Arc<k8s::labels::Selector>),
+}
+
+#[derive(Debug, Default)]
+struct SrvIndex {
+    index: HashMap<polixy::server::Name, Server>,
 }
 
 #[derive(Debug)]
@@ -225,9 +240,9 @@ impl Namespaces {
         let default_mode = self.default_mode;
         self.index.entry(name).or_insert_with(|| NsIndex {
             default_mode,
-            pods: HashMap::default(),
-            servers: HashMap::default(),
-            authzs: HashMap::default(),
+            pods: PodIndex::default(),
+            servers: SrvIndex::default(),
+            authzs: AuthzIndex::default(),
         })
     }
 }
@@ -341,7 +356,7 @@ impl Index {
             ns.default_mode = mode;
 
             let rx = self.default_mode_rxs.get(mode);
-            for pod in ns.pods.values() {
+            for pod in ns.pods.index.values() {
                 for p in pod.ports.values() {
                     let srv = p.server_name.lock();
                     if srv.is_none() && p.tx.send(rx.clone()).is_err() {
@@ -518,7 +533,7 @@ impl Index {
 
         let lookups_entry = self.lookups.entry((ns_name, pod_name.clone()));
 
-        match (pods.entry(pod_name), lookups_entry) {
+        match (pods.index.entry(pod_name), lookups_entry) {
             (HashEntry::Vacant(pod_entry), DashEntry::Vacant(lookups_entry)) => {
                 let labels = k8s::Labels::from(pod.metadata.labels);
 
@@ -600,7 +615,7 @@ impl Index {
                     }
                 }
 
-                for (srv_name, server) in servers.iter() {
+                for (srv_name, server) in servers.index.iter() {
                     if server.meta.pod_selector.matches(&labels) {
                         for port in
                             Self::get_ports(&server.meta.port, &ports_by_name, &ports).into_iter()
@@ -635,7 +650,7 @@ impl Index {
                 let labels = k8s::Labels::from(pod.metadata.labels);
 
                 if pod_entry.get().labels != labels {
-                    for (srv_name, server) in servers.iter() {
+                    for (srv_name, server) in servers.index.iter() {
                         let pod = pod_entry.get();
                         if server.meta.pod_selector.matches(&labels) {
                             for port in
@@ -706,6 +721,7 @@ impl Index {
             .get_mut(ns)
             .ok_or_else(|| anyhow!("namespace {} doesn't exist", ns))?
             .pods
+            .index
             .remove(pod)
             .ok_or_else(|| anyhow!("pod {} doesn't exist", pod))?;
 
@@ -727,6 +743,7 @@ impl Index {
             .map(|(n, ns)| {
                 let pods = ns
                     .pods
+                    .index
                     .iter()
                     .map(|(n, p)| (n.clone(), p.labels.clone()))
                     .collect::<HashMap<_, _>>();
@@ -787,10 +804,10 @@ impl Index {
             default_mode: _,
         } = self.namespaces.get_or_default(ns_name);
 
-        match servers.entry(srv_name) {
+        match servers.index.entry(srv_name) {
             HashEntry::Vacant(entry) => {
                 let mut authorizations = BTreeMap::new();
-                for (authz_name, a) in ns_authzs.iter() {
+                for (authz_name, a) in ns_authzs.index.iter() {
                     let matches = match a.servers {
                         ServerSelector::Name(ref n) => {
                             trace!(r#ref = %n, name = %entry.key());
@@ -841,7 +858,7 @@ impl Index {
 
                     if entry.get().meta.labels != labels {
                         let mut authorizations = BTreeMap::new();
-                        for (authz_name, a) in ns_authzs.iter() {
+                        for (authz_name, a) in ns_authzs.index.iter() {
                             let matches = match a.servers {
                                 ServerSelector::Name(ref n) => {
                                     trace!(r#ref = %n, name = %entry.key());
@@ -892,8 +909,8 @@ impl Index {
 
         // If we've updated the server->pod selection, then we need to reindex
         // all pods and servers.
-        for (pod_name, pod) in pods.iter() {
-            for (srv_name, srv) in servers.iter() {
+        for (pod_name, pod) in pods.index.iter() {
+            for (srv_name, srv) in servers.index.iter() {
                 if srv.meta.pod_selector.matches(&pod.labels) {
                     for pod_port in
                         Self::get_ports(&srv.meta.port, &*pod.ports_by_name, &*pod.ports)
@@ -966,12 +983,12 @@ impl Index {
                 anyhow!("removing server from non-existent namespace {}", ns_name)
             })?;
 
-        if ns.servers.remove(&srv_name).is_none() {
+        if ns.servers.index.remove(&srv_name).is_none() {
             bail!("removing non-existent server {}", srv_name);
         }
 
         // Reset the server config for all pods that were using this server.
-        for (pod_name, pod) in ns.pods.iter() {
+        for (pod_name, pod) in ns.pods.index.iter() {
             for (port_num, port) in pod.ports.iter() {
                 let mut sn = port.server_name.lock();
                 if sn.as_ref() == Some(&srv_name) {
@@ -1000,6 +1017,7 @@ impl Index {
             .map(|(n, ns)| {
                 let servers = ns
                     .servers
+                    .index
                     .iter()
                     .map(|(n, s)| (n.clone(), s.meta.clone()))
                     .collect::<HashMap<_, _>>();
@@ -1064,9 +1082,9 @@ impl Index {
             ..
         } = self.namespaces.get_or_default(ns_name);
 
-        match authzs.entry(authz_name) {
+        match authzs.index.entry(authz_name) {
             HashEntry::Vacant(entry) => {
-                for (srv_name, srv) in servers.iter_mut() {
+                for (srv_name, srv) in servers.index.iter_mut() {
                     let matches = match authz.servers {
                         ServerSelector::Name(ref n) => n == srv_name,
                         ServerSelector::Selector(ref s) => s.matches(&srv.meta.labels),
@@ -1082,7 +1100,7 @@ impl Index {
             HashEntry::Occupied(mut entry) => {
                 // If the authorization changed materially, then update it in all servers.
                 if entry.get() != &authz {
-                    for (srv_name, srv) in servers.iter_mut() {
+                    for (srv_name, srv) in servers.index.iter_mut() {
                         let matches = match authz.servers {
                             ServerSelector::Name(ref n) => n == srv_name,
                             ServerSelector::Selector(ref s) => s.matches(&srv.meta.labels),
@@ -1233,7 +1251,7 @@ impl Index {
             .get_mut(&ns_name)
             .ok_or_else(|| anyhow!("removing authz from non-existent namespace"))?;
 
-        for srv in ns.servers.values_mut() {
+        for srv in ns.servers.index.values_mut() {
             srv.remove_authz(authz_name.clone());
         }
 
@@ -1247,7 +1265,7 @@ impl Index {
             .namespaces
             .index
             .iter()
-            .map(|(n, ns)| (n.clone(), ns.authzs.clone()))
+            .map(|(n, ns)| (n.clone(), ns.authzs.index.clone()))
             .collect::<HashMap<_, _>>();
 
         let mut result = Ok(());

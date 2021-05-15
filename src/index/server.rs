@@ -4,10 +4,7 @@ use crate::{
     InboundServerConfig, ProxyProtocol,
 };
 use anyhow::{anyhow, bail, Result};
-use std::{
-    collections::{hash_map::Entry as HashEntry, HashMap},
-    sync::Arc,
-};
+use std::collections::{hash_map::Entry as HashEntry, HashMap, HashSet};
 use tokio::{sync::watch, time};
 use tracing::{debug, instrument, trace};
 
@@ -154,12 +151,7 @@ impl Index {
             .index
             .iter()
             .map(|(n, ns)| {
-                let servers = ns
-                    .servers
-                    .index
-                    .iter()
-                    .map(|(n, s)| (n.clone(), s.meta.clone()))
-                    .collect::<HashMap<_, _>>();
+                let servers = ns.servers.index.keys().cloned().collect::<HashSet<_>>();
                 (n.clone(), servers)
             })
             .collect::<HashMap<_, _>>();
@@ -167,27 +159,16 @@ impl Index {
         let mut result = Ok(());
         for srv in srvs.into_iter() {
             let ns_name = k8s::NsName::from_srv(&srv);
-            let srv_name = polixy::server::Name::from_server(&srv);
-
-            if let Some(prior_servers) = prior_servers.get_mut(&ns_name) {
-                if let Some(prior_meta) = prior_servers.remove(&srv_name) {
-                    let meta = ServerMeta {
-                        labels: k8s::Labels::from(srv.metadata.labels.clone()),
-                        port: srv.spec.port.clone(),
-                        pod_selector: Arc::new(srv.spec.pod_selector.clone()),
-                        protocol: mk_protocol(srv.spec.proxy_protocol.as_ref()),
-                    };
-                    if prior_meta == meta {
-                        continue;
-                    }
-                }
+            if let Some(ns) = prior_servers.get_mut(&ns_name) {
+                let srv_name = polixy::server::Name::from_server(&srv);
+                ns.remove(&srv_name);
             }
 
             self.apply_server(srv);
         }
 
         for (ns_name, ns_servers) in prior_servers.into_iter() {
-            for (srv_name, _) in ns_servers.into_iter() {
+            for srv_name in ns_servers.into_iter() {
                 if let Err(e) = self.rm_server(ns_name.clone(), srv_name) {
                     result = Err(e);
                 }

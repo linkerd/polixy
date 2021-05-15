@@ -31,28 +31,29 @@ impl Index {
         } = self.namespaces.get_or_default(ns_name.clone());
 
         let pod_name = k8s::PodName::from_resource(&pod);
-        let spec = pod.spec.ok_or_else(|| anyhow!("pod missing spec"))?;
-        let status = pod.status.ok_or_else(|| anyhow!("pod missing status"))?;
-        let default_mode = match DefaultMode::from_annotation(&pod.metadata) {
-            Ok(Some(mode)) => mode,
-            Ok(None) => *default_mode,
-            Err(error) => {
-                tracing::warn!(%error, "Ignoring invalid default-mode annotation");
-                *default_mode
-            }
-        };
-        let labels = k8s::Labels::from(pod.metadata.labels);
-
         let lookup_key = (ns_name, pod_name.clone());
         match pods.index.entry(pod_name) {
             HashEntry::Vacant(pod_entry) => {
-                let pod_ips = mk_pod_ips(status)?;
+                let default_mode = match DefaultMode::from_annotation(&pod.metadata) {
+                    Ok(Some(mode)) => mode,
+                    Ok(None) => *default_mode,
+                    Err(error) => {
+                        tracing::warn!(%error, "Ignoring invalid default-mode annotation");
+                        *default_mode
+                    }
+                };
+
+                let spec = pod.spec.ok_or_else(|| anyhow!("pod missing spec"))?;
                 let kubelet_ips = mk_kubelet_ips(&spec, &self.node_ips)?;
+
+                let status = pod.status.ok_or_else(|| anyhow!("pod missing status"))?;
+                let pod_ips = mk_pod_ips(status)?;
 
                 let default_server = self.default_mode_rxs.get(default_mode);
                 let (pod_servers, lookups) =
                     collect_pod_servers(spec, default_server, pod_ips, kubelet_ips);
 
+                let labels = k8s::Labels::from(pod.metadata.labels);
                 Self::link_pod_servers(&servers, &labels, &pod_servers);
 
                 if self.lookups.insert(lookup_key, lookups).is_some() {
@@ -71,6 +72,7 @@ impl Index {
                     "pod must exist in lookups"
                 );
 
+                let labels = k8s::Labels::from(pod.metadata.labels);
                 let p = pod_entry.get_mut();
                 if p.labels != labels {
                     Self::link_pod_servers(&servers, &labels, &p.servers);

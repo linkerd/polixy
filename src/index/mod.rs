@@ -153,7 +153,7 @@ impl Server {
 // === impl DefaultModeRxs ===
 
 impl DefaultModeRxs {
-    fn new(cluster_nets: Vec<ipnet::IpNet>) -> Self {
+    fn new(cluster_nets: Vec<ipnet::IpNet>, detect_timeout: time::Duration) -> Self {
         let all_nets = [
             ipnet::IpNet::V4(Default::default()),
             ipnet::IpNet::V6(Default::default()),
@@ -161,17 +161,20 @@ impl DefaultModeRxs {
 
         // A default config to be provided to pods when no matching server
         // exists.
-        let (_external_tx, external_rx) = watch::channel(Self::config(
+        let (_external_tx, external_rx) = watch::channel(Self::mk_detect_config(
+            detect_timeout,
             all_nets.iter().copied(),
             ClientAuthn::Unauthenticated,
         ));
 
-        let (_cluster_tx, cluster_rx) = watch::channel(Self::config(
+        let (_cluster_tx, cluster_rx) = watch::channel(Self::mk_detect_config(
+            detect_timeout,
             cluster_nets.iter().cloned(),
             ClientAuthn::Unauthenticated,
         ));
 
-        let (_authenticated_tx, authenticated_rx) = watch::channel(Self::config(
+        let (_authenticated_tx, authenticated_rx) = watch::channel(Self::mk_detect_config(
+            detect_timeout,
             cluster_nets,
             ClientAuthn::Authenticated {
                 identities: vec![Identity::Suffix(vec![].into())],
@@ -181,7 +184,7 @@ impl DefaultModeRxs {
 
         let (_deny_tx, deny_rx) = watch::channel(InboundServerConfig {
             protocol: ProxyProtocol::Detect {
-                timeout: time::Duration::from_secs(5),
+                timeout: detect_timeout,
             },
             authorizations: Default::default(),
         });
@@ -198,30 +201,26 @@ impl DefaultModeRxs {
         }
     }
 
-    fn config(
+    fn mk_detect_config(
+        timeout: time::Duration,
         nets: impl IntoIterator<Item = ipnet::IpNet>,
         authentication: ClientAuthn,
     ) -> InboundServerConfig {
-        InboundServerConfig {
-            protocol: ProxyProtocol::Detect {
-                timeout: time::Duration::from_secs(5),
-            },
-            authorizations: Some((
-                None,
-                ClientAuthz {
-                    networks: nets
-                        .into_iter()
-                        .map(|net| ClientNetwork {
-                            net,
-                            except: vec![],
-                        })
-                        .collect::<Vec<_>>()
-                        .into(),
-                    authentication,
-                },
-            ))
+        let networks = nets
             .into_iter()
-            .collect(),
+            .map(|net| ClientNetwork {
+                net,
+                except: vec![],
+            })
+            .collect::<Vec<_>>();
+        let authz = ClientAuthz {
+            networks: networks.into(),
+            authentication,
+        };
+
+        InboundServerConfig {
+            protocol: ProxyProtocol::Detect { timeout },
+            authorizations: Some((None, authz)).into_iter().collect(),
         }
     }
 
@@ -256,6 +255,7 @@ impl Index {
         lookups: SharedLookupMap,
         cluster_nets: Vec<ipnet::IpNet>,
         default_mode: DefaultMode,
+        detect_timeout: time::Duration,
     ) -> Self {
         let namespaces = Namespaces {
             default_mode,
@@ -265,7 +265,7 @@ impl Index {
             lookups,
             namespaces,
             node_ips: HashMap::default(),
-            default_mode_rxs: DefaultModeRxs::new(cluster_nets),
+            default_mode_rxs: DefaultModeRxs::new(cluster_nets, detect_timeout),
         }
     }
 

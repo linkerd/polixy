@@ -31,8 +31,7 @@ impl Index {
         } = self.namespaces.get_or_default(ns_name.clone());
 
         let pod_name = k8s::PodName::from_resource(&pod);
-        let lookup_key = (ns_name, pod_name.clone());
-        match pods.index.entry(pod_name) {
+        match pods.index.entry(pod_name.clone()) {
             HashEntry::Vacant(pod_entry) => {
                 let default_mode = match DefaultMode::from_annotation(&pod.metadata) {
                     Ok(Some(mode)) => mode,
@@ -56,7 +55,7 @@ impl Index {
                 let labels = k8s::Labels::from(pod.metadata.labels);
                 Self::link_pod_servers(&servers, &labels, &pod_servers);
 
-                if self.lookups.insert(lookup_key, lookups).is_some() {
+                if self.lookups.insert((ns_name, pod_name), lookups).is_some() {
                     unreachable!("pod must not exist in lookups");
                 }
 
@@ -68,7 +67,7 @@ impl Index {
 
             HashEntry::Occupied(mut pod_entry) => {
                 debug_assert!(
-                    self.lookups.contains_key(&lookup_key),
+                    self.lookups.contains_key(&(ns_name, pod_name)),
                     "pod must exist in lookups"
                 );
 
@@ -94,15 +93,18 @@ impl Index {
         for (srv_name, server) in servers.index.iter() {
             if server.meta.pod_selector.matches(&pod_labels) {
                 for port in get_ports(&server.meta.port, ports).into_iter() {
-                    // TODO handle conflicts
                     let mut sn = port.server_name.lock();
                     if let Some(sn) = sn.as_ref() {
-                        debug_assert!(
-                            sn == srv_name,
-                            "pod port matches multiple servers: {} and {}",
-                            sn,
-                            srv_name
-                        );
+                        if sn != srv_name {
+                            // TODO handle conflicts differently?
+                            tracing::warn!(
+                                "Pod port matches multiple servers: {} and {}",
+                                sn,
+                                srv_name
+                            );
+                            debug_assert!(false);
+                            continue;
+                        }
                     }
                     *sn = Some(srv_name.clone());
 
@@ -133,22 +135,22 @@ impl Index {
     pub(super) fn delete_pod(&mut self, pod: k8s::Pod) -> Result<()> {
         let ns_name = k8s::NsName::from_resource(&pod);
         let pod_name = k8s::PodName::from_resource(&pod);
-        self.rm_pod(&ns_name, &pod_name)
+        self.rm_pod(ns_name, pod_name)
     }
 
-    fn rm_pod(&mut self, ns: &k8s::NsName, pod: &k8s::PodName) -> Result<()> {
+    fn rm_pod(&mut self, ns: k8s::NsName, pod: k8s::PodName) -> Result<()> {
         self.namespaces
             .index
-            .get_mut(ns)
+            .get_mut(&ns)
             .ok_or_else(|| anyhow!("namespace {} doesn't exist", ns))?
             .pods
             .index
-            .remove(pod)
+            .remove(&pod)
             .ok_or_else(|| anyhow!("pod {} doesn't exist", pod))?;
 
         self.lookups
-            .remove(&(ns.clone(), pod.clone()))
-            .ok_or_else(|| anyhow!("pod {} doesn't exist in namespace {}", pod, ns))?;
+            .remove(&(ns, pod))
+            .ok_or_else(|| anyhow!("pod doesn't exist in namespace"))?;
 
         debug!("Removed pod");
 
@@ -193,7 +195,7 @@ impl Index {
 
         for (ns, pods) in prior_pod_labels.into_iter() {
             for (pod, _) in pods.into_iter() {
-                if let Err(error) = self.rm_pod(&ns, &pod) {
+                if let Err(error) = self.rm_pod(ns.clone(), pod) {
                     result = Err(error);
                 }
             }

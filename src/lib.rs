@@ -105,12 +105,18 @@ impl LookupHandle {
         client: kube::Client,
         cluster_networks: Vec<ipnet::IpNet>,
         default_mode: DefaultMode,
+        detect_timeout: time::Duration,
     ) -> (Self, impl std::future::Future<Output = anyhow::Error>) {
         let lookups = SharedLookupMap::default();
 
         // Watches Nodes, Pods, Servers, and Authorizations to update the lookup map
         // with an entry for each linkerd-injected pod.
-        let idx = index::Index::new(lookups.clone(), cluster_networks, default_mode);
+        let idx = index::Index::new(
+            lookups.clone(),
+            cluster_networks,
+            default_mode,
+            detect_timeout,
+        );
 
         (Self(lookups), idx.index(k8s::ResourceWatches::new(client)))
     }

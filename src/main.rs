@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use futures::{future, prelude::*};
 use polixy::DefaultMode;
 use structopt::StructOpt;
-//use tokio::{sync::watch, time};
+use tokio::time;
 use tracing::{debug, info, instrument};
 
 #[derive(Debug, StructOpt)]
@@ -70,8 +70,9 @@ async fn main() -> Result<()> {
                 .await
                 .context("failed to initialize kubernetes client")?;
 
+            const DETECT_TIMEOUT: time::Duration = time::Duration::from_secs(10);
             let (handle, index_task) =
-                polixy::LookupHandle::run(client, cluster_networks, default_mode);
+                polixy::LookupHandle::run(client, cluster_networks, default_mode, DETECT_TIMEOUT);
             let index_task = tokio::spawn(index_task);
 
             let grpc = tokio::spawn(grpc(port, handle, drain_rx, identity_domain));

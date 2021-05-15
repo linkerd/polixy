@@ -34,7 +34,7 @@ impl Index {
 
             let rx = self.default_mode_rxs.get(mode);
             for pod in ns.pods.index.values() {
-                for p in pod.ports.values() {
+                for p in pod.servers.by_port.values() {
                     let srv = p.server_name.lock();
                     if srv.is_none() && p.tx.send(rx.clone()).is_err() {
                         warn!(server = ?*srv, "Failed to update server");

@@ -1,4 +1,4 @@
-use super::{Index, NsIndex, Pod, PodPort, PodPorts, PortNames, SrvIndex};
+use super::{Index, NsIndex, Pod, PodServer, PodServers, SrvIndex};
 use crate::{
     k8s::{self, polixy},
     FromResource, Lookup, PodIps,
@@ -68,40 +68,37 @@ impl Index {
                     PodIps(ips.into())
                 };
 
-                let mut ports = PodPorts::default();
-                let mut ports_by_name = PortNames::default();
                 let mut lookups = HashMap::new();
+                let mut pod_servers = PodServers::default();
+
                 for container in spec.containers.into_iter() {
                     if let Some(ps) = container.ports {
                         for p in ps.into_iter() {
                             if p.protocol.map(|p| p == "TCP").unwrap_or(true) {
                                 let port = p.container_port as u16;
-                                if ports.contains_key(&port) {
+                                if pod_servers.by_port.contains_key(&port) {
                                     debug!(port, "Port duplicated");
                                     continue;
                                 }
 
                                 let server_rx = self.default_mode_rxs.get(*default_mode);
                                 let (tx, rx) = watch::channel(server_rx);
-                                let pod_port = Arc::new(PodPort {
+                                let pod_port = Arc::new(PodServer {
                                     tx,
                                     server_name: Mutex::new(None),
                                 });
 
                                 let name = p.name.map(k8s::polixy::server::PortName::from);
                                 if let Some(name) = name.clone() {
-                                    match ports_by_name.entry(name).or_default().entry(port) {
-                                        HashEntry::Vacant(entry) => {
-                                            entry.insert(pod_port.clone());
-                                        }
-                                        HashEntry::Occupied(_) => {
-                                            unreachable!("port numbers must not be duplicated");
-                                        }
-                                    }
+                                    pod_servers
+                                        .by_name
+                                        .entry(name)
+                                        .or_default()
+                                        .push(pod_port.clone());
                                 }
 
                                 trace!(%port, ?name, "Adding port");
-                                ports.insert(port, pod_port);
+                                pod_servers.by_port.insert(port, pod_port);
                                 lookups.insert(
                                     port,
                                     Lookup {
@@ -116,15 +113,14 @@ impl Index {
                     }
                 }
 
-                Self::link_servers(&servers, &labels, &ports_by_name, &ports);
+                Self::link_pod_servers(&servers, &labels, &pod_servers);
 
                 self.lookups
                     .insert(lookup_key, Arc::new(lookups))
                     .expect("pod must not exist in lookups");
 
                 pod_entry.insert(Pod {
-                    ports_by_name: ports_by_name.into(),
-                    ports: ports.into(),
+                    servers: pod_servers.into(),
                     labels,
                 });
             }
@@ -135,10 +131,10 @@ impl Index {
                     "pod must exist in lookups"
                 );
 
-                if pod_entry.get().labels != labels {
-                    let p = pod_entry.get();
-                    Self::link_servers(&servers, &labels, &p.ports_by_name, &p.ports);
-                    pod_entry.get_mut().labels = labels;
+                let p = pod_entry.get_mut();
+                if p.labels != labels {
+                    Self::link_pod_servers(&servers, &labels, &p.servers);
+                    p.labels = labels;
                 }
             }
         }
@@ -146,47 +142,57 @@ impl Index {
         Ok(())
     }
 
-    fn link_servers(
+    pub(super) fn link_pod_servers(
         servers: &SrvIndex,
-        labels: &k8s::Labels,
-        ports_by_name: &PortNames,
-        ports: &PodPorts,
+        pod_labels: &k8s::Labels,
+        ports: &PodServers,
     ) {
         for (srv_name, server) in servers.index.iter() {
-            if server.meta.pod_selector.matches(&labels) {
-                for port in Self::get_ports(&server.meta.port, ports_by_name, ports).into_iter() {
+            if server.meta.pod_selector.matches(&pod_labels) {
+                for port in Self::get_ports(&server.meta.port, ports).into_iter() {
                     // TODO handle conflicts
-                    *port.server_name.lock() = Some(srv_name.clone());
+                    let mut sn = port.server_name.lock();
+                    if let Some(sn) = sn.as_ref() {
+                        debug_assert!(
+                            sn == srv_name,
+                            "pod port matches multiple servers: {} and {}",
+                            sn,
+                            srv_name
+                        );
+                    }
+                    *sn = Some(srv_name.clone());
+
                     port.tx
                         .send(server.rx.clone())
                         .expect("pod config receiver must be set");
                     debug!(server = %srv_name, "Pod server udpated");
-                    trace!(selector = ?server.meta.pod_selector, ?labels);
+                    trace!(selector = ?server.meta.pod_selector, ?pod_labels);
                 }
             } else {
                 trace!(
                     server = %srv_name,
                     selector = ?server.meta.pod_selector,
-                    ?labels,
+                    ?pod_labels,
                     "Does not match",
                 );
             }
         }
     }
 
-    pub(super) fn get_ports(
-        port_match: &polixy::server::Port,
-        ports_by_name: &PortNames,
-        ports: &PodPorts,
-    ) -> Vec<Arc<PodPort>> {
+    fn get_ports(port_match: &polixy::server::Port, ports: &PodServers) -> Vec<Arc<PodServer>> {
         match port_match {
-            polixy::server::Port::Number(ref port) => {
-                ports.get(port).into_iter().cloned().collect::<Vec<_>>()
-            }
-            polixy::server::Port::Name(ref name) => ports_by_name
+            polixy::server::Port::Number(ref port) => ports
+                .by_port
+                .get(port)
+                .into_iter()
+                .cloned()
+                .collect::<Vec<_>>(),
+            polixy::server::Port::Name(ref name) => ports
+                .by_name
                 .get(name)
                 .into_iter()
-                .flat_map(|p| p.values().cloned())
+                .flat_map(|p| p.iter())
+                .cloned()
                 .collect::<Vec<_>>(),
         }
     }

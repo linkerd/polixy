@@ -96,47 +96,10 @@ impl Index {
             }
         }
 
-        // If we've updated the server->pod selection, then we need to reindex
+        // If we've updated the server->pod selection, then we need to re-index
         // all pods and servers.
-        for (pod_name, pod) in pods.index.iter() {
-            for (srv_name, srv) in servers.index.iter() {
-                if srv.meta.pod_selector.matches(&pod.labels) {
-                    for pod_port in
-                        Self::get_ports(&srv.meta.port, &*pod.ports_by_name, &*pod.ports)
-                            .into_iter()
-                    {
-                        debug!(pod = %pod_name, port = ?srv.meta.port, "Matches");
-
-                        // TODO handle conflicts
-                        let mut sn = pod_port.server_name.lock();
-                        if let Some(sn) = sn.as_ref() {
-                            debug_assert!(
-                                sn == srv_name,
-                                "pod port matches multiple servers: {} and {}",
-                                sn,
-                                srv_name
-                            );
-                        }
-                        *sn = Some(srv_name.clone());
-
-                        // It's up to the lookup stream to de-duplicate updates.
-                        pod_port
-                            .tx
-                            .send(srv.rx.clone())
-                            .expect("pod config receiver is held");
-                        debug!(server = %srv_name, "Pod server udpated");
-                        trace!(selector = ?srv.meta.pod_selector, labels = ?pod.labels);
-                    }
-                } else {
-                    trace!(
-                        server = %srv_name,
-                        pod = %pod_name,
-                        selector = ?srv.meta.pod_selector,
-                        labels = ?pod.labels,
-                        "Does not match",
-                    );
-                }
-            }
+        for pod in pods.index.values() {
+            Self::link_pod_servers(servers, &pod.labels, &pod.servers);
         }
     }
 
@@ -178,7 +141,7 @@ impl Index {
 
         // Reset the server config for all pods that were using this server.
         for (pod_name, pod) in ns.pods.index.iter() {
-            for (port_num, port) in pod.ports.iter() {
+            for (port_num, port) in pod.servers.by_port.iter() {
                 let mut sn = port.server_name.lock();
                 if sn.as_ref() == Some(&srv_name) {
                     debug!(pod = %pod_name, port = %port_num, "Removing server from pod");

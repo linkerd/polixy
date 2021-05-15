@@ -74,17 +74,18 @@ struct PodIndex {
 
 #[derive(Debug)]
 struct Pod {
-    ports: Arc<PodPorts>,
-    ports_by_name: Arc<PortNames>,
+    servers: Arc<PodServers>,
     labels: k8s::Labels,
 }
 
-type PodPorts = HashMap<u16, Arc<PodPort>>;
-
-type PortNames = HashMap<polixy::server::PortName, PodPorts>;
+#[derive(Debug, Default)]
+struct PodServers {
+    by_port: HashMap<u16, Arc<PodServer>>,
+    by_name: HashMap<polixy::server::PortName, Vec<Arc<PodServer>>>,
+}
 
 #[derive(Debug)]
-struct PodPort {
+struct PodServer {
     server_name: Mutex<Option<polixy::server::Name>>,
     tx: ServerRxTx,
 }

@@ -24,7 +24,7 @@ impl Index {
         let srv_name = polixy::server::Name::from_resource(&srv);
         let labels = k8s::Labels::from(srv.metadata.labels);
         let port = srv.spec.port;
-        let protocol = Self::mk_protocol(srv.spec.proxy_protocol.as_ref());
+        let protocol = mk_protocol(srv.spec.proxy_protocol.as_ref());
 
         let NsIndex {
             ref pods,
@@ -56,7 +56,7 @@ impl Index {
             }
 
             HashEntry::Occupied(mut entry) => {
-                // If something about the server changed, we need to update the
+                // If something about the server changedSelf::WatchInboundPortStream, we need to update the
                 // config to reflect the change.
                 if entry.get().meta.labels != labels || entry.get().meta.protocol == protocol {
                     // NB: Only a single task applies server updates, so it's
@@ -100,19 +100,6 @@ impl Index {
         // all pods and servers.
         for pod in pods.index.values() {
             Self::link_pod_servers(servers, &pod.labels, &pod.servers);
-        }
-    }
-
-    fn mk_protocol(p: Option<&polixy::server::ProxyProtocol>) -> ProxyProtocol {
-        match p {
-            Some(polixy::server::ProxyProtocol::Unknown) | None => ProxyProtocol::Detect {
-                timeout: time::Duration::from_secs(5),
-            },
-            Some(polixy::server::ProxyProtocol::Http1) => ProxyProtocol::Http1,
-            Some(polixy::server::ProxyProtocol::Http2) => ProxyProtocol::Http2,
-            Some(polixy::server::ProxyProtocol::Grpc) => ProxyProtocol::Grpc,
-            Some(polixy::server::ProxyProtocol::Opaque) => ProxyProtocol::Opaque,
-            Some(polixy::server::ProxyProtocol::Tls) => ProxyProtocol::Tls,
         }
     }
 
@@ -184,14 +171,11 @@ impl Index {
 
             if let Some(prior_servers) = prior_servers.get_mut(&ns_name) {
                 if let Some(prior_meta) = prior_servers.remove(&srv_name) {
-                    let labels = k8s::Labels::from(srv.metadata.labels.clone());
-                    let port = srv.spec.port.clone();
-                    let protocol = Self::mk_protocol(srv.spec.proxy_protocol.as_ref());
                     let meta = ServerMeta {
-                        labels,
-                        port,
+                        labels: k8s::Labels::from(srv.metadata.labels.clone()),
+                        port: srv.spec.port.clone(),
                         pod_selector: Arc::new(srv.spec.pod_selector.clone()),
-                        protocol,
+                        protocol: mk_protocol(srv.spec.proxy_protocol.as_ref()),
                     };
                     if prior_meta == meta {
                         continue;
@@ -211,5 +195,18 @@ impl Index {
         }
 
         result
+    }
+}
+
+fn mk_protocol(p: Option<&polixy::server::ProxyProtocol>) -> ProxyProtocol {
+    match p {
+        Some(polixy::server::ProxyProtocol::Unknown) | None => ProxyProtocol::Detect {
+            timeout: time::Duration::from_secs(5),
+        },
+        Some(polixy::server::ProxyProtocol::Http1) => ProxyProtocol::Http1,
+        Some(polixy::server::ProxyProtocol::Http2) => ProxyProtocol::Http2,
+        Some(polixy::server::ProxyProtocol::Grpc) => ProxyProtocol::Grpc,
+        Some(polixy::server::ProxyProtocol::Opaque) => ProxyProtocol::Opaque,
+        Some(polixy::server::ProxyProtocol::Tls) => ProxyProtocol::Tls,
     }
 }

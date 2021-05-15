@@ -6,7 +6,7 @@ use crate::{
 use anyhow::{anyhow, bail, Context, Result};
 use ipnet::IpNet;
 use std::{
-    collections::{hash_map::Entry as HashEntry, HashMap},
+    collections::{hash_map::Entry as HashEntry, HashMap, HashSet},
     sync::Arc,
 };
 use tracing::{debug, instrument};
@@ -22,8 +22,7 @@ impl Index {
     pub(super) fn apply_authz(&mut self, authz: polixy::ServerAuthorization) -> Result<()> {
         let ns_name = k8s::NsName::from_authz(&authz);
         let authz_name = polixy::authz::Name::from_authz(&authz);
-        let authz = mk_authz(&ns_name, authz.spec)
-            .with_context(|| format!("ns={}, authz={}", ns_name, authz_name))?;
+        let authz = mk_authz(&ns_name, authz.spec)?;
 
         let NsIndex {
             ref mut authzs,
@@ -105,28 +104,18 @@ impl Index {
             .namespaces
             .index
             .iter()
-            .map(|(n, ns)| (n.clone(), ns.authzs.index.clone()))
+            .map(|(n, ns)| {
+                let authzs = ns.authzs.index.keys().cloned().collect::<HashSet<_>>();
+                (n.clone(), authzs)
+            })
             .collect::<HashMap<_, _>>();
 
         let mut result = Ok(());
         for authz in authzs.into_iter() {
             let ns_name = k8s::NsName::from_authz(&authz);
-            let authz_name = polixy::authz::Name::from_authz(&authz);
-
-            if let Some(prior_ns) = prior_authzs.get_mut(&ns_name) {
-                if let Some(prior_authz) = prior_ns.remove(&authz_name) {
-                    match mk_authz(&ns_name, authz.spec.clone()) {
-                        Ok(meta) => {
-                            if prior_authz == meta {
-                                continue;
-                            }
-                        }
-                        Err(e) => {
-                            result = Err(e);
-                            continue;
-                        }
-                    }
-                }
+            if let Some(ns) = prior_authzs.get_mut(&ns_name) {
+                let authz_name = polixy::authz::Name::from_authz(&authz);
+                ns.remove(&authz_name);
             }
 
             if let Err(e) = self.apply_authz(authz) {
@@ -135,7 +124,7 @@ impl Index {
         }
 
         for (ns_name, ns_authzs) in prior_authzs.into_iter() {
-            for (authz_name, _) in ns_authzs.into_iter() {
+            for authz_name in ns_authzs.into_iter() {
                 if let Err(e) = self.rm_authz(ns_name.clone(), authz_name) {
                     result = Err(e);
                 }

@@ -115,9 +115,9 @@ impl Index {
 
                 Self::link_pod_servers(&servers, &labels, &pod_servers);
 
-                self.lookups
-                    .insert(lookup_key, Arc::new(lookups))
-                    .expect("pod must not exist in lookups");
+                if self.lookups.insert(lookup_key, Arc::new(lookups)).is_some() {
+                    unreachable!("pod must not exist in lookups");
+                }
 
                 pod_entry.insert(Pod {
                     servers: pod_servers.into(),

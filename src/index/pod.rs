@@ -23,11 +23,6 @@ impl Index {
     )]
     pub(super) fn apply_pod(&mut self, pod: k8s::Pod) -> Result<()> {
         let ns_name = k8s::NsName::from_resource(&pod);
-        let pod_name = k8s::PodName::from_resource(&pod);
-        let spec = pod.spec.ok_or_else(|| anyhow!("pod missing spec"))?;
-        let status = pod.status.ok_or_else(|| anyhow!("pod missing status"))?;
-        let labels = k8s::Labels::from(pod.metadata.labels);
-
         let NsIndex {
             default_mode,
             ref mut pods,
@@ -35,16 +30,18 @@ impl Index {
             ..
         } = self.namespaces.get_or_default(ns_name.clone());
 
-        let default_server = if let Some(anns) = pod.metadata.annotations.as_ref() {
-            if let Some(ann) = anns.get("polixy.l5d.io/default-mode") {
-                let mode = ann.parse::<DefaultMode>()?;
-                self.default_mode_rxs.get(mode)
-            } else {
-                self.default_mode_rxs.get(*default_mode)
+        let pod_name = k8s::PodName::from_resource(&pod);
+        let spec = pod.spec.ok_or_else(|| anyhow!("pod missing spec"))?;
+        let status = pod.status.ok_or_else(|| anyhow!("pod missing status"))?;
+        let default_mode = match DefaultMode::from_annotation(&pod.metadata) {
+            Ok(Some(mode)) => mode,
+            Ok(None) => *default_mode,
+            Err(error) => {
+                tracing::warn!(%error, "Ignoring invalid default-mode annotation");
+                *default_mode
             }
-        } else {
-            self.default_mode_rxs.get(*default_mode)
         };
+        let labels = k8s::Labels::from(pod.metadata.labels);
 
         let lookup_key = (ns_name, pod_name.clone());
         match pods.index.entry(pod_name) {
@@ -52,6 +49,7 @@ impl Index {
                 let pod_ips = mk_pod_ips(status)?;
                 let kubelet_ips = mk_kubelet_ips(&spec, &self.node_ips)?;
 
+                let default_server = self.default_mode_rxs.get(default_mode);
                 let (pod_servers, lookups) =
                     collect_pod_servers(spec, default_server, pod_ips, kubelet_ips);
 
@@ -79,7 +77,7 @@ impl Index {
                     p.labels = labels;
                 }
 
-                // TODO support default server updates at runtime.
+                // TODO support default-mode updates at runtime.
             }
         }
 

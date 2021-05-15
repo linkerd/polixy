@@ -1,7 +1,6 @@
 use super::Index;
 use crate::{k8s, DefaultMode};
 use anyhow::{bail, Result};
-use k8s_openapi::Metadata;
 use std::collections::HashSet;
 use tracing::{debug, instrument, warn};
 
@@ -13,14 +12,13 @@ impl Index {
     pub(super) fn apply_ns(&mut self, ns: k8s::Namespace) -> Result<()> {
         // Read the `default-mode` annotation from the ns metadata, which indicates the default
         // behavior for pod-ports in the namespace that lack a server instance.
-        let mode = if let Some(anns) = ns.metadata().annotations.as_ref() {
-            if let Some(ann) = anns.get("polixy.l5d.io/default-mode") {
-                ann.parse::<DefaultMode>()?
-            } else {
+        let mode = match DefaultMode::from_annotation(&ns.metadata) {
+            Ok(Some(mode)) => mode,
+            Ok(None) => self.namespaces.default_mode,
+            Err(error) => {
+                warn!(%error, "invalid default-mode annotation");
                 self.namespaces.default_mode
             }
-        } else {
-            self.namespaces.default_mode
         };
 
         // Get the cached namespace index (or load the default).

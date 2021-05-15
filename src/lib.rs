@@ -168,3 +168,20 @@ impl std::str::FromStr for DefaultMode {
         }
     }
 }
+
+impl DefaultMode {
+    const ANNOTATION: &'static str = "polixy.l5d.io/default-mode";
+
+    pub fn from_annotation(meta: &k8s::ObjectMeta) -> Result<Option<Self>> {
+        if let Some(annotations) = meta.annotations.as_ref() {
+            if let Some(v) = annotations.get(Self::ANNOTATION) {
+                let mode = v.parse()?;
+                Ok(Some(mode))
+            } else {
+                Ok(None)
+            }
+        } else {
+            Ok(None)
+        }
+    }
+}

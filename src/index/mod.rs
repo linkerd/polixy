@@ -116,7 +116,7 @@ struct SrvIndex {
 #[derive(Debug)]
 struct Server {
     meta: ServerMeta,
-    authorizations: BTreeMap<Option<polixy::authz::Name>, ClientAuthz>,
+    authorizations: BTreeMap<polixy::authz::Name, ClientAuthz>,
     rx: ServerRx,
     tx: ServerTx,
 }
@@ -134,17 +134,25 @@ pub struct ServerMeta {
 impl Server {
     fn add_authz(&mut self, name: polixy::authz::Name, authz: ClientAuthz) {
         debug!("Adding authorization to server");
-        self.authorizations.insert(Some(name), authz);
+        self.authorizations.insert(name, authz);
         let mut config = self.rx.borrow().clone();
-        config.authorizations = self.authorizations.clone();
+        config.authorizations = self
+            .authorizations
+            .iter()
+            .map(|(n, a)| (Some(n.clone()), a.clone()))
+            .collect();
         self.tx.send(config).expect("config must send")
     }
 
-    fn remove_authz(&mut self, name: polixy::authz::Name) {
-        if self.authorizations.remove(&Some(name)).is_some() {
+    fn remove_authz(&mut self, name: &polixy::authz::Name) {
+        if self.authorizations.remove(name).is_some() {
             debug!("Removing authorization from server");
             let mut config = self.rx.borrow().clone();
-            config.authorizations = self.authorizations.clone();
+            config.authorizations = self
+                .authorizations
+                .iter()
+                .map(|(n, a)| (Some(n.clone()), a.clone()))
+                .collect();
             self.tx.send(config).expect("config must send")
         }
     }
@@ -336,8 +344,8 @@ impl AuthzIndex {
         &self,
         name: &k8s::polixy::server::Name,
         labels: &k8s::Labels,
-    ) -> BTreeMap<Option<k8s::polixy::authz::Name>, ClientAuthz> {
-        let mut authorizations = BTreeMap::new();
+    ) -> BTreeMap<k8s::polixy::authz::Name, ClientAuthz> {
+        let mut authzs = BTreeMap::new();
 
         for (authz_name, a) in self.index.iter() {
             let matches = match a.servers {
@@ -352,12 +360,12 @@ impl AuthzIndex {
             };
             if matches {
                 debug!(authz = %authz_name, %matches);
-                authorizations.insert(Some(authz_name.clone()), a.clients.clone());
+                authzs.insert(authz_name.clone(), a.clients.clone());
             } else {
                 trace!(authz = %authz_name, %matches);
             }
         }
 
-        authorizations
+        authzs
     }
 }

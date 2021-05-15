@@ -32,23 +32,26 @@ impl Index {
         match servers.index.entry(srv_name) {
             HashEntry::Vacant(entry) => {
                 let labels = k8s::Labels::from(srv.metadata.labels);
-                let authorizations = ns_authzs.collect_by_server(entry.key(), &labels);
+                let authzs = ns_authzs.collect_by_server(entry.key(), &labels);
                 let meta = ServerMeta {
                     labels,
                     port,
                     pod_selector: srv.spec.pod_selector.into(),
                     protocol: protocol.clone(),
                 };
+                debug!(authzs = ?authzs.keys());
                 let (tx, rx) = watch::channel(InboundServerConfig {
                     protocol,
-                    authorizations: authorizations.clone(),
+                    authorizations: authzs
+                        .iter()
+                        .map(|(n, a)| (Some(n.clone()), a.clone()))
+                        .collect(),
                 });
-                debug!(authzs = ?authorizations.keys());
                 entry.insert(Server {
                     meta,
-                    authorizations,
                     rx,
                     tx,
+                    authorizations: authzs,
                 });
             }
 
@@ -66,11 +69,14 @@ impl Index {
 
                     if labels_changed {
                         let labels = k8s::Labels::from(srv.metadata.labels);
-                        let authorizations = ns_authzs.collect_by_server(entry.key(), &labels);
-                        debug!(authzs = ?authorizations.keys());
-                        config.authorizations = authorizations.clone();
+                        let authzs = ns_authzs.collect_by_server(entry.key(), &labels);
+                        debug!(authzs = ?authzs.keys());
+                        config.authorizations = authzs
+                            .iter()
+                            .map(|(n, a)| (Some(n.clone()), a.clone()))
+                            .collect();
                         entry.get_mut().meta.labels = labels;
-                        entry.get_mut().authorizations = authorizations;
+                        entry.get_mut().authorizations = authzs;
                     }
 
                     if protocol_changed {

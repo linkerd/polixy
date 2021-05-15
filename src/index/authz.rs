@@ -12,6 +12,7 @@ use std::{
 use tracing::{debug, instrument};
 
 impl Index {
+    /// Constructs an `Authz` and adds it to `Servers` it selects.
     #[instrument(
         skip(self, authz),
         fields(
@@ -58,7 +59,7 @@ impl Index {
                             srv.add_authz(entry.key().clone(), authz.clients.clone());
                         } else {
                             debug!(authz = %entry.key(), "Removing authz from server");
-                            srv.remove_authz(entry.key().clone());
+                            srv.remove_authz(entry.key());
                         }
                     }
                     entry.insert(authz);
@@ -79,11 +80,11 @@ impl Index {
     pub(super) fn delete_authz(&mut self, authz: polixy::ServerAuthorization) -> Result<()> {
         let ns = k8s::NsName::from_authz(&authz);
         let authz = polixy::authz::Name::from_authz(&authz);
-        self.rm_authz(ns.clone(), authz.clone())
+        self.rm_authz(&ns, &authz)
             .with_context(|| format!("ns={}, authz={}", ns, authz))
     }
 
-    fn rm_authz(&mut self, ns_name: k8s::NsName, authz_name: polixy::authz::Name) -> Result<()> {
+    fn rm_authz(&mut self, ns_name: &k8s::NsName, authz_name: &polixy::authz::Name) -> Result<()> {
         let ns = self
             .namespaces
             .index
@@ -91,7 +92,7 @@ impl Index {
             .ok_or_else(|| anyhow!("removing authz from non-existent namespace"))?;
 
         for srv in ns.servers.index.values_mut() {
-            srv.remove_authz(authz_name.clone());
+            srv.remove_authz(authz_name);
         }
 
         debug!("Removed authz");
@@ -125,7 +126,7 @@ impl Index {
 
         for (ns_name, ns_authzs) in prior_authzs.into_iter() {
             for authz_name in ns_authzs.into_iter() {
-                if let Err(e) = self.rm_authz(ns_name.clone(), authz_name) {
+                if let Err(e) = self.rm_authz(&ns_name, &authz_name) {
                     result = Err(e);
                 }
             }

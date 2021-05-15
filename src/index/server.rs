@@ -18,11 +18,6 @@ impl Index {
     )]
     pub(super) fn apply_server(&mut self, srv: polixy::Server) {
         let ns_name = k8s::NsName::from_srv(&srv);
-        let srv_name = polixy::server::Name::from_server(&srv);
-        let labels = k8s::Labels::from(srv.metadata.labels);
-        let port = srv.spec.port;
-        let protocol = mk_protocol(srv.spec.proxy_protocol.as_ref());
-
         let NsIndex {
             ref pods,
             authzs: ref ns_authzs,
@@ -30,8 +25,13 @@ impl Index {
             default_mode: _,
         } = self.namespaces.get_or_default(ns_name);
 
+        let srv_name = polixy::server::Name::from_server(&srv);
+        let port = srv.spec.port;
+        let protocol = mk_protocol(srv.spec.proxy_protocol.as_ref());
+
         match servers.index.entry(srv_name) {
             HashEntry::Vacant(entry) => {
+                let labels = k8s::Labels::from(srv.metadata.labels);
                 let authorizations = ns_authzs.collect_by_server(entry.key(), &labels);
                 let meta = ServerMeta {
                     labels,
@@ -53,15 +53,19 @@ impl Index {
             }
 
             HashEntry::Occupied(mut entry) => {
-                // If something about the server changedSelf::WatchInboundPortStream, we need to update the
-                // config to reflect the change.
-                if entry.get().meta.labels != labels || entry.get().meta.protocol == protocol {
+                // If something about the server changed, we need to update the config to reflect
+                // the change.
+                let labels_changed =
+                    Some(entry.get().meta.labels.as_ref()) != srv.metadata.labels.as_ref();
+                let protocol_changed = entry.get().meta.protocol == protocol;
+                if labels_changed || protocol_changed {
                     // NB: Only a single task applies server updates, so it's
                     // okay to borrow a version, modify, and send it.  We don't
                     // need a lock because serialization is guaranteed.
                     let mut config = entry.get().rx.borrow().clone();
 
-                    if entry.get().meta.labels != labels {
+                    if labels_changed {
+                        let labels = k8s::Labels::from(srv.metadata.labels);
                         let authorizations = ns_authzs.collect_by_server(entry.key(), &labels);
                         debug!(authzs = ?authorizations.keys());
                         config.authorizations = authorizations.clone();
@@ -69,8 +73,10 @@ impl Index {
                         entry.get_mut().authorizations = authorizations;
                     }
 
-                    config.protocol = protocol.clone();
-                    entry.get_mut().meta.protocol = protocol;
+                    if protocol_changed {
+                        config.protocol = protocol.clone();
+                        entry.get_mut().meta.protocol = protocol;
+                    }
 
                     debug!("Updating");
                     entry

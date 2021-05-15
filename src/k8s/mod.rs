@@ -1,7 +1,6 @@
-use crate::FromResource;
 use kube::{api::ListParams, Api, Resource};
 use kube_runtime::watcher;
-use std::fmt;
+use std::{fmt, sync::Arc};
 
 pub mod labels;
 pub mod polixy;
@@ -17,13 +16,13 @@ pub use k8s_openapi::{
 };
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct NodeName(String);
+pub struct NodeName(Arc<str>);
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct NsName(String);
+pub struct NsName(Arc<str>);
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct PodName(String);
+pub struct PodName(Arc<str>);
 
 /// Resource watches.
 pub(crate) struct ResourceWatches {
@@ -54,13 +53,13 @@ impl ResourceWatches {
 
 // === NodeName ===
 
-impl FromResource<Node> for NodeName {
-    fn from_resource(n: &Node) -> Self {
-        Self(n.name())
+impl NodeName {
+    pub fn from_node(n: &Node) -> Self {
+        Self::from(n.name())
     }
 }
 
-impl<T: Into<String>> From<T> for NodeName {
+impl<T: Into<Arc<str>>> From<T> for NodeName {
     fn from(ns: T) -> Self {
         Self(ns.into())
     }
@@ -74,21 +73,33 @@ impl fmt::Display for NodeName {
 
 // === NsName ===
 
-impl<T: Resource> FromResource<T> for NsName {
-    fn from_resource(t: &T) -> Self {
-        t.namespace().unwrap_or_else(|| "default".into()).into()
-    }
-}
-
-impl<T: Into<String>> From<T> for NsName {
-    fn from(ns: T) -> Self {
-        Self(ns.into())
-    }
-}
-
 impl NsName {
     pub fn from_ns(ns: &Namespace) -> Self {
-        ns.name().into()
+        Self(ns.name().into())
+    }
+
+    pub fn from_pod(p: &Pod) -> Self {
+        let ns = p.namespace().expect("Pods must be namespaced");
+        Self::from_string(ns)
+    }
+
+    pub fn from_srv(s: &polixy::Server) -> Self {
+        let ns = s.namespace().expect("Servers must be namespaced");
+        Self::from_string(ns)
+    }
+
+    pub fn from_authz(s: &polixy::ServerAuthorization) -> Self {
+        let ns = s
+            .namespace()
+            .expect("ServerAuthorizations must be namespaced");
+        Self::from_string(ns)
+    }
+
+    pub fn from_string(ns: String) -> Self {
+        if ns.is_empty() {
+            panic!("namespaces must not be empty")
+        }
+        Self(ns.into())
     }
 }
 
@@ -100,13 +111,13 @@ impl fmt::Display for NsName {
 
 // === PodName ===
 
-impl FromResource<Pod> for PodName {
-    fn from_resource(p: &Pod) -> Self {
-        Self(p.name())
+impl PodName {
+    pub fn from_pod(p: &Pod) -> Self {
+        Self::from(p.name())
     }
 }
 
-impl<T: Into<String>> From<T> for PodName {
+impl<T: Into<Arc<str>>> From<T> for PodName {
     fn from(pod: T) -> Self {
         Self(pod.into())
     }

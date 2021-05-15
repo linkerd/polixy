@@ -1,7 +1,7 @@
 use super::{Index, NsIndex, Server, ServerMeta};
 use crate::{
     k8s::{self, polixy},
-    FromResource, InboundServerConfig, ProxyProtocol,
+    InboundServerConfig, ProxyProtocol,
 };
 use anyhow::{anyhow, bail, Result};
 use std::{
@@ -20,8 +20,8 @@ impl Index {
         )
     )]
     pub(super) fn apply_server(&mut self, srv: polixy::Server) {
-        let ns_name = k8s::NsName::from_resource(&srv);
-        let srv_name = polixy::server::Name::from_resource(&srv);
+        let ns_name = k8s::NsName::from_srv(&srv);
+        let srv_name = polixy::server::Name::from_server(&srv);
         let labels = k8s::Labels::from(srv.metadata.labels);
         let port = srv.spec.port;
         let protocol = mk_protocol(srv.spec.proxy_protocol.as_ref());
@@ -111,8 +111,8 @@ impl Index {
         )
     )]
     pub(super) fn delete_server(&mut self, srv: polixy::Server) -> Result<()> {
-        let ns_name = k8s::NsName::from_resource(&srv);
-        let srv_name = polixy::server::Name::from_resource(&srv);
+        let ns_name = k8s::NsName::from_srv(&srv);
+        let srv_name = polixy::server::Name::from_server(&srv);
         self.rm_server(ns_name, srv_name)
     }
 
@@ -166,8 +166,8 @@ impl Index {
 
         let mut result = Ok(());
         for srv in srvs.into_iter() {
-            let ns_name = k8s::NsName::from_resource(&srv);
-            let srv_name = polixy::server::Name::from_resource(&srv);
+            let ns_name = k8s::NsName::from_srv(&srv);
+            let srv_name = polixy::server::Name::from_server(&srv);
 
             if let Some(prior_servers) = prior_servers.get_mut(&ns_name) {
                 if let Some(prior_meta) = prior_servers.remove(&srv_name) {

@@ -1,5 +1,4 @@
 use super::super::labels;
-use crate::FromResource;
 use kube::{api::Resource, CustomResource};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -76,8 +75,8 @@ pub struct ServiceAccountRef {
 
 // === Name ===
 
-impl FromResource<ServerAuthorization> for Name {
-    fn from_resource(s: &ServerAuthorization) -> Self {
+impl Name {
+    pub fn from_authz(s: &ServerAuthorization) -> Self {
         Self(s.name())
     }
 }

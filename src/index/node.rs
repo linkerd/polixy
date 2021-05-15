@@ -1,7 +1,7 @@
 //! Node->Kubelet IP
 
 use super::Index;
-use crate::{k8s, FromResource, KubeletIps};
+use crate::{k8s, KubeletIps};
 use anyhow::{anyhow, Context, Result};
 use ipnet::IpNet;
 use std::{
@@ -20,7 +20,7 @@ impl Index {
         fields(name = ?node.metadata.name)
     )]
     pub(super) fn apply_node(&mut self, node: k8s::Node) -> Result<()> {
-        let name = k8s::NodeName::from_resource(&node);
+        let name = k8s::NodeName::from_node(&node);
 
         match self.node_ips.entry(name) {
             HashEntry::Vacant(entry) => {
@@ -40,7 +40,7 @@ impl Index {
         fields(name = ?node.metadata.name)
     )]
     pub(super) fn delete_node(&mut self, node: k8s::Node) -> Result<()> {
-        let name = k8s::NodeName::from_resource(&node);
+        let name = k8s::NodeName::from_node(&node);
         if self.node_ips.remove(&name).is_some() {
             debug!("Deleted");
             Ok(())
@@ -56,7 +56,7 @@ impl Index {
 
         let mut result = Ok(());
         for node in nodes.into_iter() {
-            let name = k8s::NodeName::from_resource(&node);
+            let name = k8s::NodeName::from_node(&node);
             if !prior_names.remove(&name) {
                 if let Err(error) = self.apply_node(node) {
                     warn!(%name, %error, "Failed to apply node");

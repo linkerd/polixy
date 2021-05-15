@@ -13,10 +13,6 @@ use std::{
 };
 use tokio::{sync::watch, time};
 
-trait FromResource<T> {
-    fn from_resource(resource: &T) -> Self;
-}
-
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum DefaultMode {
     AllowExternal,

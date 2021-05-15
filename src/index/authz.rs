@@ -1,7 +1,7 @@
 use super::{Authz, Index, NsIndex, ServerSelector};
 use crate::{
     k8s::{self, polixy},
-    ClientAuthn, ClientAuthz, ClientNetwork, FromResource, Identity, ServiceAccountRef,
+    ClientAuthn, ClientAuthz, ClientNetwork, Identity, ServiceAccountRef,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use ipnet::IpNet;
@@ -20,8 +20,8 @@ impl Index {
         )
     )]
     pub(super) fn apply_authz(&mut self, authz: polixy::ServerAuthorization) -> Result<()> {
-        let ns_name = k8s::NsName::from_resource(&authz);
-        let authz_name = polixy::authz::Name::from_resource(&authz);
+        let ns_name = k8s::NsName::from_authz(&authz);
+        let authz_name = polixy::authz::Name::from_authz(&authz);
         let authz = mk_authz(&ns_name, authz.spec)
             .with_context(|| format!("ns={}, authz={}", ns_name, authz_name))?;
 
@@ -78,8 +78,8 @@ impl Index {
         )
     )]
     pub(super) fn delete_authz(&mut self, authz: polixy::ServerAuthorization) -> Result<()> {
-        let ns = k8s::NsName::from_resource(&authz);
-        let authz = polixy::authz::Name::from_resource(&authz);
+        let ns = k8s::NsName::from_authz(&authz);
+        let authz = polixy::authz::Name::from_authz(&authz);
         self.rm_authz(ns.clone(), authz.clone())
             .with_context(|| format!("ns={}, authz={}", ns, authz))
     }
@@ -110,8 +110,8 @@ impl Index {
 
         let mut result = Ok(());
         for authz in authzs.into_iter() {
-            let ns_name = k8s::NsName::from_resource(&authz);
-            let authz_name = polixy::authz::Name::from_resource(&authz);
+            let ns_name = k8s::NsName::from_authz(&authz);
+            let authz_name = polixy::authz::Name::from_authz(&authz);
 
             if let Some(prior_ns) = prior_authzs.get_mut(&ns_name) {
                 if let Some(prior_authz) = prior_ns.remove(&authz_name) {
@@ -222,7 +222,7 @@ fn mk_authz(ns_name: &k8s::NsName, spec: polixy::authz::ServerAuthorizationSpec)
                 let name = sa.name;
                 let ns = sa
                     .namespace
-                    .map(k8s::NsName::from)
+                    .map(k8s::NsName::from_string)
                     .unwrap_or_else(|| ns_name.clone());
                 debug!(ns = %ns, serviceaccount = %name, "Authenticated");
                 // FIXME configurable cluster domain

@@ -1,5 +1,4 @@
 use super::super::labels;
-use crate::FromResource;
 use kube::{api::Resource, CustomResource};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -54,8 +53,8 @@ pub enum ProxyProtocol {
 
 // === Name ===
 
-impl FromResource<Server> for Name {
-    fn from_resource(s: &Server) -> Self {
+impl Name {
+    pub fn from_server(s: &Server) -> Self {
         Self(s.name())
     }
 }

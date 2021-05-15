@@ -43,13 +43,15 @@ impl Server {
         // Parse a workload name in the form namespace:name.
         let (ns, name) = {
             let parts = workload.splitn(2, ':').collect::<Vec<_>>();
-            if parts.len() != 2 {
+            if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
                 return Err(tonic::Status::invalid_argument(format!(
                     "Invalid workload: {}",
                     workload
                 )));
             }
-            (NsName::from(parts[0]), PodName::from(parts[1]))
+            let ns = NsName::from_string(parts[0].to_string());
+            let pod = PodName::from(parts[1].to_string());
+            (ns, pod)
         };
 
         // Ensure that the port is in the valid range.

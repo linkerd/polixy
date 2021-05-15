@@ -1,12 +1,12 @@
 use super::{Index, NsIndex, Pod, PodServer, PodServers, ServerRx, SrvIndex};
 use crate::{
     k8s::{self, polixy},
-    DefaultMode, FromResource, KubeletIps, Lookup, PodIps,
+    DefaultMode, KubeletIps, Lookup, PodIps,
 };
 use anyhow::{anyhow, bail, Result};
 use parking_lot::Mutex;
 use std::{
-    collections::{hash_map::Entry as HashEntry, HashMap},
+    collections::{hash_map::Entry as HashEntry, HashMap, HashSet},
     net::IpAddr,
     sync::Arc,
 };
@@ -22,7 +22,7 @@ impl Index {
         )
     )]
     pub(super) fn apply_pod(&mut self, pod: k8s::Pod) -> Result<()> {
-        let ns_name = k8s::NsName::from_resource(&pod);
+        let ns_name = k8s::NsName::from_pod(&pod);
         let NsIndex {
             default_mode,
             ref mut pods,
@@ -30,7 +30,7 @@ impl Index {
             ..
         } = self.namespaces.get_or_default(ns_name.clone());
 
-        let pod_name = k8s::PodName::from_resource(&pod);
+        let pod_name = k8s::PodName::from_pod(&pod);
         match pods.index.entry(pod_name.clone()) {
             HashEntry::Vacant(pod_entry) => {
                 let default_mode = match DefaultMode::from_annotation(&pod.metadata) {
@@ -71,9 +71,9 @@ impl Index {
                     "pod must exist in lookups"
                 );
 
-                let labels = k8s::Labels::from(pod.metadata.labels);
                 let p = pod_entry.get_mut();
-                if p.labels != labels {
+                if Some(p.labels.as_ref()) != pod.metadata.labels.as_ref() {
+                    let labels = k8s::Labels::from(pod.metadata.labels);
                     Self::link_pod_servers(&servers, &labels, &p.servers);
                     p.labels = labels;
                 }
@@ -133,8 +133,8 @@ impl Index {
         )
     )]
     pub(super) fn delete_pod(&mut self, pod: k8s::Pod) -> Result<()> {
-        let ns_name = k8s::NsName::from_resource(&pod);
-        let pod_name = k8s::PodName::from_resource(&pod);
+        let ns_name = k8s::NsName::from_pod(&pod);
+        let pod_name = k8s::PodName::from_pod(&pod);
         self.rm_pod(ns_name, pod_name)
     }
 
@@ -159,33 +159,22 @@ impl Index {
 
     #[instrument(skip(self, pods))]
     pub(super) fn reset_pods(&mut self, pods: Vec<k8s::Pod>) -> Result<()> {
-        let mut prior_pod_labels = self
+        let mut prior_pods = self
             .namespaces
             .index
             .iter()
-            .map(|(n, ns)| {
-                let pods = ns
-                    .pods
-                    .index
-                    .iter()
-                    .map(|(n, p)| (n.clone(), p.labels.clone()))
-                    .collect::<HashMap<_, _>>();
-                (n.clone(), pods)
+            .map(|(name, ns)| {
+                let pods = ns.pods.index.keys().cloned().collect::<HashSet<_>>();
+                (name.clone(), pods)
             })
             .collect::<HashMap<_, _>>();
 
         let mut result = Ok(());
         for pod in pods.into_iter() {
-            let ns_name = k8s::NsName::from_resource(&pod);
-            let pod_name = k8s::PodName::from_resource(&pod);
-
-            if let Some(prior) = prior_pod_labels.get_mut(&ns_name) {
-                if let Some(prior_labels) = prior.remove(&pod_name) {
-                    let labels = k8s::Labels::from(pod.metadata.labels.clone());
-                    if prior_labels == labels {
-                        continue;
-                    }
-                }
+            let ns_name = k8s::NsName::from_pod(&pod);
+            if let Some(ns) = prior_pods.get_mut(&ns_name) {
+                let pod_name = k8s::PodName::from_pod(&pod);
+                ns.remove(&pod_name);
             }
 
             if let Err(error) = self.apply_pod(pod) {
@@ -193,8 +182,8 @@ impl Index {
             }
         }
 
-        for (ns, pods) in prior_pod_labels.into_iter() {
-            for (pod, _) in pods.into_iter() {
+        for (ns, pods) in prior_pods.into_iter() {
+            for pod in pods.into_iter() {
                 if let Err(error) = self.rm_pod(ns.clone(), pod) {
                     result = Err(error);
                 }

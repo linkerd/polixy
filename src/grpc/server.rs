@@ -101,14 +101,12 @@ impl proto::polixy_server::Polixy for Server {
         Ok(tonic::Response::new(server))
     }
 
-    type WatchInboundPortStream = std::pin::Pin<
-        Box<dyn Stream<Item = Result<proto::InboundServer, tonic::Status>> + Send + Sync>,
-    >;
+    type WatchInboundPortStream = BoxWatchStream;
 
     async fn watch_inbound_port(
         &self,
         req: tonic::Request<proto::InboundPort>,
-    ) -> Result<tonic::Response<Self::WatchInboundPortStream>, tonic::Status> {
+    ) -> Result<tonic::Response<BoxWatchStream>, tonic::Status> {
         let proto::InboundPort { workload, port } = req.into_inner();
         let Lookup {
             name: _,
@@ -117,16 +115,19 @@ impl proto::polixy_server::Polixy for Server {
             rx,
         } = self.lookup(workload, port)?;
 
-        let watch = response_stream(
+        Ok(tonic::Response::new(response_stream(
             pod_ips,
             kubelet_ips,
             self.identity_domain.clone(),
             self.drain.clone(),
             rx,
-        );
-        Ok(tonic::Response::new(Box::pin(watch)))
+        )))
     }
 }
+
+type BoxWatchStream = std::pin::Pin<
+    Box<dyn Stream<Item = Result<proto::InboundServer, tonic::Status>> + Send + Sync>,
+>;
 
 fn response_stream(
     pod_ips: PodIps,
@@ -134,10 +135,10 @@ fn response_stream(
     domain: Arc<str>,
     drain: linkerd_drain::Watch,
     mut port_rx: ServerRxRx,
-) -> impl Stream<Item = Result<proto::InboundServer, tonic::Status>> + Send + 'static {
+) -> BoxWatchStream {
     let kubelet = kubelet_authz(kubelet_ips);
 
-    async_stream::try_stream! {
+    Box::pin(async_stream::try_stream! {
         tokio::pin! {
             let shutdown = drain.signaled();
         }
@@ -181,7 +182,7 @@ fn response_stream(
                 }
             }
         }
-    }
+    })
 }
 
 fn to_server(

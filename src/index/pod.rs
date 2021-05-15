@@ -1,7 +1,7 @@
-use super::{Index, NsIndex, Pod, PodServer, PodServers, SrvIndex};
+use super::{Index, NsIndex, Pod, PodServer, PodServers, ServerRx, SrvIndex};
 use crate::{
     k8s::{self, polixy},
-    FromResource, Lookup, PodIps,
+    FromResource, KubeletIps, Lookup, PodIps,
 };
 use anyhow::{anyhow, bail, Result};
 use parking_lot::Mutex;
@@ -38,89 +38,24 @@ impl Index {
         let lookup_key = (ns_name, pod_name.clone());
         match pods.index.entry(pod_name) {
             HashEntry::Vacant(pod_entry) => {
-                let kubelet = {
-                    let name = spec
-                        .node_name
-                        .map(k8s::NodeName::from)
-                        .ok_or_else(|| anyhow!("pod missing node name"))?;
-                    self.node_ips
-                        .get(&name)
-                        .ok_or_else(|| anyhow!("node IP does not exist for node {}", name))?
-                        .clone()
-                };
+                let pod_ips = mk_pod_ips(status)?;
+                let kubelet_ips = mk_kubelet_ips(&spec, &self.node_ips)?;
 
-                let pod_ips = {
-                    let ips = if let Some(ips) = status.pod_ips {
-                        ips.iter()
-                            .flat_map(|ip| ip.ip.as_ref())
-                            .map(|ip| ip.parse().map_err(Into::into))
-                            .collect::<Result<Vec<IpAddr>>>()?
-                    } else {
-                        status
-                            .pod_ip
-                            .iter()
-                            .map(|ip| ip.parse::<IpAddr>().map_err(Into::into))
-                            .collect::<Result<Vec<IpAddr>>>()?
-                    };
-                    if ips.is_empty() {
-                        bail!("pod missing IP addresses");
-                    };
-                    PodIps(ips.into())
-                };
-
-                let mut lookups = HashMap::new();
-                let mut pod_servers = PodServers::default();
-
-                for container in spec.containers.into_iter() {
-                    if let Some(ps) = container.ports {
-                        for p in ps.into_iter() {
-                            if p.protocol.map(|p| p == "TCP").unwrap_or(true) {
-                                let port = p.container_port as u16;
-                                if pod_servers.by_port.contains_key(&port) {
-                                    debug!(port, "Port duplicated");
-                                    continue;
-                                }
-
-                                let server_rx = self.default_mode_rxs.get(*default_mode);
-                                let (tx, rx) = watch::channel(server_rx);
-                                let pod_port = Arc::new(PodServer {
-                                    tx,
-                                    server_name: Mutex::new(None),
-                                });
-
-                                let name = p.name.map(k8s::polixy::server::PortName::from);
-                                if let Some(name) = name.clone() {
-                                    pod_servers
-                                        .by_name
-                                        .entry(name)
-                                        .or_default()
-                                        .push(pod_port.clone());
-                                }
-
-                                trace!(%port, ?name, "Adding port");
-                                pod_servers.by_port.insert(port, pod_port);
-                                lookups.insert(
-                                    port,
-                                    Lookup {
-                                        rx,
-                                        name,
-                                        pod_ips: pod_ips.clone(),
-                                        kubelet_ips: kubelet.clone(),
-                                    },
-                                );
-                            }
-                        }
-                    }
-                }
+                let (pod_servers, lookups) = collect_pod_servers(
+                    spec,
+                    self.default_mode_rxs.get(*default_mode),
+                    pod_ips,
+                    kubelet_ips,
+                );
 
                 Self::link_pod_servers(&servers, &labels, &pod_servers);
 
-                if self.lookups.insert(lookup_key, Arc::new(lookups)).is_some() {
+                if self.lookups.insert(lookup_key, lookups).is_some() {
                     unreachable!("pod must not exist in lookups");
                 }
 
                 pod_entry.insert(Pod {
-                    servers: pod_servers.into(),
+                    servers: pod_servers,
                     labels,
                 });
             }
@@ -149,7 +84,7 @@ impl Index {
     ) {
         for (srv_name, server) in servers.index.iter() {
             if server.meta.pod_selector.matches(&pod_labels) {
-                for port in Self::get_ports(&server.meta.port, ports).into_iter() {
+                for port in get_ports(&server.meta.port, ports).into_iter() {
                     // TODO handle conflicts
                     let mut sn = port.server_name.lock();
                     if let Some(sn) = sn.as_ref() {
@@ -176,24 +111,6 @@ impl Index {
                     "Does not match",
                 );
             }
-        }
-    }
-
-    fn get_ports(port_match: &polixy::server::Port, ports: &PodServers) -> Vec<Arc<PodServer>> {
-        match port_match {
-            polixy::server::Port::Number(ref port) => ports
-                .by_port
-                .get(port)
-                .into_iter()
-                .cloned()
-                .collect::<Vec<_>>(),
-            polixy::server::Port::Name(ref name) => ports
-                .by_name
-                .get(name)
-                .into_iter()
-                .flat_map(|p| p.iter())
-                .cloned()
-                .collect::<Vec<_>>(),
         }
     }
 
@@ -275,4 +192,108 @@ impl Index {
 
         result
     }
+}
+
+fn collect_pod_servers(
+    spec: k8s::PodSpec,
+    server_rx: ServerRx,
+    pod_ips: PodIps,
+    kubelet_ips: KubeletIps,
+) -> (Arc<PodServers>, Arc<HashMap<u16, Lookup>>) {
+    let mut pod_servers = PodServers::default();
+    let mut lookups = HashMap::new();
+
+    for container in spec.containers.into_iter() {
+        if let Some(ps) = container.ports {
+            for p in ps.into_iter() {
+                if p.protocol.map(|p| p == "TCP").unwrap_or(true) {
+                    let port = p.container_port as u16;
+                    if pod_servers.by_port.contains_key(&port) {
+                        debug!(port, "Port duplicated");
+                        continue;
+                    }
+
+                    let (tx, rx) = watch::channel(server_rx.clone());
+                    let pod_port = Arc::new(PodServer {
+                        tx,
+                        server_name: Mutex::new(None),
+                    });
+
+                    let name = p.name.map(k8s::polixy::server::PortName::from);
+                    if let Some(name) = name.clone() {
+                        pod_servers
+                            .by_name
+                            .entry(name)
+                            .or_default()
+                            .push(pod_port.clone());
+                    }
+
+                    trace!(%port, ?name, "Adding port");
+                    pod_servers.by_port.insert(port, pod_port);
+                    lookups.insert(
+                        port,
+                        Lookup {
+                            rx,
+                            name,
+                            pod_ips: pod_ips.clone(),
+                            kubelet_ips: kubelet_ips.clone(),
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    (pod_servers.into(), lookups.into())
+}
+
+fn get_ports(port_match: &polixy::server::Port, ports: &PodServers) -> Vec<Arc<PodServer>> {
+    match port_match {
+        polixy::server::Port::Number(ref port) => ports
+            .by_port
+            .get(port)
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>(),
+        polixy::server::Port::Name(ref name) => ports
+            .by_name
+            .get(name)
+            .into_iter()
+            .flat_map(|p| p.iter())
+            .cloned()
+            .collect::<Vec<_>>(),
+    }
+}
+
+fn mk_pod_ips(status: k8s::PodStatus) -> Result<PodIps> {
+    let ips = if let Some(ips) = status.pod_ips {
+        ips.iter()
+            .flat_map(|ip| ip.ip.as_ref())
+            .map(|ip| ip.parse().map_err(Into::into))
+            .collect::<Result<Vec<IpAddr>>>()?
+    } else {
+        status
+            .pod_ip
+            .iter()
+            .map(|ip| ip.parse::<IpAddr>().map_err(Into::into))
+            .collect::<Result<Vec<IpAddr>>>()?
+    };
+    if ips.is_empty() {
+        bail!("pod missing IP addresses");
+    };
+    Ok(PodIps(ips.into()))
+}
+
+fn mk_kubelet_ips(
+    spec: &k8s::PodSpec,
+    ips: &HashMap<k8s::NodeName, KubeletIps>,
+) -> Result<KubeletIps> {
+    let name = spec
+        .node_name
+        .clone()
+        .map(k8s::NodeName::from)
+        .ok_or_else(|| anyhow!("pod missing node name"))?;
+    ips.get(&name)
+        .cloned()
+        .ok_or_else(|| anyhow!("node IP does not exist for node {}", name))
 }

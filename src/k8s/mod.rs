@@ -11,7 +11,7 @@ pub use self::{
     labels::Labels,
     watch::{Event, Watch},
 };
-pub use k8s_openapi::api::core::v1::{Namespace, Node, Pod};
+pub use k8s_openapi::api::core::v1::{Namespace, Node, Pod, PodSpec, PodStatus};
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct NodeName(String);

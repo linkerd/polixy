@@ -1,7 +1,7 @@
 use super::{Index, NsIndex, Pod, PodServer, PodServers, ServerRx, SrvIndex};
 use crate::{
     k8s::{self, polixy},
-    FromResource, KubeletIps, Lookup, PodIps,
+    DefaultMode, FromResource, KubeletIps, Lookup, PodIps,
 };
 use anyhow::{anyhow, bail, Result};
 use parking_lot::Mutex;
@@ -35,18 +35,25 @@ impl Index {
             ..
         } = self.namespaces.get_or_default(ns_name.clone());
 
+        let default_server = if let Some(anns) = pod.metadata.annotations.as_ref() {
+            if let Some(ann) = anns.get("polixy.l5d.io/default-mode") {
+                let mode = ann.parse::<DefaultMode>()?;
+                self.default_mode_rxs.get(mode)
+            } else {
+                self.default_mode_rxs.get(*default_mode)
+            }
+        } else {
+            self.default_mode_rxs.get(*default_mode)
+        };
+
         let lookup_key = (ns_name, pod_name.clone());
         match pods.index.entry(pod_name) {
             HashEntry::Vacant(pod_entry) => {
                 let pod_ips = mk_pod_ips(status)?;
                 let kubelet_ips = mk_kubelet_ips(&spec, &self.node_ips)?;
 
-                let (pod_servers, lookups) = collect_pod_servers(
-                    spec,
-                    self.default_mode_rxs.get(*default_mode),
-                    pod_ips,
-                    kubelet_ips,
-                );
+                let (pod_servers, lookups) =
+                    collect_pod_servers(spec, default_server, pod_ips, kubelet_ips);
 
                 Self::link_pod_servers(&servers, &labels, &pod_servers);
 
@@ -71,6 +78,8 @@ impl Index {
                     Self::link_pod_servers(&servers, &labels, &p.servers);
                     p.labels = labels;
                 }
+
+                // TODO support default server updates at runtime.
             }
         }
 

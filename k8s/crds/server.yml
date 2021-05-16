@@ -2,11 +2,11 @@
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
-  name: servers.polixy.l5d.io
+  name: servers.polixy.linkerd.io
   labels:
-    polixy.l5d.io/crd: srv
+    polixy.linkerd.io/crd: srv
 spec:
-  group: polixy.l5d.io
+  group: polixy.linkerd.io
   names:
     kind: Server
     plural: servers

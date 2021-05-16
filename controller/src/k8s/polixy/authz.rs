@@ -10,7 +10,7 @@ pub struct Name(String);
 /// Authorizes clients to connect to a Server.
 #[derive(CustomResource, Deserialize, Serialize, Clone, Debug, JsonSchema)]
 #[kube(
-    group = "polixy.l5d.io",
+    group = "polixy.linkerd.io",
     version = "v1alpha1",
     kind = "ServerAuthorization",
     namespaced

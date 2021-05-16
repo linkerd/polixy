@@ -34,7 +34,7 @@ rules:
       - list
       - watch
   - apiGroups:
-      - polixy.l5d.io
+      - polixy.linkerd.io
     resources:
       - servers
       - serverauthorizations

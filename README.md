@@ -11,7 +11,7 @@ See [DESIGN.md](./DESIGN.md) for details.
 
 ## Running
 
-### Install `polixy.l5d.io` CRDs
+### Install `polixy.linkerd.io` CRDs
 
 ```sh
 :; kubectl apply -f ./k8s/crds

@@ -235,11 +235,11 @@ Servers with a `proxyProtocol` value of `HTTP` or `gRPC`.
 Use of these headers may be disabled by setting a server annotation:
 
 ```yaml
-apiVersion: polixy.l5d.io/v1alpha1
+apiVersion: polixy.linkerd.io/v1alpha1
 kind: Server
 metadata:
   annotations:
-    polixy.l5d.io/http-informational-headers: disabled
+    polixy.linkerd.io/http-informational-headers: disabled
 ```
 
 ##### `l5d-connection-secure: true | false`

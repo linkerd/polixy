@@ -1,5 +1,5 @@
 ---
-apiVersion: polixy.l5d.io/v1alpha1
+apiVersion: polixy.linkerd.io/v1alpha1
 kind: Server
 metadata:
   namespace: linkerd
@@ -12,7 +12,7 @@ spec:
       linkerd.io/control-plane-ns: linkerd
       linkerd.io/control-plane-component: destination
 ---
-apiVersion: polixy.l5d.io/v1alpha1
+apiVersion: polixy.linkerd.io/v1alpha1
 kind: ServerAuthorization
 metadata:
   namespace: linkerd

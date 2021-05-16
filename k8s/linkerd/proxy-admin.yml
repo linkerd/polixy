@@ -1,5 +1,5 @@
 ---
-apiVersion: polixy.l5d.io/v1alpha1
+apiVersion: polixy.linkerd.io/v1alpha1
 kind: Server
 metadata:
   namespace: linkerd
@@ -13,7 +13,7 @@ spec:
     matchLabels:
       linkerd.io/control-plane-ns: linkerd
 ---
-apiVersion: polixy.l5d.io/v1alpha1
+apiVersion: polixy.linkerd.io/v1alpha1
 kind: Server
 metadata:
   namespace: linkerd
@@ -29,7 +29,7 @@ spec:
          operator: NotIn
          values: []
 ---
-apiVersion: polixy.l5d.io/v1alpha1
+apiVersion: polixy.linkerd.io/v1alpha1
 kind: ServerAuthorization
 metadata:
   namespace: linkerd

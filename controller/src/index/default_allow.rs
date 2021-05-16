@@ -5,7 +5,7 @@ use crate::{
 use anyhow::{anyhow, Error, Result};
 use tokio::{sync::watch, time};
 
-const ANNOTATION: &str = "polixy.l5d.io/default-allow";
+const ANNOTATION: &str = "polixy.linkerd.io/default-allow";
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum DefaultAllow {

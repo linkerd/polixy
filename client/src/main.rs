@@ -40,13 +40,15 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let Command { server, command } = Command::from_args();
+
+    let mut client = polixy_client::Client::connect(server).await?;
+
     match command {
         ClientCommand::Watch {
             namespace,
             pod,
             port,
         } => {
-            let mut client = polixy_client::grpc::Client::connect(server).await?;
             let mut updates = client.watch_inbound_port(namespace, pod, port).await?;
             while let Some(res) = updates.next().await {
                 match res {
@@ -63,7 +65,6 @@ async fn main() -> Result<()> {
             pod,
             port,
         } => {
-            let mut client = polixy_client::grpc::Client::connect(server).await?;
             let server = client.get_inbound_port(namespace, pod, port).await?;
             println!("{:#?}", server);
             Ok(())

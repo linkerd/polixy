@@ -1,10 +1,10 @@
-use super::proto;
 use crate::{
     k8s::{NsName, PodName},
     ClientAuthn, ClientAuthz, ClientNetwork, Identity, InboundServerConfig, KubeletIps, Lookup,
     LookupHandle, PodIps, ProxyProtocol, ServerRxRx, ServiceAccountRef,
 };
 use futures::prelude::*;
+use polixy_grpc as proto;
 use std::{collections::HashMap, iter::FromIterator, sync::Arc};
 use tracing::trace;
 

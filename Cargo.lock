@@ -1051,8 +1051,7 @@ dependencies = [
  "linkerd-drain",
  "linkerd2-proxy-api",
  "parking_lot",
- "prost",
- "prost-types",
+ "polixy-grpc",
  "schemars",
  "serde",
  "serde_json",
@@ -1061,7 +1060,6 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tonic",
- "tonic-build",
  "tracing",
  "tracing-subscriber",
 ]
@@ -1081,8 +1079,8 @@ dependencies = [
  "kube",
  "kube-runtime",
  "linkerd-drain",
- "linkerd2-proxy-api",
  "parking_lot",
+ "polixy-grpc",
  "prost",
  "prost-types",
  "schemars",
@@ -1093,9 +1091,22 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tonic",
- "tonic-build",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "polixy-grpc"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures",
+ "linkerd2-proxy-api",
+ "prost",
+ "prost-types",
+ "tonic",
+ "tonic-build",
+ "tracing",
 ]
 
 [[package]]

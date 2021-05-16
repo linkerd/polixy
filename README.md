@@ -24,7 +24,7 @@ limited cluster access, and extract a kubeconfig to the local filesystem to use 
 
 ```sh
 :; kubectl apply -f ./k8s/controller/sa.yml
-:; KUBECONFIG=$(./k8s/controller/kubeconfig.sh) cargo run -- controller
+:; KUBECONFIG=$(./k8s/controller/kubeconfig.sh) cargo run -p polixy-controller
 ```
 
 ### Install example application (with policies)
@@ -37,15 +37,15 @@ limited cluster access, and extract a kubeconfig to the local filesystem to use 
 
 ```sh
 :; pod=$(kubectl get -n emojivoto po -l app.kubernetes.io/name=web -o 'jsonpath={.items[*].metadata.name}')
-:; cargo run -- client get -n emojivoto $pod 8080
+:; cargo run -p polixy-client -- get -n emojivoto $pod 8080
 ```
 
 ```sh
 :; pod=$(kubectl get -n emojivoto po -l app.kubernetes.io/name=voting -o 'jsonpath={.items[*].metadata.name}')
-:; cargo run -- client get -n emojivoto $pod 8080
+:; cargo run -p polixy-client -- get -n emojivoto $pod 8080
 ```
 
 ```sh
 :; pod=$(kubectl get -n emojivoto po -l app.kubernetes.io/name=voting -o 'jsonpath={.items[*].metadata.name}')
-:; cargo run -- client get -n emojivoto $pod 8801
+:; cargo run -p polixy-client -- watch -n emojivoto $pod 8801
 `

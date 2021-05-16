@@ -1035,7 +1035,39 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3831453b3449ceb48b6d9c7ad7c96d5ea673e9b470a1dc578c2ce6521230884c"
 
 [[package]]
-name = "polixy"
+name = "polixy-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-stream",
+ "async-trait",
+ "dashmap",
+ "futures",
+ "indexmap",
+ "ipnet",
+ "k8s-openapi",
+ "kube",
+ "kube-runtime",
+ "linkerd-drain",
+ "linkerd2-proxy-api",
+ "parking_lot",
+ "prost",
+ "prost-types",
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "structopt",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tonic-build",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "polixy-controller"
 version = "0.1.0"
 dependencies = [
  "anyhow",

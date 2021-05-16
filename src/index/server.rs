@@ -9,6 +9,7 @@ use tokio::{sync::watch, time};
 use tracing::{debug, instrument, trace};
 
 impl Index {
+    /// Builds a `Server`, linking it against authorizations and pod ports.
     #[instrument(
         skip(self, srv),
         fields(

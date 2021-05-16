@@ -11,9 +11,10 @@ use std::{
     sync::Arc,
 };
 use tokio::sync::watch;
-use tracing::{debug, instrument, trace};
+use tracing::{debug, instrument, trace, warn};
 
 impl Index {
+    /// Builds a `Pod`, linking it with servers and nodes.
     #[instrument(
         skip(self, pod),
         fields(
@@ -37,7 +38,7 @@ impl Index {
                     Ok(Some(mode)) => mode,
                     Ok(None) => *default_mode,
                     Err(error) => {
-                        tracing::warn!(%error, "Ignoring invalid default-mode annotation");
+                        warn!(%error, "Ignoring invalid default-mode annotation");
                         *default_mode
                     }
                 };

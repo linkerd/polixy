@@ -18,8 +18,8 @@ enum Command {
         #[structopt(long, default_value = "10.42.0.0/16")]
         cluster_networks: Vec<ipnet::IpNet>,
 
-        #[structopt(long, default_value = "allow-external")]
-        default_mode: DefaultAllow,
+        #[structopt(long, default_value = "external-unauthenticated")]
+        default_allow: DefaultAllow,
     },
     Client {
         #[structopt(long, default_value = "http://127.0.0.1:8910")]
@@ -62,7 +62,7 @@ async fn main() -> Result<()> {
             port,
             identity_domain,
             cluster_networks,
-            default_mode,
+            default_allow,
         } => {
             let (drain_tx, drain_rx) = linkerd_drain::channel();
 
@@ -72,7 +72,7 @@ async fn main() -> Result<()> {
 
             const DETECT_TIMEOUT: time::Duration = time::Duration::from_secs(10);
             let (handle, index_task) =
-                polixy::LookupHandle::run(client, cluster_networks, default_mode, DETECT_TIMEOUT);
+                polixy::LookupHandle::run(client, cluster_networks, default_allow, DETECT_TIMEOUT);
             let index_task = tokio::spawn(index_task);
 
             let grpc = tokio::spawn(grpc(port, handle, drain_rx, identity_domain));

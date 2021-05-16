@@ -3,7 +3,6 @@ mod index;
 mod k8s;
 
 pub use self::index::DefaultAllow;
-use anyhow::{anyhow, Error, Result};
 use dashmap::DashMap;
 use ipnet::IpNet;
 use std::{
@@ -148,21 +147,5 @@ impl PodIps {
 impl KubeletIps {
     pub fn to_nets(&self) -> Vec<IpNet> {
         self.0.iter().copied().map(IpNet::from).collect()
-    }
-}
-
-// === impl DefaultAllow ===
-
-impl std::str::FromStr for DefaultAllow {
-    type Err = Error;
-
-    fn from_str(s: &str) -> Result<Self> {
-        match s {
-            "external" => Ok(Self::External),
-            "cluster" => Ok(Self::Cluster),
-            "authenticated" => Ok(Self::Authenticated),
-            "none" => Ok(Self::None),
-            s => Err(anyhow!("invalid mode: {}", s)),
-        }
     }
 }

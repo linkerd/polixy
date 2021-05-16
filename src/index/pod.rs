@@ -140,7 +140,7 @@ impl Index {
                     Ok(Some(allow)) => allow,
                     Ok(None) => *default_allow,
                     Err(error) => {
-                        warn!(%error, "Ignoring invalid default-mode annotation");
+                        warn!(%error, "Ignoring invalid default-allow annotation");
                         *default_allow
                     }
                 };
@@ -171,6 +171,7 @@ impl Index {
             }
 
             HashEntry::Occupied(mut pod_entry) => {
+                // Note that the default-allow annotation may not be changed at runtime.
                 debug_assert!(
                     self.lookups.contains_key(&(ns_name, pod_name)),
                     "pod must exist in lookups"
@@ -182,8 +183,6 @@ impl Index {
                     p.labels = labels;
                     p.link_servers(&servers);
                 }
-
-                // TODO support default-mode updates at runtime.
             }
         }
 

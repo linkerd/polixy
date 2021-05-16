@@ -10,13 +10,13 @@ impl Index {
         fields(ns = ?ns.metadata.name)
     )]
     pub(super) fn apply_ns(&mut self, ns: k8s::Namespace) -> Result<()> {
-        // Read the `default-mode` annotation from the ns metadata, which indicates the default
+        // Read the `default-allow` annotation from the ns metadata, which indicates the default
         // behavior for pod-ports in the namespace that lack a server instance.
         let allow = match DefaultAllow::from_annotation(&ns.metadata) {
             Ok(Some(mode)) => mode,
             Ok(None) => self.namespaces.default_allow,
             Err(error) => {
-                warn!(%error, "invalid default-mode annotation");
+                warn!(%error, "invalid default-allow annotation");
                 self.namespaces.default_allow
             }
         };
@@ -25,7 +25,7 @@ impl Index {
         let ns = self.namespaces.get_or_default(k8s::NsName::from_ns(&ns));
         ns.default_allow = allow;
 
-        // We don't update the default-mode of a running pod, as it is essentially bound to the pod
+        // We don't update the default-allow of running pods, as it is essentially bound to the pod
         // at inject-time.
 
         Ok(())

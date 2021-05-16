@@ -2,27 +2,33 @@ use crate::{
     k8s, ClientAuthn, ClientAuthz, ClientNetwork, Identity, InboundServerConfig, ProxyProtocol,
     ServerRx, ServerTx,
 };
-use anyhow::Result;
+use anyhow::{anyhow, Error, Result};
 use tokio::{sync::watch, time};
+
+const ANNOTATION: &str = "polixy.l5d.io/default-allow";
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum DefaultAllow {
-    Authenticated,
-    Cluster,
-    External,
+    AllAuthenticated,
+    AllUnauthenticated,
+    ClusterAuthenticated,
+    ClusterUnauthenticated,
     None,
 }
 
 /// Default server configs to use when no server matches.
 pub(super) struct DefaultAllows {
-    external_rx: ServerRx,
-    _external_tx: ServerTx,
+    all_authed_rx: ServerRx,
+    _all_authed_tx: ServerTx,
 
-    cluster_rx: ServerRx,
-    _cluster_tx: ServerTx,
+    all_unauthed_rx: ServerRx,
+    _all_unauthed_tx: ServerTx,
 
-    authenticated_rx: ServerRx,
-    _authenticated_tx: ServerTx,
+    cluster_authed_rx: ServerRx,
+    _cluster_authed_tx: ServerTx,
+
+    cluster_unauthed_rx: ServerRx,
+    _cluster_unauthed_tx: ServerTx,
 
     deny_rx: ServerRx,
     _deny_tx: ServerTx,
@@ -31,11 +37,9 @@ pub(super) struct DefaultAllows {
 // === impl DefaultAllow ===
 
 impl DefaultAllow {
-    const ANNOTATION: &'static str = "polixy.l5d.io/default-mode";
-
     pub fn from_annotation(meta: &k8s::ObjectMeta) -> Result<Option<Self>> {
         if let Some(annotations) = meta.annotations.as_ref() {
-            if let Some(v) = annotations.get(Self::ANNOTATION) {
+            if let Some(v) = annotations.get(ANNOTATION) {
                 let mode = v.parse()?;
                 Ok(Some(mode))
             } else {
@@ -47,36 +51,57 @@ impl DefaultAllow {
     }
 }
 
+impl std::str::FromStr for DefaultAllow {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "all-authenticated" => Ok(Self::AllAuthenticated),
+            "all-unauthenticated" => Ok(Self::AllUnauthenticated),
+            "cluster-authenticated" => Ok(Self::ClusterAuthenticated),
+            "cluster-unauthenticated" => Ok(Self::ClusterUnauthenticated),
+            "none" => Ok(Self::None),
+            s => Err(anyhow!("invalid mode: {}", s)),
+        }
+    }
+}
+
 // === impl DefaultAllows ===
 
 impl DefaultAllows {
     pub fn new(cluster_nets: Vec<ipnet::IpNet>, detect_timeout: time::Duration) -> Self {
+        let any_authenticated = ClientAuthn::Authenticated {
+            identities: vec![Identity::Suffix(vec![].into())],
+            service_accounts: vec![],
+        };
+
         let all_nets = [
             ipnet::IpNet::V4(Default::default()),
             ipnet::IpNet::V6(Default::default()),
         ];
 
-        // A default config to be provided to pods when no matching server
-        // exists.
-        let (_external_tx, external_rx) = watch::channel(Self::mk_detect_config(
+        let (_all_authed_tx, all_authed_rx) = watch::channel(mk_detect_config(
             detect_timeout,
-            all_nets.iter().copied(),
+            all_nets.iter().cloned(),
+            any_authenticated.clone(),
+        ));
+
+        let (_all_unauthed_tx, all_unauthed_rx) = watch::channel(mk_detect_config(
+            detect_timeout,
+            all_nets.iter().cloned(),
             ClientAuthn::Unauthenticated,
         ));
 
-        let (_cluster_tx, cluster_rx) = watch::channel(Self::mk_detect_config(
+        let (_cluster_authed_tx, cluster_authed_rx) = watch::channel(mk_detect_config(
             detect_timeout,
             cluster_nets.iter().cloned(),
-            ClientAuthn::Unauthenticated,
+            any_authenticated,
         ));
 
-        let (_authenticated_tx, authenticated_rx) = watch::channel(Self::mk_detect_config(
+        let (_cluster_unauthed_tx, cluster_unauthed_rx) = watch::channel(mk_detect_config(
             detect_timeout,
-            cluster_nets,
-            ClientAuthn::Authenticated {
-                identities: vec![Identity::Suffix(vec![].into())],
-                service_accounts: vec![],
-            },
+            cluster_nets.into_iter(),
+            ClientAuthn::Unauthenticated,
         ));
 
         let (_deny_tx, deny_rx) = watch::channel(InboundServerConfig {
@@ -87,12 +112,18 @@ impl DefaultAllows {
         });
 
         Self {
-            external_rx,
-            _external_tx,
-            cluster_rx,
-            _cluster_tx,
-            authenticated_rx,
-            _authenticated_tx,
+            all_authed_rx,
+            _all_authed_tx,
+
+            all_unauthed_rx,
+            _all_unauthed_tx,
+
+            cluster_authed_rx,
+            _cluster_authed_tx,
+
+            cluster_unauthed_rx,
+            _cluster_unauthed_tx,
+
             deny_rx,
             _deny_tx,
         }
@@ -100,33 +131,34 @@ impl DefaultAllows {
 
     pub fn get(&self, mode: DefaultAllow) -> ServerRx {
         match mode {
-            DefaultAllow::Authenticated => self.authenticated_rx.clone(),
-            DefaultAllow::Cluster => self.cluster_rx.clone(),
-            DefaultAllow::External => self.external_rx.clone(),
+            DefaultAllow::AllAuthenticated => self.all_authed_rx.clone(),
+            DefaultAllow::AllUnauthenticated => self.all_unauthed_rx.clone(),
+            DefaultAllow::ClusterAuthenticated => self.cluster_authed_rx.clone(),
+            DefaultAllow::ClusterUnauthenticated => self.cluster_unauthed_rx.clone(),
             DefaultAllow::None => self.deny_rx.clone(),
         }
     }
+}
 
-    fn mk_detect_config(
-        timeout: time::Duration,
-        nets: impl IntoIterator<Item = ipnet::IpNet>,
-        authentication: ClientAuthn,
-    ) -> InboundServerConfig {
-        let networks = nets
-            .into_iter()
-            .map(|net| ClientNetwork {
-                net,
-                except: vec![],
-            })
-            .collect::<Vec<_>>();
-        let authz = ClientAuthz {
-            networks: networks.into(),
-            authentication,
-        };
+fn mk_detect_config(
+    timeout: time::Duration,
+    nets: impl IntoIterator<Item = ipnet::IpNet>,
+    authentication: ClientAuthn,
+) -> InboundServerConfig {
+    let networks = nets
+        .into_iter()
+        .map(|net| ClientNetwork {
+            net,
+            except: vec![],
+        })
+        .collect::<Vec<_>>();
+    let authz = ClientAuthz {
+        networks: networks.into(),
+        authentication,
+    };
 
-        InboundServerConfig {
-            protocol: ProxyProtocol::Detect { timeout },
-            authorizations: Some((None, authz)).into_iter().collect(),
-        }
+    InboundServerConfig {
+        protocol: ProxyProtocol::Detect { timeout },
+        authorizations: Some((None, authz)).into_iter().collect(),
     }
 }

@@ -23,23 +23,10 @@ impl Index {
 
         // Get the cached namespace index (or load the default).
         let ns = self.namespaces.get_or_default(k8s::NsName::from_ns(&ns));
+        ns.default_mode = mode;
 
-        // If the mode is changed (or non-default), update all of the pod-ports that don't don't
-        // have an associated server instance. This allows us to dynamically update the default
-        // behavior after pods have been created.
-        if mode != ns.default_mode {
-            ns.default_mode = mode;
-
-            let rx = self.default_mode_rxs.get(mode);
-            for pod in ns.pods.index.values() {
-                for p in pod.servers.by_port.values() {
-                    let srv = p.server_name.lock();
-                    if srv.is_none() && p.tx.send(rx.clone()).is_err() {
-                        warn!(server = ?*srv, "Failed to update server");
-                    }
-                }
-            }
-        }
+        // We don't update the default-mode of a running pod, as it is essentially bound to the pod
+        // at inject-time.
 
         Ok(())
     }

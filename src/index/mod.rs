@@ -4,13 +4,13 @@ mod node;
 mod pod;
 mod server;
 
+use self::pod::PodIndex;
 use crate::{
     k8s::{self, polixy},
     ClientAuthn, ClientAuthz, ClientNetwork, DefaultMode, Identity, InboundServerConfig,
-    KubeletIps, ProxyProtocol, ServerRx, ServerRxTx, ServerTx, SharedLookupMap,
+    KubeletIps, ProxyProtocol, ServerRx, ServerTx, SharedLookupMap,
 };
 use anyhow::{Context, Error};
-use parking_lot::Mutex;
 use std::{
     collections::{BTreeMap, HashMap},
     sync::Arc,
@@ -65,29 +65,6 @@ struct NsIndex {
     servers: SrvIndex,
 
     authzs: AuthzIndex,
-}
-
-#[derive(Debug, Default)]
-struct PodIndex {
-    index: HashMap<k8s::PodName, Pod>,
-}
-
-#[derive(Debug)]
-struct Pod {
-    servers: Arc<PodServers>,
-    labels: k8s::Labels,
-}
-
-#[derive(Debug, Default)]
-struct PodServers {
-    by_port: HashMap<u16, Arc<PodServer>>,
-    by_name: HashMap<polixy::server::PortName, Vec<Arc<PodServer>>>,
-}
-
-#[derive(Debug)]
-struct PodServer {
-    server_name: Mutex<Option<polixy::server::Name>>,
-    tx: ServerRxTx,
 }
 
 #[derive(Debug, Default)]

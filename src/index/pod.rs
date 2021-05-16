@@ -1,7 +1,7 @@
-use super::{Index, NsIndex, Pod, PodServer, PodServers, ServerRx, SrvIndex};
+use super::{Index, NsIndex, SrvIndex};
 use crate::{
     k8s::{self, polixy},
-    DefaultMode, KubeletIps, Lookup, PodIps,
+    DefaultMode, KubeletIps, Lookup, PodIps, ServerRx, ServerRxTx,
 };
 use anyhow::{anyhow, bail, Result};
 use parking_lot::Mutex;
@@ -12,6 +12,60 @@ use std::{
 };
 use tokio::sync::watch;
 use tracing::{debug, instrument, trace, warn};
+
+#[derive(Debug, Default)]
+pub(super) struct PodIndex {
+    index: HashMap<k8s::PodName, Pod>,
+}
+
+#[derive(Debug)]
+struct Pod {
+    servers: Arc<PodServers>,
+    labels: k8s::Labels,
+    default_rx: ServerRx,
+}
+
+#[derive(Debug, Default)]
+struct PodServers {
+    by_port: HashMap<u16, Arc<PodServer>>,
+    by_name: HashMap<polixy::server::PortName, Vec<Arc<PodServer>>>,
+}
+
+#[derive(Debug)]
+struct PodServer {
+    server_name: Mutex<Option<polixy::server::Name>>,
+    tx: ServerRxTx,
+}
+
+// === impl PodIndex ===
+
+impl PodIndex {
+    pub(super) fn link_servers(&self, servers: &SrvIndex) {
+        for pod in self.index.values() {
+            link_pod_servers(servers, &pod.labels, &pod.servers);
+        }
+    }
+
+    pub fn reset_server(&self, name: &k8s::polixy::server::Name) {
+        for (pod_name, pod) in self.index.iter() {
+            let rx = pod.default_rx.clone();
+            for (port_num, port) in pod.servers.by_port.iter() {
+                let mut sn = port.server_name.lock();
+                if sn.as_ref() == Some(name) {
+                    debug!(pod = %pod_name, port = %port_num, "Removing server from pod");
+                    *sn = None;
+                    port.tx
+                        .send(rx.clone())
+                        .expect("pod config receiver must still be held");
+                } else {
+                    trace!(pod = %pod_name, port = %port_num, server = ?sn, "Server does not match");
+                }
+            }
+        }
+    }
+}
+
+// === impl Index ===
 
 impl Index {
     /// Builds a `Pod`, linking it with servers and nodes.
@@ -49,12 +103,12 @@ impl Index {
                 let status = pod.status.ok_or_else(|| anyhow!("pod missing status"))?;
                 let pod_ips = mk_pod_ips(status)?;
 
-                let default_server = self.default_mode_rxs.get(default_mode);
+                let default_rx = self.default_mode_rxs.get(default_mode);
                 let (pod_servers, lookups) =
-                    collect_pod_servers(spec, default_server, pod_ips, kubelet_ips);
+                    collect_pod_servers(spec, default_rx.clone(), pod_ips, kubelet_ips);
 
                 let labels = k8s::Labels::from(pod.metadata.labels);
-                Self::link_pod_servers(&servers, &labels, &pod_servers);
+                link_pod_servers(&servers, &labels, &pod_servers);
 
                 if self.lookups.insert((ns_name, pod_name), lookups).is_some() {
                     unreachable!("pod must not exist in lookups");
@@ -63,6 +117,7 @@ impl Index {
                 pod_entry.insert(Pod {
                     servers: pod_servers,
                     labels,
+                    default_rx,
                 });
             }
 
@@ -75,7 +130,7 @@ impl Index {
                 let p = pod_entry.get_mut();
                 if Some(p.labels.as_ref()) != pod.metadata.labels.as_ref() {
                     let labels = k8s::Labels::from(pod.metadata.labels);
-                    Self::link_pod_servers(&servers, &labels, &p.servers);
+                    link_pod_servers(&servers, &labels, &p.servers);
                     p.labels = labels;
                 }
 
@@ -84,46 +139,6 @@ impl Index {
         }
 
         Ok(())
-    }
-
-    pub(super) fn link_pod_servers(
-        servers: &SrvIndex,
-        pod_labels: &k8s::Labels,
-        ports: &PodServers,
-    ) {
-        for (srv_name, server) in servers.index.iter() {
-            if server.meta.pod_selector.matches(&pod_labels) {
-                for port in get_ports(&server.meta.port, ports).into_iter() {
-                    let mut sn = port.server_name.lock();
-                    if let Some(sn) = sn.as_ref() {
-                        if sn != srv_name {
-                            // TODO handle conflicts differently?
-                            tracing::warn!(
-                                "Pod port matches multiple servers: {} and {}",
-                                sn,
-                                srv_name
-                            );
-                            debug_assert!(false);
-                            continue;
-                        }
-                    }
-                    *sn = Some(srv_name.clone());
-
-                    port.tx
-                        .send(server.rx.clone())
-                        .expect("pod config receiver must be set");
-                    debug!(server = %srv_name, "Pod server udpated");
-                    trace!(selector = ?server.meta.pod_selector, ?pod_labels);
-                }
-            } else {
-                trace!(
-                    server = %srv_name,
-                    selector = ?server.meta.pod_selector,
-                    ?pod_labels,
-                    "Does not match",
-                );
-            }
-        }
     }
 
     #[instrument(
@@ -192,6 +207,42 @@ impl Index {
         }
 
         result
+    }
+}
+
+fn link_pod_servers(servers: &SrvIndex, pod_labels: &k8s::Labels, ports: &PodServers) {
+    for (srv_name, server) in servers.index.iter() {
+        if server.meta.pod_selector.matches(&pod_labels) {
+            for port in get_ports(&server.meta.port, ports).into_iter() {
+                let mut sn = port.server_name.lock();
+                if let Some(sn) = sn.as_ref() {
+                    if sn != srv_name {
+                        // TODO handle conflicts differently?
+                        tracing::warn!(
+                            "Pod port matches multiple servers: {} and {}",
+                            sn,
+                            srv_name
+                        );
+                        debug_assert!(false);
+                        continue;
+                    }
+                }
+                *sn = Some(srv_name.clone());
+
+                port.tx
+                    .send(server.rx.clone())
+                    .expect("pod config receiver must be set");
+                debug!(server = %srv_name, "Pod server udpated");
+                trace!(selector = ?server.meta.pod_selector, ?pod_labels);
+            }
+        } else {
+            trace!(
+                server = %srv_name,
+                selector = ?server.meta.pod_selector,
+                ?pod_labels,
+                "Does not match",
+            );
+        }
     }
 }
 

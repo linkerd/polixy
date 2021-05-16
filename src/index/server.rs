@@ -1,12 +1,113 @@
-use super::{Index, NsIndex, Server, ServerMeta};
+use super::{ClientAuthz, Index, NsIndex, ServerSelector};
 use crate::{
     k8s::{self, polixy},
-    InboundServerConfig, ProxyProtocol,
+    InboundServerConfig, ProxyProtocol, ServerRx, ServerTx,
 };
 use anyhow::{anyhow, bail, Result};
-use std::collections::{hash_map::Entry as HashEntry, HashMap, HashSet};
+use std::{
+    collections::{hash_map::Entry as HashEntry, BTreeMap, HashMap, HashSet},
+    sync::Arc,
+};
 use tokio::{sync::watch, time};
 use tracing::{debug, instrument};
+
+#[derive(Debug, Default)]
+pub(super) struct SrvIndex {
+    index: HashMap<polixy::server::Name, Server>,
+}
+
+#[derive(Debug)]
+struct Server {
+    meta: ServerMeta,
+    authorizations: BTreeMap<polixy::authz::Name, ClientAuthz>,
+    rx: ServerRx,
+    tx: ServerTx,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ServerMeta {
+    labels: k8s::Labels,
+    port: polixy::server::Port,
+    pod_selector: Arc<k8s::labels::Selector>,
+    protocol: ProxyProtocol,
+}
+
+// === impl SrvIndex ===
+
+impl SrvIndex {
+    pub fn add_authz(
+        &mut self,
+        name: &polixy::authz::Name,
+        selector: &ServerSelector,
+        authz: ClientAuthz,
+    ) {
+        for (srv_name, srv) in self.index.iter_mut() {
+            let matches = match selector {
+                ServerSelector::Name(ref n) => n == srv_name,
+                ServerSelector::Selector(ref s) => s.matches(&srv.meta.labels),
+            };
+            if matches {
+                debug!(server = %srv_name, authz = %name, "Adding authz to server");
+                srv.add_authz(name.clone(), authz.clone());
+            } else {
+                debug!(server = %srv_name, authz = %name, "Removing authz from server");
+                srv.remove_authz(name);
+            }
+        }
+    }
+
+    pub fn remove_authz(&mut self, name: &polixy::authz::Name) {
+        for srv in self.index.values_mut() {
+            srv.remove_authz(name);
+        }
+    }
+
+    pub fn iter_matching(
+        &self,
+        labels: k8s::Labels,
+    ) -> impl Iterator<Item = (&polixy::server::Name, &polixy::server::Port, &ServerRx)> {
+        self.index.iter().filter_map(move |(srv_name, server)| {
+            let matches = server.meta.pod_selector.matches(&labels);
+            tracing::trace!(server = %srv_name, %matches);
+            if matches {
+                Some((srv_name, &server.meta.port, &server.rx))
+            } else {
+                None
+            }
+        })
+    }
+}
+
+// === impl Server ===
+
+impl Server {
+    fn add_authz(&mut self, name: polixy::authz::Name, authz: ClientAuthz) {
+        debug!("Adding authorization to server");
+        self.authorizations.insert(name, authz);
+        let mut config = self.rx.borrow().clone();
+        config.authorizations = self
+            .authorizations
+            .iter()
+            .map(|(n, a)| (Some(n.clone()), a.clone()))
+            .collect();
+        self.tx.send(config).expect("config must send")
+    }
+
+    fn remove_authz(&mut self, name: &polixy::authz::Name) {
+        if self.authorizations.remove(name).is_some() {
+            debug!("Removing authorization from server");
+            let mut config = self.rx.borrow().clone();
+            config.authorizations = self
+                .authorizations
+                .iter()
+                .map(|(n, a)| (Some(n.clone()), a.clone()))
+                .collect();
+            self.tx.send(config).expect("config must send")
+        }
+    }
+}
+
+// === impl Index ===
 
 impl Index {
     /// Builds a `Server`, linking it against authorizations and pod ports.

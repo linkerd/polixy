@@ -4,7 +4,7 @@ mod node;
 mod pod;
 mod server;
 
-use self::pod::PodIndex;
+use self::{pod::PodIndex, server::SrvIndex};
 use crate::{
     k8s::{self, polixy},
     ClientAuthn, ClientAuthz, ClientNetwork, DefaultMode, Identity, InboundServerConfig,
@@ -83,56 +83,6 @@ struct Authz {
 enum ServerSelector {
     Name(polixy::server::Name),
     Selector(Arc<k8s::labels::Selector>),
-}
-
-#[derive(Debug, Default)]
-struct SrvIndex {
-    index: HashMap<polixy::server::Name, Server>,
-}
-
-#[derive(Debug)]
-struct Server {
-    meta: ServerMeta,
-    authorizations: BTreeMap<polixy::authz::Name, ClientAuthz>,
-    rx: ServerRx,
-    tx: ServerTx,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ServerMeta {
-    labels: k8s::Labels,
-    port: polixy::server::Port,
-    pod_selector: Arc<k8s::labels::Selector>,
-    protocol: ProxyProtocol,
-}
-
-// === impl Server ===
-
-impl Server {
-    fn add_authz(&mut self, name: polixy::authz::Name, authz: ClientAuthz) {
-        debug!("Adding authorization to server");
-        self.authorizations.insert(name, authz);
-        let mut config = self.rx.borrow().clone();
-        config.authorizations = self
-            .authorizations
-            .iter()
-            .map(|(n, a)| (Some(n.clone()), a.clone()))
-            .collect();
-        self.tx.send(config).expect("config must send")
-    }
-
-    fn remove_authz(&mut self, name: &polixy::authz::Name) {
-        if self.authorizations.remove(name).is_some() {
-            debug!("Removing authorization from server");
-            let mut config = self.rx.borrow().clone();
-            config.authorizations = self
-                .authorizations
-                .iter()
-                .map(|(n, a)| (Some(n.clone()), a.clone()))
-                .collect();
-            self.tx.send(config).expect("config must send")
-        }
-    }
 }
 
 // === impl DefaultModeRxs ===

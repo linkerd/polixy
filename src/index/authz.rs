@@ -33,35 +33,14 @@ impl Index {
 
         match authzs.index.entry(authz_name) {
             HashEntry::Vacant(entry) => {
-                for (srv_name, srv) in servers.index.iter_mut() {
-                    let matches = match authz.servers {
-                        ServerSelector::Name(ref n) => n == srv_name,
-                        ServerSelector::Selector(ref s) => s.matches(&srv.meta.labels),
-                    };
-                    if matches {
-                        debug!(authz = %entry.key(), "Adding authz to server");
-                        srv.add_authz(entry.key().clone(), authz.clients.clone());
-                    }
-                }
+                servers.add_authz(entry.key(), &authz.servers, authz.clients.clone());
                 entry.insert(authz);
             }
 
             HashEntry::Occupied(mut entry) => {
                 // If the authorization changed materially, then update it in all servers.
                 if entry.get() != &authz {
-                    for (srv_name, srv) in servers.index.iter_mut() {
-                        let matches = match authz.servers {
-                            ServerSelector::Name(ref n) => n == srv_name,
-                            ServerSelector::Selector(ref s) => s.matches(&srv.meta.labels),
-                        };
-                        if matches {
-                            debug!(authz = %entry.key(), "Adding authz to server");
-                            srv.add_authz(entry.key().clone(), authz.clients.clone());
-                        } else {
-                            debug!(authz = %entry.key(), "Removing authz from server");
-                            srv.remove_authz(entry.key());
-                        }
-                    }
+                    servers.add_authz(entry.key(), &authz.servers, authz.clients.clone());
                     entry.insert(authz);
                 }
             }
@@ -91,9 +70,7 @@ impl Index {
             .get_mut(&ns_name)
             .ok_or_else(|| anyhow!("removing authz from non-existent namespace"))?;
 
-        for srv in ns.servers.index.values_mut() {
-            srv.remove_authz(authz_name);
-        }
+        ns.servers.remove_authz(authz_name);
 
         debug!("Removed authz");
         Ok(())

@@ -1039,26 +1039,11 @@ name = "polixy-client"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-stream",
- "async-trait",
- "dashmap",
  "futures",
- "indexmap",
  "ipnet",
- "k8s-openapi",
- "kube",
- "kube-runtime",
- "linkerd-drain",
- "linkerd2-proxy-api",
- "parking_lot",
  "polixy-grpc",
- "schemars",
- "serde",
- "serde_json",
- "serde_yaml",
  "structopt",
  "tokio",
- "tokio-stream",
  "tonic",
  "tracing",
  "tracing-subscriber",
@@ -1073,7 +1058,6 @@ dependencies = [
  "async-trait",
  "dashmap",
  "futures",
- "indexmap",
  "ipnet",
  "k8s-openapi",
  "kube",
@@ -1081,8 +1065,6 @@ dependencies = [
  "linkerd-drain",
  "parking_lot",
  "polixy-grpc",
- "prost",
- "prost-types",
  "schemars",
  "serde",
  "serde_json",
@@ -1099,14 +1081,11 @@ dependencies = [
 name = "polixy-grpc"
 version = "0.1.0"
 dependencies = [
- "anyhow",
- "futures",
  "linkerd2-proxy-api",
  "prost",
  "prost-types",
  "tonic",
  "tonic-build",
- "tracing",
 ]
 
 [[package]]

@@ -9,7 +9,7 @@ use std::{
     sync::Arc,
 };
 use tokio::{sync::watch, time};
-use tracing::{debug, instrument};
+use tracing::{debug, instrument, trace};
 
 #[derive(Debug, Default)]
 pub(super) struct SrvIndex {
@@ -68,7 +68,7 @@ impl SrvIndex {
     ) -> impl Iterator<Item = (&polixy::server::Name, &polixy::server::Port, &ServerRx)> {
         self.index.iter().filter_map(move |(srv_name, server)| {
             let matches = server.meta.pod_selector.matches(&labels);
-            tracing::trace!(server = %srv_name, %matches);
+            trace!(server = %srv_name, %matches);
             if matches {
                 Some((srv_name, &server.meta.port, &server.rx))
             } else {
@@ -163,17 +163,27 @@ impl Index {
             HashEntry::Occupied(mut entry) => {
                 // If something about the server changed, we need to update the config to reflect
                 // the change.
-                let labels_changed =
-                    Some(entry.get().meta.labels.as_ref()) != srv.metadata.labels.as_ref();
-                let protocol_changed = entry.get().meta.protocol == protocol;
-                if labels_changed || protocol_changed {
+                let new_labels =
+                    if Some(entry.get().meta.labels.as_ref()) != srv.metadata.labels.as_ref() {
+                        Some(k8s::Labels::from(srv.metadata.labels))
+                    } else {
+                        None
+                    };
+
+                let new_protocol = if entry.get().meta.protocol == protocol {
+                    Some(protocol)
+                } else {
+                    None
+                };
+
+                trace!(?new_labels, ?new_protocol);
+                if new_labels.is_some() || new_protocol.is_some() {
                     // NB: Only a single task applies server updates, so it's
                     // okay to borrow a version, modify, and send it.  We don't
                     // need a lock because serialization is guaranteed.
                     let mut config = entry.get().rx.borrow().clone();
 
-                    if labels_changed {
-                        let labels = k8s::Labels::from(srv.metadata.labels);
+                    if let Some(labels) = new_labels {
                         let authzs = ns_authzs
                             .filter_selected(entry.key().clone(), labels.clone())
                             .map(|(n, a)| (n.clone(), a.clone()))
@@ -187,12 +197,10 @@ impl Index {
                         entry.get_mut().authorizations = authzs;
                     }
 
-                    if protocol_changed {
+                    if let Some(protocol) = new_protocol {
                         config.protocol = protocol.clone();
                         entry.get_mut().meta.protocol = protocol;
                     }
-
-                    debug!("Updating");
                     entry
                         .get()
                         .tx

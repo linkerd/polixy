@@ -1,7 +1,7 @@
-//mod http_api;
+pub mod http_api;
 mod watch_ports;
 
-pub use self::watch_ports::watch_ports;
+pub use self::watch_ports::{watch_ports, PortWatch};
 use anyhow::{anyhow, bail, Context, Error, Result};
 use futures::prelude::*;
 use ipnet::IpNet;

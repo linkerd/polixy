@@ -101,21 +101,19 @@ async fn main() -> Result<()> {
                 hyper::service::make_service_fn(move |_conn| {
                     let ports = ports.clone();
                     future::ok::<_, hyper::Error>(hyper::service::service_fn(
-                        move |_: hyper::Request<hyper::Body>| {
-                            let _ = ports;
-                            future::ok::<_, hyper::Error>(
-                                hyper::Response::builder()
-                                    .body(hyper::Body::default())
-                                    .unwrap(),
-                            )
+                        move |req: hyper::Request<hyper::Body>| {
+                            let ports = ports.clone();
+                            async move { polixy_client::http_api::serve(ports.as_ref(), req).await }
                         },
                     ))
                 }),
             );
             let addr = server.local_addr();
             info!(%addr, "Listening");
-            tokio::signal::ctrl_c().await.unwrap();
-            drop(server);
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = server => {}
+            }
             Ok(())
         }
     }

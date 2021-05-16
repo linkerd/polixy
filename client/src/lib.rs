@@ -1,7 +1,7 @@
 use anyhow::{anyhow, bail, Context, Error, Result};
 use futures::prelude::*;
 use ipnet::IpNet;
-use polixy_grpc::{self as proto, net::olix0r::polixy::polixy_client::PolixyClient};
+use polixy_grpc::{self as proto, polixy_client::PolixyClient};
 use std::{collections::HashMap, convert::TryInto, net::IpAddr};
 use tokio::time;
 use tracing::trace;

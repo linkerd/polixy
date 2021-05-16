@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package net.olix0r.polixy;
+package io.linkerd.polixy;
 
 import "google/protobuf/duration.proto";
 import "linkerd/net.proto";

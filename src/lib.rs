@@ -19,8 +19,11 @@ pub struct LookupHandle(SharedLookupMap);
 
 type SharedLookupMap = Arc<DashMap<(k8s::NsName, k8s::PodName), Arc<HashMap<u16, Lookup>>>>;
 
+/// Watches a server's configuration for server/authorization changes.
 type ServerRx = watch::Receiver<InboundServerConfig>;
 type ServerTx = watch::Sender<InboundServerConfig>;
+
+/// Watches a pod port's for a new `ServerRx`.
 pub type ServerRxRx = watch::Receiver<ServerRx>;
 type ServerRxTx = watch::Sender<ServerRx>;
 

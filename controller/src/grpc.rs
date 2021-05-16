@@ -41,17 +41,23 @@ impl Server {
 
     fn lookup(&self, workload: String, port: u32) -> Result<Lookup, tonic::Status> {
         // Parse a workload name in the form namespace:name.
-        let (ns, name) = {
-            let parts = workload.splitn(2, ':').collect::<Vec<_>>();
-            if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
+        let (ns, name) = match workload.split_once(':') {
+            None => {
                 return Err(tonic::Status::invalid_argument(format!(
                     "Invalid workload: {}",
                     workload
                 )));
             }
-            let ns = NsName::from_string(parts[0].to_string());
-            let pod = PodName::from(parts[1].to_string());
-            (ns, pod)
+            Some((ns, pod)) if ns.is_empty() || pod.is_empty() => {
+                return Err(tonic::Status::invalid_argument(format!(
+                    "Invalid workload: {}",
+                    workload
+                )));
+            }
+            Some((ns, pod)) => (
+                NsName::from_string(ns.to_string()),
+                PodName::from(pod.to_string()),
+            ),
         };
 
         // Ensure that the port is in the valid range.

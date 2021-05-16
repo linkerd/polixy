@@ -1,7 +1,7 @@
-use super::{Index, NsIndex, SrvIndex};
+use super::{DefaultAllow, Index, NsIndex, SrvIndex};
 use crate::{
     k8s::{self, polixy},
-    DefaultMode, KubeletIps, Lookup, PodIps, ServerRx, ServerRxTx,
+    KubeletIps, Lookup, PodIps, ServerRx, ServerRxTx,
 };
 use anyhow::{anyhow, bail, Result};
 use parking_lot::Mutex;
@@ -127,7 +127,7 @@ impl Index {
     pub(super) fn apply_pod(&mut self, pod: k8s::Pod) -> Result<()> {
         let ns_name = k8s::NsName::from_pod(&pod);
         let NsIndex {
-            default_mode,
+            default_allow,
             ref mut pods,
             ref mut servers,
             ..
@@ -136,12 +136,12 @@ impl Index {
         let pod_name = k8s::PodName::from_pod(&pod);
         match pods.index.entry(pod_name.clone()) {
             HashEntry::Vacant(pod_entry) => {
-                let default_mode = match DefaultMode::from_annotation(&pod.metadata) {
-                    Ok(Some(mode)) => mode,
-                    Ok(None) => *default_mode,
+                let default_allow = match DefaultAllow::from_annotation(&pod.metadata) {
+                    Ok(Some(allow)) => allow,
+                    Ok(None) => *default_allow,
                     Err(error) => {
                         warn!(%error, "Ignoring invalid default-mode annotation");
-                        *default_mode
+                        *default_allow
                     }
                 };
 
@@ -151,7 +151,7 @@ impl Index {
                 let status = pod.status.ok_or_else(|| anyhow!("pod missing status"))?;
                 let pod_ips = mk_pod_ips(status)?;
 
-                let default_rx = self.default_mode_rxs.get(default_mode);
+                let default_rx = self.default_allows.get(default_allow);
                 let (pod_servers, lookups) =
                     collect_pod_servers(spec, default_rx.clone(), pod_ips, kubelet_ips);
 

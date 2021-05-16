@@ -124,7 +124,7 @@ impl Index {
             ref pods,
             authzs: ref ns_authzs,
             ref mut servers,
-            default_mode: _,
+            default_allow: _,
         } = self.namespaces.get_or_default(ns_name);
 
         let srv_name = polixy::server::Name::from_server(&srv);

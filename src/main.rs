@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use futures::{future, prelude::*};
-use polixy::DefaultMode;
+use polixy::DefaultAllow;
 use structopt::StructOpt;
 use tokio::time;
 use tracing::{debug, info, instrument};
@@ -19,7 +19,7 @@ enum Command {
         cluster_networks: Vec<ipnet::IpNet>,
 
         #[structopt(long, default_value = "allow-external")]
-        default_mode: DefaultMode,
+        default_mode: DefaultAllow,
     },
     Client {
         #[structopt(long, default_value = "http://127.0.0.1:8910")]

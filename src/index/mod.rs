@@ -1,18 +1,16 @@
 mod authz;
+mod default_allow;
 mod namespace;
 mod node;
 mod pod;
 mod server;
 
-use self::{authz::AuthzIndex, pod::PodIndex, server::SrvIndex};
-use crate::{
-    k8s::{self, polixy},
-    ClientAuthn, ClientAuthz, ClientNetwork, DefaultMode, Identity, InboundServerConfig,
-    KubeletIps, ProxyProtocol, ServerRx, ServerTx, SharedLookupMap,
-};
+pub use self::default_allow::DefaultAllow;
+use self::{authz::AuthzIndex, default_allow::DefaultAllows, pod::PodIndex, server::SrvIndex};
+use crate::{k8s, ClientAuthz, KubeletIps, SharedLookupMap};
 use anyhow::{Context, Error};
 use std::{collections::HashMap, sync::Arc};
-use tokio::{sync::watch, time};
+use tokio::time;
 use tracing::{instrument, warn};
 
 pub struct Index {
@@ -26,33 +24,18 @@ pub struct Index {
     /// Cached Node IPs.
     node_ips: HashMap<k8s::NodeName, KubeletIps>,
 
-    default_mode_rxs: DefaultModeRxs,
-}
-
-/// Default server configs to use when no server matches.
-struct DefaultModeRxs {
-    external_rx: ServerRx,
-    _external_tx: ServerTx,
-
-    cluster_rx: ServerRx,
-    _cluster_tx: ServerTx,
-
-    authenticated_rx: ServerRx,
-    _authenticated_tx: ServerTx,
-
-    deny_rx: ServerRx,
-    _deny_tx: ServerTx,
+    default_allows: DefaultAllows,
 }
 
 #[derive(Debug)]
 struct Namespaces {
-    default_mode: DefaultMode,
+    default_allow: DefaultAllow,
     index: HashMap<k8s::NsName, NsIndex>,
 }
 
 #[derive(Debug)]
 struct NsIndex {
-    default_mode: DefaultMode,
+    default_allow: DefaultAllow,
 
     /// Caches pod labels so we can differentiate innocuous updates (like status
     /// changes) from label changes that could impact server indexing.
@@ -67,101 +50,17 @@ struct NsIndex {
 /// Selects servers for an authorization.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum ServerSelector {
-    Name(polixy::server::Name),
+    Name(k8s::polixy::server::Name),
     Selector(Arc<k8s::labels::Selector>),
-}
-
-// === impl DefaultModeRxs ===
-
-impl DefaultModeRxs {
-    fn new(cluster_nets: Vec<ipnet::IpNet>, detect_timeout: time::Duration) -> Self {
-        let all_nets = [
-            ipnet::IpNet::V4(Default::default()),
-            ipnet::IpNet::V6(Default::default()),
-        ];
-
-        // A default config to be provided to pods when no matching server
-        // exists.
-        let (_external_tx, external_rx) = watch::channel(Self::mk_detect_config(
-            detect_timeout,
-            all_nets.iter().copied(),
-            ClientAuthn::Unauthenticated,
-        ));
-
-        let (_cluster_tx, cluster_rx) = watch::channel(Self::mk_detect_config(
-            detect_timeout,
-            cluster_nets.iter().cloned(),
-            ClientAuthn::Unauthenticated,
-        ));
-
-        let (_authenticated_tx, authenticated_rx) = watch::channel(Self::mk_detect_config(
-            detect_timeout,
-            cluster_nets,
-            ClientAuthn::Authenticated {
-                identities: vec![Identity::Suffix(vec![].into())],
-                service_accounts: vec![],
-            },
-        ));
-
-        let (_deny_tx, deny_rx) = watch::channel(InboundServerConfig {
-            protocol: ProxyProtocol::Detect {
-                timeout: detect_timeout,
-            },
-            authorizations: Default::default(),
-        });
-
-        Self {
-            external_rx,
-            _external_tx,
-            cluster_rx,
-            _cluster_tx,
-            authenticated_rx,
-            _authenticated_tx,
-            deny_rx,
-            _deny_tx,
-        }
-    }
-
-    fn mk_detect_config(
-        timeout: time::Duration,
-        nets: impl IntoIterator<Item = ipnet::IpNet>,
-        authentication: ClientAuthn,
-    ) -> InboundServerConfig {
-        let networks = nets
-            .into_iter()
-            .map(|net| ClientNetwork {
-                net,
-                except: vec![],
-            })
-            .collect::<Vec<_>>();
-        let authz = ClientAuthz {
-            networks: networks.into(),
-            authentication,
-        };
-
-        InboundServerConfig {
-            protocol: ProxyProtocol::Detect { timeout },
-            authorizations: Some((None, authz)).into_iter().collect(),
-        }
-    }
-
-    fn get(&self, mode: DefaultMode) -> ServerRx {
-        match mode {
-            DefaultMode::AllowExternal => self.external_rx.clone(),
-            DefaultMode::AllowCluster => self.cluster_rx.clone(),
-            DefaultMode::AllowAuthenticated => self.authenticated_rx.clone(),
-            DefaultMode::Deny => self.deny_rx.clone(),
-        }
-    }
 }
 
 // === impl Namespaces ===
 
 impl Namespaces {
     fn get_or_default(&mut self, name: k8s::NsName) -> &mut NsIndex {
-        let default_mode = self.default_mode;
+        let default_allow = self.default_allow;
         self.index.entry(name).or_insert_with(|| NsIndex {
-            default_mode,
+            default_allow,
             pods: PodIndex::default(),
             servers: SrvIndex::default(),
             authzs: AuthzIndex::default(),
@@ -175,18 +74,18 @@ impl Index {
     pub(crate) fn new(
         lookups: SharedLookupMap,
         cluster_nets: Vec<ipnet::IpNet>,
-        default_mode: DefaultMode,
+        default_allow: DefaultAllow,
         detect_timeout: time::Duration,
     ) -> Self {
         let namespaces = Namespaces {
-            default_mode,
+            default_allow,
             index: HashMap::default(),
         };
         Self {
             lookups,
             namespaces,
             node_ips: HashMap::default(),
-            default_mode_rxs: DefaultModeRxs::new(cluster_nets, detect_timeout),
+            default_allows: DefaultAllows::new(cluster_nets, detect_timeout),
         }
     }
 

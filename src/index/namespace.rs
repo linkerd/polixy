@@ -1,5 +1,5 @@
-use super::Index;
-use crate::{k8s, DefaultMode};
+use super::{DefaultAllow, Index};
+use crate::k8s;
 use anyhow::{bail, Result};
 use std::collections::HashSet;
 use tracing::{debug, instrument, warn};
@@ -12,18 +12,18 @@ impl Index {
     pub(super) fn apply_ns(&mut self, ns: k8s::Namespace) -> Result<()> {
         // Read the `default-mode` annotation from the ns metadata, which indicates the default
         // behavior for pod-ports in the namespace that lack a server instance.
-        let mode = match DefaultMode::from_annotation(&ns.metadata) {
+        let allow = match DefaultAllow::from_annotation(&ns.metadata) {
             Ok(Some(mode)) => mode,
-            Ok(None) => self.namespaces.default_mode,
+            Ok(None) => self.namespaces.default_allow,
             Err(error) => {
                 warn!(%error, "invalid default-mode annotation");
-                self.namespaces.default_mode
+                self.namespaces.default_allow
             }
         };
 
         // Get the cached namespace index (or load the default).
         let ns = self.namespaces.get_or_default(k8s::NsName::from_ns(&ns));
-        ns.default_mode = mode;
+        ns.default_allow = allow;
 
         // We don't update the default-mode of a running pod, as it is essentially bound to the pod
         // at inject-time.

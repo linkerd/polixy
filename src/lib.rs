@@ -2,6 +2,7 @@ pub mod grpc;
 mod index;
 mod k8s;
 
+pub use self::index::DefaultAllow;
 use anyhow::{anyhow, Error, Result};
 use dashmap::DashMap;
 use ipnet::IpNet;
@@ -12,14 +13,6 @@ use std::{
     sync::Arc,
 };
 use tokio::{sync::watch, time};
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum DefaultMode {
-    AllowExternal,
-    AllowCluster,
-    AllowAuthenticated,
-    Deny,
-}
 
 #[derive(Clone, Debug)]
 pub struct LookupHandle(SharedLookupMap);
@@ -100,7 +93,7 @@ impl LookupHandle {
     pub fn run(
         client: kube::Client,
         cluster_networks: Vec<ipnet::IpNet>,
-        default_mode: DefaultMode,
+        default_mode: DefaultAllow,
         detect_timeout: time::Duration,
     ) -> (Self, impl std::future::Future<Output = anyhow::Error>) {
         let lookups = SharedLookupMap::default();
@@ -155,35 +148,18 @@ impl KubeletIps {
     }
 }
 
-// === impl DefaultMode ===
+// === impl DefaultAllow ===
 
-impl std::str::FromStr for DefaultMode {
+impl std::str::FromStr for DefaultAllow {
     type Err = Error;
 
     fn from_str(s: &str) -> Result<Self> {
         match s {
-            "allow-external" => Ok(Self::AllowExternal),
-            "allow-cluster" => Ok(Self::AllowCluster),
-            "allow-authenticated" => Ok(Self::AllowAuthenticated),
-            "deny" => Ok(Self::Deny),
+            "external" => Ok(Self::External),
+            "cluster" => Ok(Self::Cluster),
+            "authenticated" => Ok(Self::Authenticated),
+            "none" => Ok(Self::None),
             s => Err(anyhow!("invalid mode: {}", s)),
-        }
-    }
-}
-
-impl DefaultMode {
-    const ANNOTATION: &'static str = "polixy.l5d.io/default-mode";
-
-    pub fn from_annotation(meta: &k8s::ObjectMeta) -> Result<Option<Self>> {
-        if let Some(annotations) = meta.annotations.as_ref() {
-            if let Some(v) = annotations.get(Self::ANNOTATION) {
-                let mode = v.parse()?;
-                Ok(Some(mode))
-            } else {
-                Ok(None)
-            }
-        } else {
-            Ok(None)
         }
     }
 }

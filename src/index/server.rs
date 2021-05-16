@@ -134,7 +134,10 @@ impl Index {
         match servers.index.entry(srv_name) {
             HashEntry::Vacant(entry) => {
                 let labels = k8s::Labels::from(srv.metadata.labels);
-                let authzs = ns_authzs.collect_by_server(entry.key(), &labels);
+                let authzs = ns_authzs
+                    .filter_selected(entry.key().clone(), labels.clone())
+                    .map(|(n, a)| (n.clone(), a.clone()))
+                    .collect::<BTreeMap<_, _>>();
                 let meta = ServerMeta {
                     labels,
                     port,
@@ -171,12 +174,15 @@ impl Index {
 
                     if labels_changed {
                         let labels = k8s::Labels::from(srv.metadata.labels);
-                        let authzs = ns_authzs.collect_by_server(entry.key(), &labels);
+                        let authzs = ns_authzs
+                            .filter_selected(entry.key().clone(), labels.clone())
+                            .map(|(n, a)| (n.clone(), a.clone()))
+                            .collect::<BTreeMap<_, _>>();
                         debug!(authzs = ?authzs.keys());
                         config.authorizations = authzs
                             .iter()
                             .map(|(n, a)| (Some(n.clone()), a.clone()))
-                            .collect();
+                            .collect::<BTreeMap<_, _>>();
                         entry.get_mut().meta.labels = labels;
                         entry.get_mut().authorizations = authzs;
                     }

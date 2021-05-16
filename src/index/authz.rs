@@ -1,4 +1,4 @@
-use super::{Authz, Index, NsIndex, ServerSelector};
+use super::{Index, NsIndex, ServerSelector};
 use crate::{
     k8s::{self, polixy},
     ClientAuthn, ClientAuthz, ClientNetwork, Identity, ServiceAccountRef,
@@ -9,7 +9,49 @@ use std::{
     collections::{hash_map::Entry as HashEntry, HashMap, HashSet},
     sync::Arc,
 };
-use tracing::{debug, instrument};
+use tracing::{debug, instrument, trace};
+
+#[derive(Debug, Default)]
+pub struct AuthzIndex {
+    index: HashMap<polixy::authz::Name, Authz>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Authz {
+    servers: ServerSelector,
+    clients: ClientAuthz,
+}
+
+// === impl AuthzIndex ===
+
+impl AuthzIndex {
+    pub fn filter_selected(
+        &self,
+        name: k8s::polixy::server::Name,
+        labels: k8s::Labels,
+    ) -> impl Iterator<Item = (&k8s::polixy::authz::Name, &ClientAuthz)> {
+        self.index.iter().filter_map(move |(authz_name, a)| {
+            let matches = match a.servers {
+                ServerSelector::Name(ref n) => {
+                    trace!(r#ref = %n, %name);
+                    n == &name
+                }
+                ServerSelector::Selector(ref s) => {
+                    trace!(selector = ?s, ?labels);
+                    s.matches(&labels)
+                }
+            };
+            debug!(authz = %authz_name, %matches);
+            if matches {
+                Some((authz_name, &a.clients))
+            } else {
+                None
+            }
+        })
+    }
+}
+
+// === impl Index ===
 
 impl Index {
     /// Constructs an `Authz` and adds it to `Servers` it selects.

@@ -4,19 +4,16 @@ mod node;
 mod pod;
 mod server;
 
-use self::{pod::PodIndex, server::SrvIndex};
+use self::{authz::AuthzIndex, pod::PodIndex, server::SrvIndex};
 use crate::{
     k8s::{self, polixy},
     ClientAuthn, ClientAuthz, ClientNetwork, DefaultMode, Identity, InboundServerConfig,
     KubeletIps, ProxyProtocol, ServerRx, ServerTx, SharedLookupMap,
 };
 use anyhow::{Context, Error};
-use std::{
-    collections::{BTreeMap, HashMap},
-    sync::Arc,
-};
+use std::{collections::HashMap, sync::Arc};
 use tokio::{sync::watch, time};
-use tracing::{debug, instrument, trace, warn};
+use tracing::{instrument, warn};
 
 pub struct Index {
     /// A shared map containing watches for all pods.  API clients simply
@@ -65,17 +62,6 @@ struct NsIndex {
     servers: SrvIndex,
 
     authzs: AuthzIndex,
-}
-
-#[derive(Debug, Default)]
-struct AuthzIndex {
-    index: HashMap<polixy::authz::Name, Authz>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct Authz {
-    servers: ServerSelector,
-    clients: ClientAuthz,
 }
 
 /// Selects servers for an authorization.
@@ -261,38 +247,5 @@ impl Index {
                 warn!(?error);
             }
         }
-    }
-}
-
-// === impl AuthzIndex ===
-
-impl AuthzIndex {
-    fn collect_by_server(
-        &self,
-        name: &k8s::polixy::server::Name,
-        labels: &k8s::Labels,
-    ) -> BTreeMap<k8s::polixy::authz::Name, ClientAuthz> {
-        let mut authzs = BTreeMap::new();
-
-        for (authz_name, a) in self.index.iter() {
-            let matches = match a.servers {
-                ServerSelector::Name(ref n) => {
-                    trace!(r#ref = %n, %name);
-                    n == name
-                }
-                ServerSelector::Selector(ref s) => {
-                    trace!(selector = ?s, ?labels);
-                    s.matches(&labels)
-                }
-            };
-            if matches {
-                debug!(authz = %authz_name, %matches);
-                authzs.insert(authz_name.clone(), a.clients.clone());
-            } else {
-                trace!(authz = %authz_name, %matches);
-            }
-        }
-
-        authzs
     }
 }

@@ -57,7 +57,7 @@ impl Client {
     pub async fn connect<D>(dst: D) -> Result<Self>
     where
         D: std::convert::TryInto<tonic::transport::Endpoint>,
-        D::Error: Into<tonic::codegen::StdError>,
+        D::Error: Into<Box<dyn std::error::Error + Send + Sync + 'static>>,
     {
         let client = PolixyClient::connect(dst).await?;
         Ok(Client { client })

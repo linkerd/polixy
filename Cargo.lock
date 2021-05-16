@@ -1039,9 +1039,14 @@ name = "polixy-client"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytes",
  "futures",
+ "hyper",
  "ipnet",
  "polixy-grpc",
+ "serde",
+ "serde_json",
+ "serde_yaml",
  "structopt",
  "tokio",
  "tonic",

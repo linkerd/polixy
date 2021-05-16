@@ -1,8 +1,16 @@
+//mod http_api;
+mod watch_ports;
+
+pub use self::watch_ports::watch_ports;
 use anyhow::{anyhow, bail, Context, Error, Result};
 use futures::prelude::*;
 use ipnet::IpNet;
 use polixy_grpc::{self as proto, polixy_client::PolixyClient};
-use std::{collections::HashMap, convert::TryInto, net::IpAddr};
+use std::{
+    collections::{HashMap, HashSet},
+    convert::TryInto,
+    net::IpAddr,
+};
 use tokio::time;
 use tracing::trace;
 
@@ -46,9 +54,14 @@ pub struct Network {
 pub enum Authn {
     Unauthenticated,
     Authenticated {
-        identities: Vec<String>,
-        suffixes: Vec<Vec<String>>,
+        identities: HashSet<String>,
+        suffixes: Vec<Suffix>,
     },
+}
+
+#[derive(Clone, Debug)]
+pub struct Suffix {
+    ends_with: String,
 }
 
 // === impl Client ===
@@ -63,14 +76,9 @@ impl Client {
         Ok(Client { client })
     }
 
-    pub async fn get_inbound_port(
-        &mut self,
-        ns: String,
-        pod: String,
-        port: u16,
-    ) -> Result<Inbound> {
+    pub async fn get_inbound_port(&mut self, workload: String, port: u16) -> Result<Inbound> {
         let req = tonic::Request::new(proto::InboundPort {
-            workload: format!("{}:{}", ns, pod),
+            workload,
             port: port.into(),
         });
 
@@ -81,27 +89,67 @@ impl Client {
 
     pub async fn watch_inbound_port(
         &mut self,
-        ns: String,
-        pod: String,
+        workload: String,
         port: u16,
     ) -> Result<impl Stream<Item = Result<Inbound>>> {
         let req = tonic::Request::new(proto::InboundPort {
-            workload: format!("{}:{}", ns, pod),
+            workload,
             port: port.into(),
         });
 
         let rsp = self.client.watch_inbound_port(req).await?;
 
-        let updates = rsp
-            .into_inner()
-            .map_err(Into::into)
-            .and_then(|c| future::ready(c.try_into()));
+        let updates = rsp.into_inner().map_err(Into::into).and_then(|proto| {
+            trace!(?proto);
+            future::ready(proto.try_into())
+        });
 
         Ok(updates)
     }
 }
 
 // === impl Inbound ===
+
+impl Inbound {
+    pub fn check_non_tls(&self, client_ip: IpAddr) -> bool {
+        for Authz {
+            networks, authn, ..
+        } in self.authorizations.iter()
+        {
+            if matches!(authn, Authn::Unauthenticated)
+                && networks.iter().any(|net| net.contains(&client_ip))
+            {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    pub fn check_tls(&self, client_ip: IpAddr, id: Option<&str>) -> bool {
+        // FIXME support unauthenticated TLS.
+        if let Some(id) = id {
+            for Authz {
+                networks, authn, ..
+            } in self.authorizations.iter()
+            {
+                if let Authn::Authenticated {
+                    identities,
+                    suffixes,
+                } = authn
+                {
+                    if networks.iter().any(|net| net.contains(&client_ip))
+                        && (identities.contains(id) || suffixes.iter().any(|sfx| sfx.contains(id)))
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        false
+    }
+}
 
 impl std::convert::TryFrom<proto::InboundServer> for Inbound {
     type Error = Error;
@@ -169,7 +217,7 @@ impl std::convert::TryFrom<proto::InboundServer> for Inbound {
                                 .collect(),
                             suffixes: suffixes
                                 .into_iter()
-                                .map(|proto::Suffix { parts }| parts)
+                                .map(|proto::Suffix { parts }| Suffix::from(parts))
                                 .collect(),
                         },
                         authn => bail!("no authentication provided: {:?}", authn),
@@ -196,5 +244,32 @@ impl std::convert::TryFrom<proto::InboundServer> for Inbound {
             protocol,
             server_ips,
         })
+    }
+}
+
+// === impl Network ===
+
+impl Network {
+    pub fn contains(&self, addr: &IpAddr) -> bool {
+        self.net.contains(addr) && !self.except.iter().any(|net| net.contains(addr))
+    }
+}
+
+// === impl Suffix ===
+
+impl From<Vec<String>> for Suffix {
+    fn from(parts: Vec<String>) -> Self {
+        let ends_with = if parts.is_empty() {
+            "".to_string()
+        } else {
+            format!(".{}", parts.join("."))
+        };
+        Suffix { ends_with }
+    }
+}
+
+impl Suffix {
+    pub fn contains(&self, name: &str) -> bool {
+        name.ends_with(&self.ends_with)
     }
 }

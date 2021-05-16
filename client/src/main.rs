@@ -1,18 +1,21 @@
 use anyhow::Result;
 use futures::prelude::*;
+use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use structopt::StructOpt;
+use tracing::info;
 
 #[derive(Debug, StructOpt)]
 #[structopt(name = "polixy", about = "A policy resource prototype")]
-struct Command {
+struct Args {
     #[structopt(long, default_value = "http://127.0.0.1:8910")]
-    server: String,
+    grpc_addr: String,
+
     #[structopt(subcommand)]
-    command: ClientCommand,
+    command: Command,
 }
 
 #[derive(Debug, StructOpt)]
-enum ClientCommand {
+enum Command {
     Watch {
         #[structopt(short, long, default_value = "default")]
         namespace: String,
@@ -25,31 +28,35 @@ enum ClientCommand {
         pod: String,
         port: u16,
     },
-    /*
-    ProxySim {
+    HttpApi {
+        #[structopt(long, default_value = "127.0.0.1:0")]
+        listen_addr: SocketAddr,
+
         #[structopt(short, long, default_value = "default")]
         namespace: String,
+
         pod: String,
+
         ports: Vec<u16>,
     },
-    */
 }
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
-    let Command { server, command } = Command::from_args();
+    let Args { grpc_addr, command } = Args::from_args();
 
-    let mut client = polixy_client::Client::connect(server).await?;
+    let mut client = polixy_client::Client::connect(grpc_addr).await?;
 
     match command {
-        ClientCommand::Watch {
+        Command::Watch {
             namespace,
             pod,
             port,
         } => {
-            let mut updates = client.watch_inbound_port(namespace, pod, port).await?;
+            let workload = format!("{}:{}", namespace, pod);
+            let mut updates = client.watch_inbound_port(workload, port).await?;
             while let Some(res) = updates.next().await {
                 match res {
                     Ok(config) => println!("{:#?}", config),
@@ -60,67 +67,56 @@ async fn main() -> Result<()> {
             Ok(())
         }
 
-        ClientCommand::Get {
+        Command::Get {
             namespace,
             pod,
             port,
         } => {
-            let server = client.get_inbound_port(namespace, pod, port).await?;
+            let workload = format!("{}:{}", namespace, pod);
+            let server = client.get_inbound_port(workload, port).await?;
             println!("{:#?}", server);
+            Ok(())
+        }
+
+        Command::HttpApi {
+            listen_addr,
+            namespace,
+            pod,
+            ports,
+        } => {
+            let workload = format!("{}:{}", namespace, pod);
+
+            let watches = polixy_client::watch_ports(client, workload, ports)
+                .await
+                .expect("Failed to watch ports");
+
+            let ports = Arc::new(
+                watches
+                    .iter()
+                    .map(|(p, w)| (*p, w.rx.clone()))
+                    .collect::<HashMap<_, _>>(),
+            );
+
+            let server = hyper::server::Server::bind(&listen_addr).serve(
+                hyper::service::make_service_fn(move |_conn| {
+                    let ports = ports.clone();
+                    future::ok::<_, hyper::Error>(hyper::service::service_fn(
+                        move |_: hyper::Request<hyper::Body>| {
+                            let _ = ports;
+                            future::ok::<_, hyper::Error>(
+                                hyper::Response::builder()
+                                    .body(hyper::Body::default())
+                                    .unwrap(),
+                            )
+                        },
+                    ))
+                }),
+            );
+            let addr = server.local_addr();
+            info!(%addr, "Listening");
+            tokio::signal::ctrl_c().await.unwrap();
+            drop(server);
             Ok(())
         }
     }
 }
-
-// TODO we should more fully simulate the proxy's behavior.
-/*
-ClientCommand::ProxySim {
-    namespace,
-    pod,
-    ports,
-} => {
-    let client = polixy::grpc::Client::connect(server).await?;
-
-    let _watches = ports
-        .into_iter()
-        .collect::<indexmap::IndexSet<_>>()
-        .into_iter()
-        .map(|port| {
-            let (tx, rx) = watch::channel(None);
-            let mut client = client.clone();
-            let namespace = namespace.clone();
-            let pod = pod.clone();
-            let task = tokio::spawn(async move {
-                loop {
-                    match client
-                        .watch_inbound_port(namespace.clone(), pod.clone(), port)
-                        .await
-                    {
-                        Ok(mut updates) => {
-                            while let Some(res) = updates.next().await {
-                                match res {
-                                    Ok(config) => {
-                                        if tx.send(Some(config)).is_err() {
-                                            return;
-                                        }
-                                    }
-                                    Err(error) => eprintln!("Update failed: {}", error),
-                                }
-                            }
-                            info!("Stream closed (port={})", port);
-                        }
-                        Err(error) => {
-                            eprintln!("Lookup failed: {}", error);
-                        }
-                    }
-
-                    time::sleep(time::Duration::from_secs(5)).await;
-                    debug!("Reconnecting");
-                }
-            });
-            (port, (rx, task))
-        })
-        .collect::<indexmap::IndexMap<_, _>>();
-
-    todo!("simulate proxy behavior")
-}*/

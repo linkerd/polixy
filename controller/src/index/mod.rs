@@ -6,8 +6,11 @@ mod pod;
 mod server;
 
 pub use self::default_allow::DefaultAllow;
-use self::{authz::AuthzIndex, default_allow::DefaultAllows, pod::PodIndex, server::SrvIndex};
-use crate::{k8s, ClientAuthz, KubeletIps, SharedLookupMap};
+use self::{
+    authz::AuthzIndex, default_allow::DefaultAllows, node::NodeIndex, pod::PodIndex,
+    server::SrvIndex,
+};
+use crate::{k8s, ClientAuthz, SharedLookupMap};
 use anyhow::{Context, Error};
 use std::{collections::HashMap, sync::Arc};
 use tokio::time;
@@ -22,7 +25,7 @@ pub struct Index {
     namespaces: Namespaces,
 
     /// Cached Node IPs.
-    node_ips: HashMap<k8s::NodeName, KubeletIps>,
+    nodes: NodeIndex,
 
     default_allows: DefaultAllows,
 }
@@ -84,7 +87,7 @@ impl Index {
         Self {
             lookups,
             namespaces,
-            node_ips: HashMap::default(),
+            nodes: NodeIndex::default(),
             default_allows: DefaultAllows::new(cluster_nets, detect_timeout),
         }
     }
@@ -107,18 +110,18 @@ impl Index {
 
         loop {
             let res = tokio::select! {
+                // Track the kubelet IPs for all nodes.
+                up = nodes.recv() => match up {
+                    k8s::Event::Applied(node) => self.nodes.apply(node).context("applying a node"),
+                    k8s::Event::Deleted(node) => self.nodes.delete(node).context("deleting a node"),
+                    k8s::Event::Restarted(nodes) => self.nodes.reset(nodes).context("resetting nodes"),
+                },
+
                 // Track namespace-level annotations
                 up = namespaces.recv() => match up {
                     k8s::Event::Applied(ns) => self.apply_ns(ns).context("applying a namespace"),
                     k8s::Event::Deleted(ns) => self.delete_ns(ns).context("deleting a namespace"),
                     k8s::Event::Restarted(nss) => self.reset_ns(nss).context("resetting namespaces"),
-                },
-
-                // Track the kubelet IPs for all nodes.
-                up = nodes.recv() => match up {
-                    k8s::Event::Applied(node) => self.apply_node(node).context("applying a node"),
-                    k8s::Event::Deleted(node) => self.delete_node(node).context("deleting a node"),
-                    k8s::Event::Restarted(nodes) => self.reset_nodes(nodes).context("resetting nodes"),
                 },
 
                 up = pods.recv() => match up {

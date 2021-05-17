@@ -146,7 +146,14 @@ impl Index {
                 };
 
                 let spec = pod.spec.ok_or_else(|| anyhow!("pod missing spec"))?;
-                let kubelet_ips = mk_kubelet_ips(&spec, &self.node_ips)?;
+                let kubelet_ips = {
+                    let name = spec
+                        .node_name
+                        .clone()
+                        .map(k8s::NodeName::from)
+                        .ok_or_else(|| anyhow!("pod missing node name"))?;
+                    self.nodes.get(&name)?
+                };
 
                 let status = pod.status.ok_or_else(|| anyhow!("pod missing status"))?;
                 let pod_ips = mk_pod_ips(status)?;
@@ -328,18 +335,4 @@ fn mk_pod_ips(status: k8s::PodStatus) -> Result<PodIps> {
         bail!("pod missing IP addresses");
     };
     Ok(PodIps(ips.into()))
-}
-
-fn mk_kubelet_ips(
-    spec: &k8s::PodSpec,
-    ips: &HashMap<k8s::NodeName, KubeletIps>,
-) -> Result<KubeletIps> {
-    let name = spec
-        .node_name
-        .clone()
-        .map(k8s::NodeName::from)
-        .ok_or_else(|| anyhow!("pod missing node name"))?;
-    ips.get(&name)
-        .cloned()
-        .ok_or_else(|| anyhow!("node IP does not exist for node {}", name))
 }

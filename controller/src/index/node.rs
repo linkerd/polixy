@@ -1,16 +1,29 @@
 //! Node->Kubelet IP
 
-use super::Index;
 use crate::{k8s, KubeletIps};
 use anyhow::{anyhow, Context, Result};
 use ipnet::IpNet;
 use std::{
-    collections::{hash_map::Entry as HashEntry, HashSet},
+    collections::{hash_map::Entry as HashEntry, HashMap, HashSet},
     net::IpAddr,
 };
 use tracing::{debug, instrument, trace, warn};
 
-impl Index {
+#[derive(Debug, Default)]
+pub(super) struct NodeIndex {
+    index: HashMap<k8s::NodeName, KubeletIps>,
+}
+
+//=== impl NodeIndex ===
+
+impl NodeIndex {
+    pub fn get(&self, name: &k8s::NodeName) -> Result<KubeletIps> {
+        self.index
+            .get(name)
+            .cloned()
+            .ok_or_else(|| anyhow!("node IP does not exist for node {}", name))
+    }
+
     /// Tracks the kubelet IP for each node.
     ///
     /// As pods are we created, we refer to the node->kubelet index to automatically allow traffic
@@ -19,12 +32,12 @@ impl Index {
         skip(self, node),
         fields(name = ?node.metadata.name)
     )]
-    pub(super) fn apply_node(&mut self, node: k8s::Node) -> Result<()> {
+    pub fn apply(&mut self, node: k8s::Node) -> Result<()> {
         let name = k8s::NodeName::from_node(&node);
 
-        match self.node_ips.entry(name) {
+        match self.index.entry(name) {
             HashEntry::Vacant(entry) => {
-                let ips = Self::kubelet_ips(node)
+                let ips = kubelet_ips(node)
                     .with_context(|| format!("failed to load kubelet IPs for {}", entry.key()))?;
                 debug!(?ips, "Adding");
                 entry.insert(ips);
@@ -39,9 +52,9 @@ impl Index {
         skip(self, node),
         fields(name = ?node.metadata.name)
     )]
-    pub(super) fn delete_node(&mut self, node: k8s::Node) -> Result<()> {
+    pub fn delete(&mut self, node: k8s::Node) -> Result<()> {
         let name = k8s::NodeName::from_node(&node);
-        if self.node_ips.remove(&name).is_some() {
+        if self.index.remove(&name).is_some() {
             debug!("Deleted");
             Ok(())
         } else {
@@ -50,15 +63,15 @@ impl Index {
     }
 
     #[instrument(skip(self, nodes))]
-    pub(super) fn reset_nodes(&mut self, nodes: Vec<k8s::Node>) -> Result<()> {
+    pub fn reset(&mut self, nodes: Vec<k8s::Node>) -> Result<()> {
         // Avoid rebuilding data for nodes that have not changed.
-        let mut prior_names = self.node_ips.keys().cloned().collect::<HashSet<_>>();
+        let mut prior_names = self.index.keys().cloned().collect::<HashSet<_>>();
 
         let mut result = Ok(());
         for node in nodes.into_iter() {
             let name = k8s::NodeName::from_node(&node);
             if !prior_names.remove(&name) {
-                if let Err(error) = self.apply_node(node) {
+                if let Err(error) = self.apply(node) {
                     warn!(%name, %error, "Failed to apply node");
                     result = Err(error);
                 }
@@ -69,7 +82,7 @@ impl Index {
 
         for name in prior_names.into_iter() {
             debug!(?name, "Removing defunct node");
-            let removed = self.node_ips.remove(&name).is_some();
+            let removed = self.index.remove(&name).is_some();
             debug_assert!(removed, "node must be removable");
             if !removed {
                 result = Err(anyhow!("node {} already removed", name));
@@ -78,30 +91,30 @@ impl Index {
 
         result
     }
+}
 
-    fn kubelet_ips(node: k8s::Node) -> Result<KubeletIps> {
-        let spec = node.spec.ok_or_else(|| anyhow!("node missing spec"))?;
+fn cidr_to_kubelet_ip(cidr: String) -> Result<IpAddr> {
+    cidr.parse::<IpNet>()
+        .with_context(|| format!("invalid CIDR {}", cidr))?
+        .hosts()
+        .next()
+        .ok_or_else(|| anyhow!("pod CIDR network is empty"))
+}
 
-        let addrs = if let Some(nets) = spec.pod_cidrs {
-            nets.into_iter()
-                .map(Self::cidr_to_kubelet_ip)
-                .collect::<Result<Vec<_>>>()?
-        } else {
-            let cidr = spec
-                .pod_cidr
-                .ok_or_else(|| anyhow!("node missing pod_cidr"))?;
-            let ip = Self::cidr_to_kubelet_ip(cidr)?;
-            vec![ip]
-        };
+fn kubelet_ips(node: k8s::Node) -> Result<KubeletIps> {
+    let spec = node.spec.ok_or_else(|| anyhow!("node missing spec"))?;
 
-        Ok(KubeletIps(addrs.into()))
-    }
+    let addrs = if let Some(nets) = spec.pod_cidrs {
+        nets.into_iter()
+            .map(cidr_to_kubelet_ip)
+            .collect::<Result<Vec<_>>>()?
+    } else {
+        let cidr = spec
+            .pod_cidr
+            .ok_or_else(|| anyhow!("node missing pod_cidr"))?;
+        let ip = cidr_to_kubelet_ip(cidr)?;
+        vec![ip]
+    };
 
-    fn cidr_to_kubelet_ip(cidr: String) -> Result<IpAddr> {
-        cidr.parse::<IpNet>()
-            .with_context(|| format!("invalid CIDR {}", cidr))?
-            .hosts()
-            .next()
-            .ok_or_else(|| anyhow!("pod CIDR network is empty"))
-    }
+    Ok(KubeletIps(addrs.into()))
 }

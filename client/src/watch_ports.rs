@@ -1,8 +1,8 @@
 use crate::{Client, Inbound};
-use anyhow::Result;
+use anyhow::{Error, Result};
 use futures::{future, prelude::*};
 use std::collections::HashMap;
-use tokio::sync::watch;
+use tokio::{sync::watch, time};
 
 #[derive(Debug)]
 pub struct PortWatch {
@@ -79,24 +79,26 @@ async fn start_watch(
     loop {
         match client.watch_inbound_port(workload.clone(), port).await {
             Ok(mut updates) => match updates.try_next().await {
-                Ok(Some(inbound)) => {
-                    return Ok((inbound, updates));
-                }
-
+                Ok(Some(inbound)) => return Ok((inbound, updates)),
                 Ok(None) => {}
-
-                Err(error) => {
-                    tracing::debug!(%error);
-                    // TODO surface unrecoverable errors?
-                    // TODO backoff
-                }
+                Err(error) => recover(error).await?,
             },
-
-            Err(error) => {
-                tracing::debug!(%error);
-                // TODO surface unrecoverable errors?
-                // TODO backoff
-            }
+            Err(error) => recover(error).await?,
         }
     }
+}
+
+async fn recover(error: Error) -> Result<()> {
+    // Check unrecoverable errors. For now, we assume that InvalidArgument means we're querying
+    // about a workload or port that doesn't exist.
+    if let Some(status) = error.downcast_ref::<tonic::Status>() {
+        if let tonic::Code::InvalidArgument = status.code() {
+            return Err(error);
+        }
+    }
+
+    // TODO exponential back-off
+    tracing::debug!(%error, "Recovering");
+    time::sleep(time::Duration::from_secs(1)).await;
+    Ok(())
 }

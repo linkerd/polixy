@@ -38,12 +38,15 @@ pub async fn serve(
         .and_then(|v| v.to_str().ok())
     {
         Some("application/json") => {
-            let body = hyper::body::to_bytes(req.into_body()).await?;
             let Spec {
                 server_port,
                 client_ip,
                 tls,
-            } = serde_json::from_slice::<Spec>(body.as_ref())?;
+            } = {
+                let body = hyper::body::to_bytes(req.into_body()).await?;
+                serde_json::from_slice(body.as_ref())?
+            };
+
             match ports.get(&server_port) {
                 Some(rx) => {
                     let inbound = rx.borrow();

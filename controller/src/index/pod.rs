@@ -85,7 +85,7 @@ impl Pod {
                 port.tx
                     .send(rx.clone())
                     .expect("pod config receiver must be set");
-                debug!(server = %name, "Pod server udpated");
+                debug!(server = %name, "Pod server updated");
             }
         }
     }

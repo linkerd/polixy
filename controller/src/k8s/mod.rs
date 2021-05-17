@@ -25,18 +25,18 @@ pub struct NsName(Arc<str>);
 pub struct PodName(Arc<str>);
 
 /// Resource watches.
-pub(crate) struct ResourceWatches {
-    pub namespaces: Watch<Namespace>,
-    pub nodes: Watch<Node>,
-    pub pods: Watch<Pod>,
-    pub servers: Watch<polixy::Server>,
-    pub authorizations: Watch<polixy::ServerAuthorization>,
+pub struct ResourceWatches {
+    pub(crate) namespaces: Watch<Namespace>,
+    pub(crate) nodes: Watch<Node>,
+    pub(crate) pods: Watch<Pod>,
+    pub(crate) servers: Watch<polixy::Server>,
+    pub(crate) authorizations: Watch<polixy::ServerAuthorization>,
 }
 
 // === impl ResourceWatches ===
 
-impl ResourceWatches {
-    pub fn new(client: kube::Client) -> Self {
+impl From<kube::Client> for ResourceWatches {
+    fn from(client: kube::Client) -> Self {
         Self {
             namespaces: watcher(Api::all(client.clone()), ListParams::default()).into(),
             nodes: watcher(Api::all(client.clone()), ListParams::default()).into(),

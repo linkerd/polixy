@@ -94,7 +94,7 @@ pub struct KubeletIps(Arc<[IpAddr]>);
 
 impl LookupHandle {
     pub fn run(
-        client: kube::Client,
+        watches: impl Into<k8s::ResourceWatches>,
         cluster_networks: Vec<ipnet::IpNet>,
         default_mode: DefaultAllow,
         detect_timeout: time::Duration,
@@ -110,7 +110,7 @@ impl LookupHandle {
             detect_timeout,
         );
 
-        (Self(lookups), idx.index(k8s::ResourceWatches::new(client)))
+        (Self(lookups), idx.index(watches.into()))
     }
 
     pub fn lookup(&self, ns: k8s::NsName, name: k8s::PodName, port: u16) -> Option<Lookup> {

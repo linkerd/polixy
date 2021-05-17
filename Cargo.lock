@@ -646,9 +646,9 @@ dependencies = [
 
 [[package]]
 name = "kube"
-version = "0.52.0"
+version = "0.53.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "65b2fbe85ad92f8435a0f52072f55bd7f0843e082c8e461e56d1ce29440554c8"
+checksum = "38a92e9c744815d199c09b9a4799efb3efc1f2528a6a3c35fb38115b0d691f17"
 dependencies = [
  "base64",
  "bytes",
@@ -664,6 +664,7 @@ dependencies = [
  "k8s-openapi",
  "kube-derive",
  "log",
+ "once_cell",
  "openssl",
  "pem",
  "pin-project 1.0.7",
@@ -682,9 +683,9 @@ dependencies = [
 
 [[package]]
 name = "kube-derive"
-version = "0.52.0"
+version = "0.53.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3dca5161aebec14aa62448469b4c128d165e70da503d43813702a23deeff9612"
+checksum = "47c6bddeb174717fc806c11a56484d930d2ee9984195ba4c7b8ffa146ac5a770"
 dependencies = [
  "darling",
  "proc-macro2",
@@ -695,9 +696,9 @@ dependencies = [
 
 [[package]]
 name = "kube-runtime"
-version = "0.52.0"
+version = "0.53.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fdbf7b51e6a4984e929dab0bd13b61592b750a3385e298aaa9100c4830205a12"
+checksum = "49a005e33a497a96ab203f4aa567262df420e494023712d85339469e93e8135e"
 dependencies = [
  "dashmap",
  "derivative",
@@ -733,7 +734,7 @@ checksum = "7fb9b38af92608140b86b693604b9ffcc5824240a484d1ecd4795bacb2fe88f3"
 [[package]]
 name = "linkerd-drain"
 version = "0.1.0"
-source = "git+https://github.com/linkerd/linkerd2-proxy?branch=main#dec8958f12f7192f7b03279db252486beb9e8a11"
+source = "git+https://github.com/linkerd/linkerd2-proxy?branch=main#9abd27ddaf9531df5ba1f5e68b552dfafe045f3d"
 dependencies = [
  "futures",
  "tokio",
@@ -1644,9 +1645,9 @@ checksum = "cda74da7e1a664f795bb1f8a87ec406fb89a02522cf6e50620d016add6dbbf5c"
 
 [[package]]
 name = "tokio"
-version = "1.5.0"
+version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "83f0c8e7c0addab50b663055baf787d0af7f413a46e6e7fb9559a4e4db7137a5"
+checksum = "bd3076b5c8cc18138b8f8814895c11eb4de37114a5d127bafdc5e55798ceef37"
 dependencies = [
  "autocfg",
  "bytes",
@@ -1674,9 +1675,9 @@ dependencies = [
 
 [[package]]
 name = "tokio-macros"
-version = "1.1.0"
+version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "caf7b11a536f46a809a8a9f0bb4237020f70ecbf115b842360afb127ea2fda57"
+checksum = "c49e3df43841dafb86046472506755d8501c5615673955f6aa17181125d13c37"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1695,9 +1696,9 @@ dependencies = [
 
 [[package]]
 name = "tokio-stream"
-version = "0.1.5"
+version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e177a5d8c3bf36de9ebe6d58537d8879e964332f93fb3339e43f618c81361af0"
+checksum = "f8864d706fdb3cc0843a49647ac892720dac98a6eeb818b77190592cf4994066"
 dependencies = [
  "futures-core",
  "pin-project-lite",
@@ -1707,9 +1708,9 @@ dependencies = [
 
 [[package]]
 name = "tokio-util"
-version = "0.6.6"
+version = "0.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "940a12c99365c31ea8dd9ba04ec1be183ffe4920102bb7122c2f515437601e8e"
+checksum = "1caa0b0c8d94a049db56b5acf8cba99dc0623aab1b26d5b5f5e2d945846b3592"
 dependencies = [
  "bytes",
  "futures-core",

@@ -1,5 +1,5 @@
 use super::super::labels;
-use kube::{api::Resource, CustomResource};
+use kube::{api::ResourceExt, CustomResource};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::fmt;

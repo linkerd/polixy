@@ -1,4 +1,4 @@
-use kube::{api::ListParams, Api, Resource};
+use kube::api::{Api, ListParams, ResourceExt};
 use kube_runtime::watcher;
 use std::{fmt, sync::Arc};
 

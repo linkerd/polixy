@@ -37,7 +37,7 @@ pub struct Lookup {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InboundServerConfig {
     pub protocol: ProxyProtocol,
-    pub authorizations: BTreeMap<Option<k8s::polixy::authz::Name>, ClientAuthz>,
+    pub authorizations: BTreeMap<k8s::polixy::authz::Name, ClientAuthz>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

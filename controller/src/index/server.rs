@@ -85,11 +85,7 @@ impl Server {
         debug!("Adding authorization to server");
         self.authorizations.insert(name, authz);
         let mut config = self.rx.borrow().clone();
-        config.authorizations = self
-            .authorizations
-            .iter()
-            .map(|(n, a)| (Some(n.clone()), a.clone()))
-            .collect();
+        config.authorizations = self.authorizations.clone();
         self.tx.send(config).expect("config must send")
     }
 
@@ -97,11 +93,7 @@ impl Server {
         if self.authorizations.remove(name).is_some() {
             debug!("Removing authorization from server");
             let mut config = self.rx.borrow().clone();
-            config.authorizations = self
-                .authorizations
-                .iter()
-                .map(|(n, a)| (Some(n.clone()), a.clone()))
-                .collect();
+            config.authorizations = self.authorizations.clone();
             self.tx.send(config).expect("config must send")
         }
     }
@@ -147,10 +139,7 @@ impl Index {
                 debug!(authzs = ?authzs.keys());
                 let (tx, rx) = watch::channel(InboundServerConfig {
                     protocol,
-                    authorizations: authzs
-                        .iter()
-                        .map(|(n, a)| (Some(n.clone()), a.clone()))
-                        .collect(),
+                    authorizations: authzs.clone(),
                 });
                 entry.insert(Server {
                     meta,
@@ -189,10 +178,7 @@ impl Index {
                             .map(|(n, a)| (n.clone(), a.clone()))
                             .collect::<BTreeMap<_, _>>();
                         debug!(authzs = ?authzs.keys());
-                        config.authorizations = authzs
-                            .iter()
-                            .map(|(n, a)| (Some(n.clone()), a.clone()))
-                            .collect::<BTreeMap<_, _>>();
+                        config.authorizations = authzs.clone();
                         entry.get_mut().meta.labels = labels;
                         entry.get_mut().authorizations = authzs;
                     }

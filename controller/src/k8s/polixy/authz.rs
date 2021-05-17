@@ -2,10 +2,10 @@ use super::super::labels;
 use kube::{api::Resource, CustomResource};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::fmt;
+use std::{fmt, sync::Arc};
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Name(String);
+pub struct Name(Arc<str>);
 
 /// Authorizes clients to connect to a Server.
 #[derive(CustomResource, Deserialize, Serialize, Clone, Debug, JsonSchema)]
@@ -77,7 +77,13 @@ pub struct ServiceAccountRef {
 
 impl Name {
     pub fn from_authz(s: &ServerAuthorization) -> Self {
-        Self(s.name())
+        Self::from(s.name())
+    }
+}
+
+impl<T: Into<Arc<str>>> From<T> for Name {
+    fn from(t: T) -> Self {
+        Self(t.into())
     }
 }
 

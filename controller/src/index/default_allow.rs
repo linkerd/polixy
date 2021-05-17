@@ -66,6 +66,18 @@ impl std::str::FromStr for DefaultAllow {
     }
 }
 
+impl std::fmt::Display for DefaultAllow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AllAuthenticated => "all-authenticated".fmt(f),
+            Self::AllUnauthenticated => "all-unauthenticated".fmt(f),
+            Self::ClusterAuthenticated => "cluster-authenticated".fmt(f),
+            Self::ClusterUnauthenticated => "cluster-unauthenticated".fmt(f),
+            Self::None => "none".fmt(f),
+        }
+    }
+}
+
 // === impl DefaultAllows ===
 
 impl DefaultAllows {
@@ -81,24 +93,28 @@ impl DefaultAllows {
         ];
 
         let (_all_authed_tx, all_authed_rx) = watch::channel(mk_detect_config(
+            "_all_authed",
             detect_timeout,
             all_nets.iter().cloned(),
             any_authenticated.clone(),
         ));
 
         let (_all_unauthed_tx, all_unauthed_rx) = watch::channel(mk_detect_config(
+            "_all_unauthed",
             detect_timeout,
             all_nets.iter().cloned(),
             ClientAuthn::Unauthenticated,
         ));
 
         let (_cluster_authed_tx, cluster_authed_rx) = watch::channel(mk_detect_config(
+            "_cluster_authed",
             detect_timeout,
             cluster_nets.iter().cloned(),
             any_authenticated,
         ));
 
         let (_cluster_unauthed_tx, cluster_unauthed_rx) = watch::channel(mk_detect_config(
+            "_cluster_unauthed",
             detect_timeout,
             cluster_nets.into_iter(),
             ClientAuthn::Unauthenticated,
@@ -141,6 +157,7 @@ impl DefaultAllows {
 }
 
 fn mk_detect_config(
+    name: &'static str,
     timeout: time::Duration,
     nets: impl IntoIterator<Item = ipnet::IpNet>,
     authentication: ClientAuthn,
@@ -159,6 +176,8 @@ fn mk_detect_config(
 
     InboundServerConfig {
         protocol: ProxyProtocol::Detect { timeout },
-        authorizations: Some((None, authz)).into_iter().collect(),
+        authorizations: Some((k8s::polixy::authz::Name::from(name), authz))
+            .into_iter()
+            .collect(),
     }
 }

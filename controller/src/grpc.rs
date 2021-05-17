@@ -268,7 +268,7 @@ fn kubelet_authz(ips: KubeletIps) -> proto::Authz {
 }
 
 fn to_authz(
-    name: Option<impl ToString>,
+    name: impl ToString,
     ClientAuthz {
         networks,
         authentication,
@@ -316,10 +316,7 @@ fn to_authz(
         } => {
             let labels = Some(("authn".to_string(), "true".to_string()))
                 .into_iter()
-                .chain(Some((
-                    "name".to_string(),
-                    name.map(|n| n.to_string()).unwrap_or_default(),
-                )))
+                .chain(Some(("name".to_string(), name.to_string())))
                 .collect();
 
             let authn = {

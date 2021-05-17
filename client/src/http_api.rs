@@ -46,15 +46,16 @@ pub async fn serve(
             } = serde_json::from_slice::<Spec>(body.as_ref())?;
             match ports.get(&server_port) {
                 Some(rx) => {
-                    let allowed = match tls {
+                    let inbound = rx.borrow();
+                    let labels = match tls {
                         Some(TlsSpec { client_id }) => {
-                            rx.borrow().check_tls(client_ip, client_id.as_deref())
+                            inbound.check_tls(client_ip, client_id.as_deref())
                         }
-                        None => rx.borrow().check_non_tls(client_ip),
+                        None => inbound.check_non_tls(client_ip),
                     };
 
                     let rsp = serde_json::json!({
-                        "allowed": allowed,
+                        "authorization": labels,
                     });
 
                     Ok(Response::builder()

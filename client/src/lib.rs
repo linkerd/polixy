@@ -111,26 +111,34 @@ impl Client {
 // === impl Inbound ===
 
 impl Inbound {
-    pub fn check_non_tls(&self, client_ip: IpAddr) -> bool {
+    pub fn check_non_tls(&self, client_ip: IpAddr) -> Option<&HashMap<String, String>> {
         for Authz {
-            networks, authn, ..
+            networks,
+            authn,
+            labels,
         } in self.authorizations.iter()
         {
             if matches!(authn, Authn::Unauthenticated)
                 && networks.iter().any(|net| net.contains(&client_ip))
             {
-                return true;
+                return Some(labels);
             }
         }
 
-        false
+        None
     }
 
-    pub fn check_tls(&self, client_ip: IpAddr, id: Option<&str>) -> bool {
+    pub fn check_tls(
+        &self,
+        client_ip: IpAddr,
+        id: Option<&str>,
+    ) -> Option<&HashMap<String, String>> {
         // FIXME support unauthenticated TLS.
         if let Some(id) = id {
             for Authz {
-                networks, authn, ..
+                networks,
+                authn,
+                labels,
             } in self.authorizations.iter()
             {
                 if let Authn::Authenticated {
@@ -141,13 +149,13 @@ impl Inbound {
                     if networks.iter().any(|net| net.contains(&client_ip))
                         && (identities.contains(id) || suffixes.iter().any(|sfx| sfx.contains(id)))
                     {
-                        return true;
+                        return Some(labels);
                     }
                 }
             }
         }
 
-        false
+        None
     }
 }
 

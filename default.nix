@@ -11,6 +11,7 @@ buildEnv {
     cargo-udeps
     cargo-watch
     clang
+    clang-tools
     cmake
     curl
     docker

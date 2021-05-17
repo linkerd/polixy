@@ -60,11 +60,12 @@ pub async fn serve(
                     let rsp = serde_json::json!({
                         "authorization": labels,
                     });
+                    let bytes = serde_json::to_vec_pretty(&rsp).unwrap();
 
                     Ok(Response::builder()
                         .status(hyper::StatusCode::OK)
                         .header(hyper::header::CONTENT_TYPE, "text/plain")
-                        .body(Bytes::copy_from_slice(rsp.to_string().as_bytes()).into())
+                        .body(Bytes::copy_from_slice(bytes.as_slice()).into())
                         .unwrap())
                 }
 

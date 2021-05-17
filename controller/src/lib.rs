@@ -65,7 +65,8 @@ pub struct ClientNetwork {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ClientAuthn {
     Unauthenticated,
-    Authenticated {
+    TlsUnauthenticated,
+    TlsAuthenticated {
         service_accounts: Vec<ServiceAccountRef>,
         identities: Vec<Identity>,
     },

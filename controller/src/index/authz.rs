@@ -203,8 +203,7 @@ fn mk_authz(ns_name: &k8s::NsName, spec: polixy::authz::ServerAuthorizationSpec)
             .ok_or_else(|| anyhow!("client mtls missing"))?;
 
         if let Some(true) = mtls.unauthenticated_tls {
-            // XXX FIXME
-            ClientAuthn::Unauthenticated
+            ClientAuthn::TlsUnauthenticated
         } else {
             let mut identities = Vec::new();
             let mut service_accounts = Vec::new();
@@ -245,7 +244,7 @@ fn mk_authz(ns_name: &k8s::NsName, spec: polixy::authz::ServerAuthorizationSpec)
                 bail!("authorization authorizes no clients");
             }
 
-            ClientAuthn::Authenticated {
+            ClientAuthn::TlsAuthenticated {
                 identities,
                 service_accounts,
             }

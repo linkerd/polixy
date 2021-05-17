@@ -68,7 +68,6 @@ message ProxyProtocol {
     // TODO: HTTP version? (and orig-proto upgrades)?
   }
 
-
   message Grpc {
     // Disables the setting of informational headers on this server.
     bool disable_informational_headers = 1;
@@ -80,8 +79,7 @@ message ProxyProtocol {
     // TODO: opaque TLS settings (versions, algorithms, SNI)
   }
 
-  message Tls {
-  }
+  message Tls {}
 }
 
 message Authz {
@@ -112,24 +110,31 @@ message Authn {
   oneof permit {
     PermitUnauthenticated unauthenticated = 1;
 
-    // If set, requires that the connection is mutually-authetnicated with a
-    // matching client identity.
-    PermitProxyIdentities proxy_identities = 2;
+    // If set, requires that the connection is transported over mesh TLS.
+    PermitMeshTLS meshTLS = 2;
   }
 
   message PermitUnauthenticated {}
 
-  // Matches identities.
-  //
-  // To match all identities, a suffix i
-  message PermitProxyIdentities {
-    // A list of literal identities.
-    repeated Identity identities = 1;
+  message PermitMeshTLS {
+    oneof clients {
+      // Indicates that client identities are not required.
+      PermitUnauthenticated unauthenticated = 1;
 
-    // A list of identity suffixes.
-    //
-    // If this contains an empty suffix, all identities are matched.
-    repeated Suffix suffixes = 2;
+      // Indicates that mutually-authenticated connections are permitted from
+      // clients with matching identities.
+      PermitClientIdentities identities = 2;
+    }
+
+    message PermitClientIdentities {
+      // A list of literal identities.
+      repeated Identity identities = 1;
+
+      // A list of identity suffixes.
+      //
+      // If this contains an empty suffix, all identities are matched.
+      repeated Suffix suffixes = 2;
+    }
   }
 }
 

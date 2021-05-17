@@ -5,7 +5,7 @@ use crate::{
 };
 use futures::prelude::*;
 use polixy_grpc as proto;
-use std::{collections::HashMap, iter::FromIterator, sync::Arc};
+use std::sync::Arc;
 use tracing::trace;
 
 #[derive(Clone, Debug)]
@@ -298,24 +298,54 @@ fn to_authz(
     };
 
     match authentication {
-        ClientAuthn::Unauthenticated => proto::Authz {
-            networks,
-            authentication: Some(proto::Authn {
-                permit: Some(proto::authn::Permit::Unauthenticated(
-                    proto::authn::PermitUnauthenticated {},
-                )),
-            }),
-            labels: HashMap::from_iter(Some(("authn".to_string(), "false".to_string()))),
-        },
+        ClientAuthn::Unauthenticated => {
+            let labels = Some(("authn".to_string(), "false".to_string()))
+                .into_iter()
+                .chain(Some(("tls".to_string(), "false".to_string())))
+                .chain(Some(("name".to_string(), name.to_string())))
+                .collect();
+
+            proto::Authz {
+                labels,
+                networks,
+                authentication: Some(proto::Authn {
+                    permit: Some(proto::authn::Permit::Unauthenticated(
+                        proto::authn::PermitUnauthenticated {},
+                    )),
+                }),
+            }
+        }
+
+        ClientAuthn::TlsUnauthenticated => {
+            let labels = Some(("authn".to_string(), "false".to_string()))
+                .into_iter()
+                .chain(Some(("tls".to_string(), "true".to_string())))
+                .chain(Some(("name".to_string(), name.to_string())))
+                .collect();
+
+            // todo
+            proto::Authz {
+                labels,
+                networks,
+                authentication: Some(proto::Authn {
+                    permit: Some(proto::authn::Permit::MeshTls(proto::authn::PermitMeshTls {
+                        clients: Some(proto::authn::permit_mesh_tls::Clients::Unauthenticated(
+                            proto::authn::PermitUnauthenticated {},
+                        )),
+                    })),
+                }),
+            }
+        }
 
         // Authenticated connections must have TLS and apply to all
         // networks.
-        ClientAuthn::Authenticated {
+        ClientAuthn::TlsAuthenticated {
             service_accounts,
             identities,
         } => {
             let labels = Some(("authn".to_string(), "true".to_string()))
                 .into_iter()
+                .chain(Some(("tls".to_string(), "true".to_string())))
                 .chain(Some(("name".to_string(), name.to_string())))
                 .collect();
 
@@ -346,12 +376,14 @@ fn to_authz(
                     .collect();
 
                 proto::Authn {
-                    permit: Some(proto::authn::Permit::ProxyIdentities(
-                        proto::authn::PermitProxyIdentities {
-                            identities,
-                            suffixes,
-                        },
-                    )),
+                    permit: Some(proto::authn::Permit::MeshTls(proto::authn::PermitMeshTls {
+                        clients: Some(proto::authn::permit_mesh_tls::Clients::Identities(
+                            proto::authn::permit_mesh_tls::PermitClientIdentities {
+                                identities,
+                                suffixes,
+                            },
+                        )),
+                    })),
                 }
             };
 

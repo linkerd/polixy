@@ -53,7 +53,8 @@ pub struct Network {
 #[derive(Clone, Debug)]
 pub enum Authn {
     Unauthenticated,
-    Authenticated {
+    TlsUnauthenticated,
+    TlsAuthenticated {
         identities: HashSet<String>,
         suffixes: Vec<Suffix>,
     },
@@ -133,23 +134,26 @@ impl Inbound {
         client_ip: IpAddr,
         id: Option<&str>,
     ) -> Option<&HashMap<String, String>> {
-        // FIXME support unauthenticated TLS.
-        if let Some(id) = id {
-            for Authz {
-                networks,
-                authn,
-                labels,
-            } in self.authorizations.iter()
-            {
-                if let Authn::Authenticated {
-                    identities,
-                    suffixes,
-                } = authn
-                {
-                    if networks.iter().any(|net| net.contains(&client_ip))
-                        && (identities.contains(id) || suffixes.iter().any(|sfx| sfx.contains(id)))
-                    {
-                        return Some(labels);
+        for Authz {
+            networks,
+            authn,
+            labels,
+        } in self.authorizations.iter()
+        {
+            if networks.iter().any(|net| net.contains(&client_ip)) {
+                match authn {
+                    Authn::Unauthenticated | Authn::TlsUnauthenticated => return Some(labels),
+                    Authn::TlsAuthenticated {
+                        identities,
+                        suffixes,
+                    } => {
+                        if let Some(id) = id {
+                            if identities.contains(id)
+                                || suffixes.iter().any(|sfx| sfx.contains(id))
+                            {
+                                return Some(labels);
+                            }
+                        }
                     }
                 }
             }
@@ -213,20 +217,28 @@ impl std::convert::TryFrom<proto::InboundServer> for Inbound {
 
                     let authn = match authentication.and_then(|proto::Authn { permit }| permit) {
                         Some(proto::authn::Permit::Unauthenticated(_)) => Authn::Unauthenticated,
-                        Some(proto::authn::Permit::ProxyIdentities(
-                            proto::authn::PermitProxyIdentities {
-                                identities,
-                                suffixes,
+                        Some(proto::authn::Permit::MeshTls(proto::authn::PermitMeshTls {
+                            clients,
+                        })) => match clients {
+                            Some(proto::authn::permit_mesh_tls::Clients::Unauthenticated(_)) => {
+                                Authn::TlsUnauthenticated
+                            }
+                            Some(proto::authn::permit_mesh_tls::Clients::Identities(
+                                proto::authn::permit_mesh_tls::PermitClientIdentities {
+                                    identities,
+                                    suffixes,
+                                },
+                            )) => Authn::TlsAuthenticated {
+                                identities: identities
+                                    .into_iter()
+                                    .map(|proto::Identity { name }| name)
+                                    .collect(),
+                                suffixes: suffixes
+                                    .into_iter()
+                                    .map(|proto::Suffix { parts }| Suffix::from(parts))
+                                    .collect(),
                             },
-                        )) => Authn::Authenticated {
-                            identities: identities
-                                .into_iter()
-                                .map(|proto::Identity { name }| name)
-                                .collect(),
-                            suffixes: suffixes
-                                .into_iter()
-                                .map(|proto::Suffix { parts }| Suffix::from(parts))
-                                .collect(),
+                            None => bail!("no clients permitted"),
                         },
                         authn => bail!("no authentication provided: {:?}", authn),
                     };

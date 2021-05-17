@@ -82,7 +82,7 @@ impl std::fmt::Display for DefaultAllow {
 
 impl DefaultAllows {
     pub fn new(cluster_nets: Vec<ipnet::IpNet>, detect_timeout: time::Duration) -> Self {
-        let any_authenticated = ClientAuthn::Authenticated {
+        let any_authenticated = ClientAuthn::TlsAuthenticated {
             identities: vec![Identity::Suffix(vec![].into())],
             service_accounts: vec![],
         };

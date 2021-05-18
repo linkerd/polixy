@@ -17,7 +17,7 @@ struct Command {
     #[structopt(long, default_value = "10.42.0.0/16")]
     cluster_networks: Vec<ipnet::IpNet>,
 
-    #[structopt(long, default_value = "external-unauthenticated")]
+    #[structopt(long, default_value = "all-unauthenticated")]
     default_allow: DefaultAllow,
 }
 

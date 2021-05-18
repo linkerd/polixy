@@ -1,4 +1,4 @@
-use kube::api::{Api, ListParams, ResourceExt};
+use kube::api::{Api, ListParams};
 use kube_runtime::watcher;
 use std::{fmt, sync::Arc};
 
@@ -14,6 +14,7 @@ pub use k8s_openapi::{
     api::core::v1::{Namespace, Node, Pod, PodSpec, PodStatus},
     apimachinery::pkg::apis::meta::v1::ObjectMeta,
 };
+pub use kube::api::ResourceExt;
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct NodeName(Arc<str>);
@@ -65,6 +66,12 @@ impl<T: Into<Arc<str>>> From<T> for NodeName {
     }
 }
 
+impl std::borrow::Borrow<str> for NodeName {
+    fn borrow(&self) -> &str {
+        self.0.as_ref()
+    }
+}
+
 impl fmt::Display for NodeName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
@@ -103,6 +110,12 @@ impl NsName {
     }
 }
 
+impl std::borrow::Borrow<str> for NsName {
+    fn borrow(&self) -> &str {
+        self.0.as_ref()
+    }
+}
+
 impl fmt::Display for NsName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
@@ -114,6 +127,12 @@ impl fmt::Display for NsName {
 impl PodName {
     pub fn from_pod(p: &Pod) -> Self {
         Self::from(p.name())
+    }
+}
+
+impl std::borrow::Borrow<str> for PodName {
+    fn borrow(&self) -> &str {
+        self.0.as_ref()
     }
 }
 

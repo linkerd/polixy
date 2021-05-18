@@ -6,7 +6,9 @@ use crate::{
 use anyhow::{anyhow, bail, Result};
 use parking_lot::Mutex;
 use std::{
+    borrow::Borrow,
     collections::{hash_map::Entry as HashEntry, HashMap, HashSet},
+    hash::Hash,
     net::IpAddr,
     sync::Arc,
 };
@@ -46,12 +48,16 @@ impl PodIndex {
         }
     }
 
-    pub fn reset_server(&self, name: &k8s::polixy::server::Name) {
+    pub fn reset_server<N>(&self, name: &N)
+    where
+        k8s::polixy::server::Name: Borrow<N>,
+        N: Hash + Eq + ?Sized,
+    {
         for (pod_name, pod) in self.index.iter() {
             let rx = pod.default_rx.clone();
             for (port_num, port) in pod.servers.by_port.iter() {
                 let mut sn = port.server_name.lock();
-                if sn.as_ref() == Some(name) {
+                if sn.as_ref().map(|n| n.borrow()) == Some(name) {
                     debug!(pod = %pod_name, port = %port_num, "Removing server from pod");
                     *sn = None;
                     port.tx

@@ -7,6 +7,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use ipnet::IpNet;
 use std::{
     collections::{hash_map::Entry as HashEntry, HashMap, HashSet},
+    hash::Hash,
     sync::Arc,
 };
 use tracing::{debug, instrument, trace};
@@ -105,11 +106,17 @@ impl Index {
             .with_context(|| format!("ns={}, authz={}", ns, authz))
     }
 
-    fn rm_authz(&mut self, ns_name: &k8s::NsName, authz_name: &polixy::authz::Name) -> Result<()> {
+    fn rm_authz<N, A>(&mut self, ns_name: &N, authz_name: &A) -> Result<()>
+    where
+        k8s::NsName: std::borrow::Borrow<N>,
+        N: Hash + Eq,
+        k8s::polixy::authz::Name: std::borrow::Borrow<A>,
+        A: Ord,
+    {
         let ns = self
             .namespaces
             .index
-            .get_mut(&ns_name)
+            .get_mut(ns_name)
             .ok_or_else(|| anyhow!("removing authz from non-existent namespace"))?;
 
         ns.servers.remove_authz(authz_name);

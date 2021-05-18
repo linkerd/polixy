@@ -1,11 +1,13 @@
 use super::{ClientAuthz, Index, Namespace, ServerSelector};
 use crate::{
-    k8s::{self, polixy},
+    k8s::{self, polixy, ResourceExt},
     InboundServerConfig, ProxyProtocol, ServerRx, ServerTx,
 };
 use anyhow::{anyhow, bail, Result};
 use std::{
     collections::{hash_map::Entry as HashEntry, BTreeMap, HashMap, HashSet},
+    fmt,
+    hash::Hash,
     sync::Arc,
 };
 use tokio::{sync::watch, time};
@@ -56,7 +58,11 @@ impl SrvIndex {
         }
     }
 
-    pub fn remove_authz(&mut self, name: &polixy::authz::Name) {
+    pub fn remove_authz<N>(&mut self, name: &N)
+    where
+        k8s::polixy::authz::Name: std::borrow::Borrow<N>,
+        N: Ord,
+    {
         for srv in self.index.values_mut() {
             srv.remove_authz(name);
         }
@@ -89,7 +95,11 @@ impl Server {
         self.tx.send(config).expect("config must send")
     }
 
-    fn remove_authz(&mut self, name: &polixy::authz::Name) {
+    fn remove_authz<N>(&mut self, name: &N)
+    where
+        k8s::polixy::authz::Name: std::borrow::Borrow<N>,
+        N: Ord,
+    {
         if self.authorizations.remove(name).is_some() {
             debug!("Removing authorization from server");
             let mut config = self.rx.borrow().clone();
@@ -220,23 +230,28 @@ impl Index {
         )
     )]
     pub(super) fn delete_server(&mut self, srv: polixy::Server) -> Result<()> {
-        let ns_name = k8s::NsName::from_srv(&srv);
-        let srv_name = polixy::server::Name::from_server(&srv);
-        self.rm_server(ns_name, srv_name)
+        let ns_name = srv.namespace().expect("servers must be namespaced");
+        self.rm_server(ns_name.as_str(), srv.name().as_str())
     }
 
-    fn rm_server(&mut self, ns_name: k8s::NsName, srv_name: polixy::server::Name) -> Result<()> {
+    fn rm_server<N, S>(&mut self, ns_name: &N, srv_name: &S) -> Result<()>
+    where
+        k8s::NsName: std::borrow::Borrow<N>,
+        N: Hash + Eq + fmt::Display + ?Sized,
+        k8s::polixy::server::Name: std::borrow::Borrow<S>,
+        S: Hash + Eq + fmt::Display + ?Sized,
+    {
         let ns =
-            self.namespaces.index.get_mut(&ns_name).ok_or_else(|| {
+            self.namespaces.index.get_mut(ns_name).ok_or_else(|| {
                 anyhow!("removing server from non-existent namespace {}", ns_name)
             })?;
 
-        if ns.servers.index.remove(&srv_name).is_none() {
+        if ns.servers.index.remove(srv_name).is_none() {
             bail!("removing non-existent server {}", srv_name);
         }
 
         // Reset the server config for all pods that were using this server.
-        ns.pods.reset_server(&srv_name);
+        ns.pods.reset_server(srv_name);
 
         debug!("Removed server");
         Ok(())
@@ -267,7 +282,7 @@ impl Index {
 
         for (ns_name, ns_servers) in prior_servers.into_iter() {
             for srv_name in ns_servers.into_iter() {
-                if let Err(e) = self.rm_server(ns_name.clone(), srv_name) {
+                if let Err(e) = self.rm_server(&ns_name, &srv_name) {
                     result = Err(e);
                 }
             }

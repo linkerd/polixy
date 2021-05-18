@@ -59,6 +59,12 @@ impl Name {
     }
 }
 
+impl std::borrow::Borrow<str> for Name {
+    fn borrow(&self) -> &str {
+        self.0.as_ref()
+    }
+}
+
 impl fmt::Display for Name {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
@@ -70,6 +76,12 @@ impl fmt::Display for Name {
 impl<T: Into<String>> From<T> for PortName {
     fn from(p: T) -> Self {
         Self(p.into())
+    }
+}
+
+impl std::borrow::Borrow<str> for PortName {
+    fn borrow(&self) -> &str {
+        self.0.as_ref()
     }
 }
 

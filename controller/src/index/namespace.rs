@@ -1,5 +1,5 @@
 use super::{authz::AuthzIndex, pod::PodIndex, server::SrvIndex, DefaultAllow};
-use crate::k8s;
+use crate::k8s::{self, ResourceExt};
 use anyhow::{bail, Result};
 use std::collections::{HashMap, HashSet};
 use tracing::{debug, instrument, warn};
@@ -89,10 +89,9 @@ impl NamespaceIndex {
 
         let mut result = Ok(());
         for ns in nss.into_iter() {
-            let name = k8s::NsName::from_ns(&ns);
-            prior_names.remove(&name);
+            prior_names.remove(ns.name().as_str());
             if let Err(error) = self.apply(ns) {
-                warn!(%name, %error, "Failed to apply namespace");
+                warn!(%error, "Failed to apply namespace");
                 result = Err(error);
             }
         }

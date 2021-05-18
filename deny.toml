@@ -40,4 +40,4 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = []
 
 [sources.allow-org]
-github = ["linkerd"]
+github = ["olix0r", "linkerd"]

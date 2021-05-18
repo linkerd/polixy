@@ -1,0 +1,5 @@
+**/Dockerfile*
+k8s
+img
+target
+*.nix

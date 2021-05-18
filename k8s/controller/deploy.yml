@@ -1,0 +1,65 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: controller
+  namespace: polixy
+  labels:
+    app.kubernetes.io/name: controller
+    app.kubernetes.io/part-of: polixy
+spec:
+  ports:
+    - name: grpc
+      port: 8080
+      targetPort: 8080
+    - name: prom
+      port: 8801
+      targetPort: 8801
+  selector:
+    app.kubernetes.io/name: controller
+    app.kubernetes.io/part-of: polixy
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/name: controller
+    app.kubernetes.io/part-of: polixy
+    app.kubernetes.io/version: v0
+  name: controller
+  namespace: polixy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: controller
+      app.kubernetes.io/part-of: polixy
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: controller
+        app.kubernetes.io/part-of: polixy
+        app.kubernetes.io/version: v0
+    spec:
+      serviceAccountName: controller
+      containers:
+        - name: main
+          image: ghcr.io/olix0r/polixy-controller:v0
+          env:
+            - name: RUST_LOG
+              value: polixy=debug
+          args:
+            - --port=8910
+            - --identity-domain=cluster.local
+            - --cluster-networks=10.42.0.0/16
+            - --default-allow=all-authenticated
+          ports:
+            - containerPort: 8910
+              name: grpc
+          resources:
+            requests:
+              cpu: 10m
+              memory: 10Mi
+            limits:
+              cpu: 1000m
+              memory: 100Mi

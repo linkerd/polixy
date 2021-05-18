@@ -13,6 +13,7 @@ buildEnv {
     clang
     clang-tools
     cmake
+    cosign
     curl
     docker
     jq

@@ -1,4 +1,4 @@
-use super::{DefaultAllow, Index, NsIndex, SrvIndex};
+use super::{DefaultAllow, Index, Namespace, SrvIndex};
 use crate::{
     k8s::{self, polixy},
     KubeletIps, Lookup, PodIps, ServerRx, ServerRxTx,
@@ -126,7 +126,7 @@ impl Index {
     )]
     pub(super) fn apply_pod(&mut self, pod: k8s::Pod) -> Result<()> {
         let ns_name = k8s::NsName::from_pod(&pod);
-        let NsIndex {
+        let Namespace {
             default_allow,
             ref mut pods,
             ref mut servers,
@@ -232,7 +232,6 @@ impl Index {
     pub(super) fn reset_pods(&mut self, pods: Vec<k8s::Pod>) -> Result<()> {
         let mut prior_pods = self
             .namespaces
-            .index
             .iter()
             .map(|(name, ns)| {
                 let pods = ns.pods.index.keys().cloned().collect::<HashSet<_>>();

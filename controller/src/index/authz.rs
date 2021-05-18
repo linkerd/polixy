@@ -1,4 +1,4 @@
-use super::{Index, NsIndex, ServerSelector};
+use super::{Index, Namespace, ServerSelector};
 use crate::{
     k8s::{self, polixy},
     ClientAuthn, ClientAuthz, ClientNetwork, Identity, ServiceAccountRef,
@@ -67,7 +67,7 @@ impl Index {
         let authz_name = polixy::authz::Name::from_authz(&authz);
         let authz = mk_authz(&ns_name, authz.spec)?;
 
-        let NsIndex {
+        let Namespace {
             ref mut authzs,
             ref mut servers,
             ..

@@ -1,4 +1,4 @@
-use super::{ClientAuthz, Index, NsIndex, ServerSelector};
+use super::{ClientAuthz, Index, Namespace, ServerSelector};
 use crate::{
     k8s::{self, polixy},
     InboundServerConfig, ProxyProtocol, ServerRx, ServerTx,
@@ -112,7 +112,7 @@ impl Index {
     )]
     pub(super) fn apply_server(&mut self, srv: polixy::Server) {
         let ns_name = k8s::NsName::from_srv(&srv);
-        let NsIndex {
+        let Namespace {
             ref pods,
             authzs: ref ns_authzs,
             ref mut servers,

@@ -7,12 +7,14 @@ mod server;
 
 pub use self::default_allow::DefaultAllow;
 use self::{
-    authz::AuthzIndex, default_allow::DefaultAllows, node::NodeIndex, pod::PodIndex,
+    default_allow::DefaultAllows,
+    namespace::{Namespace, NamespaceIndex},
+    node::NodeIndex,
     server::SrvIndex,
 };
 use crate::{k8s, ClientAuthz, SharedLookupMap};
 use anyhow::{Context, Error};
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 use tokio::time;
 use tracing::{instrument, warn};
 
@@ -22,7 +24,7 @@ pub struct Index {
     lookups: SharedLookupMap,
 
     /// Holds per-namespace pod/server/authorization indexes.
-    namespaces: Namespaces,
+    namespaces: NamespaceIndex,
 
     /// Cached Node IPs.
     nodes: NodeIndex,
@@ -30,45 +32,11 @@ pub struct Index {
     default_allows: DefaultAllows,
 }
 
-#[derive(Debug)]
-struct Namespaces {
-    default_allow: DefaultAllow,
-    index: HashMap<k8s::NsName, NsIndex>,
-}
-
-#[derive(Debug)]
-struct NsIndex {
-    default_allow: DefaultAllow,
-
-    /// Caches pod labels so we can differentiate innocuous updates (like status
-    /// changes) from label changes that could impact server indexing.
-    pods: PodIndex,
-
-    /// Caches a watch for each server.
-    servers: SrvIndex,
-
-    authzs: AuthzIndex,
-}
-
 /// Selects servers for an authorization.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum ServerSelector {
     Name(k8s::polixy::server::Name),
     Selector(Arc<k8s::labels::Selector>),
-}
-
-// === impl Namespaces ===
-
-impl Namespaces {
-    fn get_or_default(&mut self, name: k8s::NsName) -> &mut NsIndex {
-        let default_allow = self.default_allow;
-        self.index.entry(name).or_insert_with(|| NsIndex {
-            default_allow,
-            pods: PodIndex::default(),
-            servers: SrvIndex::default(),
-            authzs: AuthzIndex::default(),
-        })
-    }
 }
 
 // === impl Index ===
@@ -80,13 +48,9 @@ impl Index {
         default_allow: DefaultAllow,
         detect_timeout: time::Duration,
     ) -> Self {
-        let namespaces = Namespaces {
-            default_allow,
-            index: HashMap::default(),
-        };
         Self {
             lookups,
-            namespaces,
+            namespaces: NamespaceIndex::new(default_allow),
             nodes: NodeIndex::default(),
             default_allows: DefaultAllows::new(cluster_nets, detect_timeout),
         }
@@ -119,9 +83,9 @@ impl Index {
 
                 // Track namespace-level annotations
                 up = namespaces.recv() => match up {
-                    k8s::Event::Applied(ns) => self.apply_ns(ns).context("applying a namespace"),
-                    k8s::Event::Deleted(ns) => self.delete_ns(ns).context("deleting a namespace"),
-                    k8s::Event::Restarted(nss) => self.reset_ns(nss).context("resetting namespaces"),
+                    k8s::Event::Applied(ns) => self.namespaces.apply(ns).context("applying a namespace"),
+                    k8s::Event::Deleted(ns) => self.namespaces.delete(ns).context("deleting a namespace"),
+                    k8s::Event::Restarted(nss) => self.namespaces.reset(nss).context("resetting namespaces"),
                 },
 
                 up = pods.recv() => match up {

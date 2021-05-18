@@ -47,7 +47,7 @@ spec:
           image: ghcr.io/olix0r/polixy-controller:v0
           env:
             - name: RUST_LOG
-              value: polixy=debug
+              value: polixy=debug,info
           args:
             - --port=8910
             - --identity-domain=cluster.local

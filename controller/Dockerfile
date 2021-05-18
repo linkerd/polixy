@@ -5,4 +5,4 @@ RUN cargo build -p polixy-controller --release
 
 FROM gcr.io/distroless/cc:nonroot
 COPY --from=build /polixy/target/release/polixy-controller /
-CMD ["/polixy-controller"]
+ENTRYPOINT ["/polixy-controller"]

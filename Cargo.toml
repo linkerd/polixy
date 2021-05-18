@@ -1,3 +1,6 @@
 [workspace]
 resolver = "2"
 members = ["client", "controller", "grpc"]
+
+[patch.crates-io]
+k8s-openapi = { git = "https://github.com/olix0r/k8s-openapi", branch = "ver/workaround-100802" }

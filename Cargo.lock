@@ -633,8 +633,7 @@ dependencies = [
 [[package]]
 name = "k8s-openapi"
 version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bcc1f973542059e6d5a6d63de6a9539d0ec784f82b2327f3c1915d33200bc6a4"
+source = "git+https://github.com/olix0r/k8s-openapi?branch=ver/workaround-100802#1ebdf7920b04982419506cf30c56f4a6c9e5ff60"
 dependencies = [
  "base64",
  "bytes",

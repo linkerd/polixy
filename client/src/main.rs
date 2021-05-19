@@ -7,7 +7,7 @@ use tracing::info;
 #[derive(Debug, StructOpt)]
 #[structopt(name = "polixy", about = "A policy resource prototype")]
 struct Args {
-    #[structopt(long, default_value = "http://127.0.0.1:8910")]
+    #[structopt(long, env, default_value = "http://127.0.0.1:8910")]
     grpc_addr: String,
 
     #[structopt(subcommand)]
@@ -29,7 +29,7 @@ enum Command {
         port: u16,
     },
     HttpApi {
-        #[structopt(long, default_value = "127.0.0.1:0")]
+        #[structopt(long, env, default_value = "127.0.0.1:0")]
         listen_addr: SocketAddr,
 
         #[structopt(short, long, default_value = "default")]

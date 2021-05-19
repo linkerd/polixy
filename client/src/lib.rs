@@ -116,6 +116,7 @@ impl Client {
 impl Inbound {
     #[instrument(skip(self))]
     pub fn check_non_tls(&self, client_ip: IpAddr) -> Option<&HashMap<String, String>> {
+        trace!(authorizations = %self.authorizations.len());
         for Authz {
             networks,
             authn,
@@ -143,19 +144,21 @@ impl Inbound {
         client_ip: IpAddr,
         id: Option<&str>,
     ) -> Option<&HashMap<String, String>> {
+        trace!(authorizations = %self.authorizations.len());
         for Authz {
             networks,
             authn,
             labels,
         } in self.authorizations.iter()
         {
-            trace!(?authn);
             trace!(?networks);
-            trace!(?labels);
             if networks.iter().any(|net| net.contains(&client_ip)) {
+                trace!("Matches network");
+                trace!(?authn);
                 match authn {
                     Authn::Unauthenticated | Authn::TlsUnauthenticated => {
                         trace!("Match found");
+                        trace!(?labels);
                         return Some(labels);
                     }
                     Authn::TlsAuthenticated {
@@ -163,10 +166,12 @@ impl Inbound {
                         suffixes,
                     } => {
                         if let Some(id) = id {
+                            trace!(identities = %identities.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(","));
                             if identities.contains(id)
                                 || suffixes.iter().any(|sfx| sfx.contains(id))
                             {
                                 trace!("Match found");
+                                trace!(?labels);
                                 return Some(labels);
                             }
                         }

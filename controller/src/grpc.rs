@@ -398,6 +398,6 @@ fn to_authz(
 
 fn to_identity(ServiceAccountRef { ns, name }: ServiceAccountRef, domain: &str) -> proto::Identity {
     proto::Identity {
-        name: format!("{}.{}.serviceaccount.linkerd.{}", ns, name, domain),
+        name: format!("{}.{}.serviceaccount.identity.linkerd.{}", ns, name, domain),
     }
 }

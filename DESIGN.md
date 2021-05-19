@@ -91,13 +91,13 @@ authenticated clients.
 Authenticated clients may be matched by `ServiceAccount` or, more generally, Linkerd identity names.
 DNS-like identity names are encoded into each proxy's certificate, and each certificate is created
 using the pod's `ServiceAccount` in the form
-`<serviceaccount>.<namespace>.serviceaccount.linkerd.<identity-domain>`.
+`<serviceaccount>.<namespace>.serviceaccount.identity.linkerd.<identity-domain>`.
 
 It's most natural to authorize authenticated clients by referring to service accounts directly;
 however, we probably also want to support matching identity names as well. For instance, when
 authorizing clients to connect to multi-cluster gateways, we cannot reference service accounts in
 other clusters. Instead we might want to express matches like `*.<identity-domain>` to match all
-clients in an identity domain or `*.<namespace>.serviceaccount.linkerd.<identity-domain>` to match
+clients in an identity domain or `*.<namespace>.serviceaccount.identity.linkerd.<identity-domain>` to match
 all clients in a specific namespace.
 
 #### Lifecycle probes
@@ -253,7 +253,7 @@ This header is always set by the proxy (when informational headers are not disab
 ##### `l5d-client-id: <client-id>`
 
 The `l5d-client-id` header is only set when the client has been authenticated via meshed TLS. Its
-value is the client's identity, e.g. `default.default.serviceaccount.linkerd.cluster.local`.
+value is the client's identity, e.g. `default.default.serviceaccount.identity.linkerd.cluster.local`.
 
 ##### `forwarded: for=<client-ip>;by=<server-addr>`
 

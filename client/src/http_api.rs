@@ -10,8 +10,10 @@ use tokio::sync::watch;
 #[serde(rename_all = "camelCase")]
 struct Spec {
     server_port: u16,
+
     #[serde(rename = "clientIP")]
     client_ip: IpAddr,
+
     tls: Option<TlsSpec>,
 }
 

@@ -44,9 +44,10 @@ spec:
       containers:
         - name: main
           image: ghcr.io/olix0r/polixy-client:v0
+          args: ["http-api"]
           env:
             - name: RUST_LOG
-              value: polixy=debug,info
+              value: polixy=trace,hyper=info,h2=info,tokio=info,debug
             - name: LISTEN_ADDR
               value: 0.0.0.0:8080
             - name: GRPC_ADDR
@@ -61,10 +62,9 @@ spec:
                   fieldPath: metadata.name
             - name: PORTS
               value: "8080"
-          args: ["http-api"]
           ports:
             - containerPort: 8080
-              name: grpc
+              name: http-api
           resources:
             requests:
               cpu: 10m

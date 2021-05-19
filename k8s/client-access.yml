@@ -1,0 +1,35 @@
+---
+apiVersion: polixy.linkerd.io/v1alpha1
+kind: Server
+metadata:
+  namespace: polixy
+  name: client-api
+  labels:
+    app.kubernetes.io/part-of: polixy
+    app.kubernetes.io/name: client-api
+    app.kubernetes.io/version: v0
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: polixy
+      app.kubernetes.io/name: client
+  port: http-api
+  proxyProtocol: HTTP/1 
+---
+apiVersion: polixy.linkerd.io/v1alpha1
+kind: ServerAuthorization
+metadata:
+  namespace: polixy
+  name: client-api
+  labels:
+    app.kubernetes.io/part-of: polixy
+    app.kubernetes.io/name: client-api
+    app.kubernetes.io/version: v0
+spec:
+  server:
+    name: client-api
+  client:
+    meshTLS:
+      serviceAccounts:
+        - name: default
+          namespace: default

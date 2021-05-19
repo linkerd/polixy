@@ -12,7 +12,7 @@ use std::{
     net::IpAddr,
 };
 use tokio::time;
-use tracing::trace;
+use tracing::{instrument, trace};
 
 #[derive(Clone, Debug)]
 pub struct Client {
@@ -77,6 +77,7 @@ impl Client {
         Ok(Client { client })
     }
 
+    #[instrument(skip(self))]
     pub async fn get_inbound_port(&mut self, workload: String, port: u16) -> Result<Inbound> {
         let req = tonic::Request::new(proto::InboundPort {
             workload,
@@ -88,6 +89,7 @@ impl Client {
         proto.try_into()
     }
 
+    #[instrument(skip(self))]
     pub async fn watch_inbound_port(
         &mut self,
         workload: String,
@@ -112,6 +114,7 @@ impl Client {
 // === impl Inbound ===
 
 impl Inbound {
+    #[instrument(skip(self))]
     pub fn check_non_tls(&self, client_ip: IpAddr) -> Option<&HashMap<String, String>> {
         for Authz {
             networks,
@@ -119,16 +122,22 @@ impl Inbound {
             labels,
         } in self.authorizations.iter()
         {
+            trace!(?authn);
+            trace!(?networks);
+            trace!(?labels);
             if matches!(authn, Authn::Unauthenticated)
                 && networks.iter().any(|net| net.contains(&client_ip))
             {
+                trace!("Match found");
                 return Some(labels);
             }
         }
 
+        trace!("No match found");
         None
     }
 
+    #[instrument(skip(self))]
     pub fn check_tls(
         &self,
         client_ip: IpAddr,
@@ -140,9 +149,15 @@ impl Inbound {
             labels,
         } in self.authorizations.iter()
         {
+            trace!(?authn);
+            trace!(?networks);
+            trace!(?labels);
             if networks.iter().any(|net| net.contains(&client_ip)) {
                 match authn {
-                    Authn::Unauthenticated | Authn::TlsUnauthenticated => return Some(labels),
+                    Authn::Unauthenticated | Authn::TlsUnauthenticated => {
+                        trace!("Match found");
+                        return Some(labels);
+                    }
                     Authn::TlsAuthenticated {
                         identities,
                         suffixes,
@@ -151,6 +166,7 @@ impl Inbound {
                             if identities.contains(id)
                                 || suffixes.iter().any(|sfx| sfx.contains(id))
                             {
+                                trace!("Match found");
                                 return Some(labels);
                             }
                         }
@@ -159,6 +175,7 @@ impl Inbound {
             }
         }
 
+        trace!("No match found");
         None
     }
 }

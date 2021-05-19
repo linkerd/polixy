@@ -44,7 +44,7 @@ pub struct Authz {
     labels: HashMap<String, String>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Network {
     net: IpNet,
     except: Vec<IpNet>,
@@ -288,6 +288,7 @@ impl std::convert::TryFrom<proto::InboundServer> for Inbound {
 
 impl Network {
     pub fn contains(&self, addr: &IpAddr) -> bool {
+        // self.net.contains(addr) && self.except.iter().all(|net| !net.contains(addr))
         self.net.contains(addr) && !self.except.iter().any(|net| net.contains(addr))
     }
 }
@@ -308,5 +309,25 @@ impl From<Vec<String>> for Suffix {
 impl Suffix {
     pub fn contains(&self, name: &str) -> bool {
         name.ends_with(&self.ends_with)
+    }
+}
+
+#[cfg(test)]
+mod network_tests {
+    use super::Network;
+    use quickcheck::quickcheck;
+
+    quickcheck! {
+        fn default_contains_v4(addr: std::net::Ipv4Addr) -> bool {
+            Network::default().contains(&std::net::IpAddr::V4(addr))
+        }
+
+        fn default_contains_v6(addr: std::net::Ipv6Addr) -> bool {
+            let net = Network {
+                net: ipnet::Ipv6Net::default().into(),
+                ..Default::default()
+            };
+            net.contains(&std::net::IpAddr::V6(addr))
+        }
     }
 }

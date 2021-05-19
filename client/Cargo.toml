@@ -25,3 +25,6 @@ tonic = { version = "0.4", default-features = false, features = ["transport"] }
 tokio = { version = "1", features = ["rt", "macros", "parking_lot", "signal", "sync"] }
 tracing = { version = "0.1", features = ["attributes"] }
 tracing-subscriber = "0.2"
+
+[dev-dependencies]
+quickcheck = "1"

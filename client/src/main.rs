@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{bail, Result};
 use futures::prelude::*;
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use structopt::StructOpt;
@@ -32,11 +32,13 @@ enum Command {
         #[structopt(long, env, default_value = "127.0.0.1:0")]
         listen_addr: SocketAddr,
 
-        #[structopt(short, long, default_value = "default")]
+        #[structopt(env, short, long, default_value = "default")]
         namespace: String,
 
+        #[structopt(env = "POD")]
         pod: String,
 
+        #[structopt(env = "PORTS")]
         ports: Vec<u16>,
     },
 }
@@ -84,6 +86,10 @@ async fn main() -> Result<()> {
             pod,
             ports,
         } => {
+            if ports.is_empty() {
+                bail!("no ports specified with ns={} and pod={}", namespace, pod);
+            }
+
             let workload = format!("{}:{}", namespace, pod);
 
             let watches = polixy_client::watch_ports(client, workload, ports)

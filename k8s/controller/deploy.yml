@@ -10,11 +10,8 @@ metadata:
 spec:
   ports:
     - name: grpc
-      port: 8080
-      targetPort: 8080
-    - name: prom
-      port: 8801
-      targetPort: 8801
+      port: 8910
+      targetPort: 8910
   selector:
     app.kubernetes.io/name: controller
     app.kubernetes.io/part-of: polixy
@@ -47,7 +44,7 @@ spec:
           image: ghcr.io/olix0r/polixy-controller:v0
           env:
             - name: RUST_LOG
-              value: polixy=debug,info
+              value: polixy=trace,info
           args:
             - --port=8910
             - --identity-domain=cluster.local

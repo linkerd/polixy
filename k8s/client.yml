@@ -1,0 +1,74 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: client
+  namespace: polixy
+  labels:
+    app.kubernetes.io/name: client
+    app.kubernetes.io/part-of: polixy
+spec:
+  type: LoadBalancer
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+  selector:
+    app.kubernetes.io/name: client
+    app.kubernetes.io/part-of: polixy
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/name: client
+    app.kubernetes.io/part-of: polixy
+    app.kubernetes.io/version: v0
+  name: client
+  namespace: polixy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: client
+      app.kubernetes.io/part-of: polixy
+  template:
+    metadata:
+      annotations:
+        linkerd.io/inject: enabled
+      labels:
+        app.kubernetes.io/name: client
+        app.kubernetes.io/part-of: polixy
+        app.kubernetes.io/version: v0
+    spec:
+      containers:
+        - name: main
+          image: ghcr.io/olix0r/polixy-client:v0
+          env:
+            - name: RUST_LOG
+              value: polixy=debug,info
+            - name: LISTEN_ADDR
+              value: 0.0.0.0:8080
+            - name: GRPC_ADDR
+              value: http://controller.polixy:8910
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: PORTS
+              value: "8080"
+          args: ["http-api"]
+          ports:
+            - containerPort: 8080
+              name: grpc
+          resources:
+            requests:
+              cpu: 10m
+              memory: 10Mi
+            limits:
+              cpu: 1000m
+              memory: 100Mi

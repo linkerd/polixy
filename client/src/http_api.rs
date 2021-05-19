@@ -70,7 +70,14 @@ pub async fn serve(
                 }
 
                 None => {
-                    let msg = format!("unknown port: {}\n", server_port);
+                    let msg = format!(
+                        "not in known ports: {:?}\n",
+                        ports
+                            .keys()
+                            .map(|p| p.to_string())
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    );
                     Ok(Response::builder()
                         .status(hyper::StatusCode::NOT_FOUND)
                         .header(hyper::header::CONTENT_TYPE, "text/plain")

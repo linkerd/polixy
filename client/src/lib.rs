@@ -293,7 +293,6 @@ impl std::convert::TryFrom<proto::InboundServer> for Inbound {
 
 impl Network {
     pub fn contains(&self, addr: &IpAddr) -> bool {
-        // self.net.contains(addr) && self.except.iter().all(|net| !net.contains(addr))
         self.net.contains(addr) && !self.except.iter().any(|net| net.contains(addr))
     }
 }
@@ -320,19 +319,43 @@ impl Suffix {
 #[cfg(test)]
 mod network_tests {
     use super::Network;
-    use quickcheck::quickcheck;
+    use ipnet::{IpNet, Ipv4Net, Ipv6Net};
+    use quickcheck::{quickcheck, TestResult};
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
     quickcheck! {
-        fn default_contains_v4(addr: std::net::Ipv4Addr) -> bool {
-            Network::default().contains(&std::net::IpAddr::V4(addr))
+        fn contains_v4(addr: Ipv4Addr, exclude: Option<Ipv4Addr>) -> TestResult {
+            let net = Network {
+                net: Ipv4Net::default().into(),
+                except: exclude.into_iter().map(|a| IpNet::from(IpAddr::V4(a))).collect(),
+            };
+
+            if let Some(e) = exclude {
+                if net.contains(&e.into()) {
+                    return TestResult::failed();
+                }
+                if addr == e {
+                    return TestResult::passed();
+                }
+            }
+            TestResult::from_bool(net.contains(&addr.into()))
         }
 
-        fn default_contains_v6(addr: std::net::Ipv6Addr) -> bool {
+        fn contains_v6(addr: Ipv6Addr, exclude: Option<Ipv6Addr>) -> TestResult {
             let net = Network {
-                net: ipnet::Ipv6Net::default().into(),
-                ..Default::default()
+                net: Ipv6Net::default().into(),
+                except: exclude.into_iter().map(|a| IpNet::from(IpAddr::V6(a))).collect(),
             };
-            net.contains(&std::net::IpAddr::V6(addr))
+
+            if let Some(e) = exclude {
+                if net.contains(&e.into()) {
+                    return TestResult::failed();
+                }
+                if addr == e {
+                    return TestResult::passed();
+                }
+            }
+            TestResult::from_bool(net.contains(&addr.into()))
         }
     }
 }

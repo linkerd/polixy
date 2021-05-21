@@ -643,7 +643,7 @@ dependencies = [
 [[package]]
 name = "k8s-openapi"
 version = "0.11.0"
-source = "git+https://github.com/olix0r/k8s-openapi?branch=ver/workaround-100802#1ebdf7920b04982419506cf30c56f4a6c9e5ff60"
+source = "git+https://github.com/Arnavion/k8s-openapi#ab740f0b0a07eef6eee46d90b736d86dec29726e"
 dependencies = [
  "base64",
  "bytes",
@@ -655,9 +655,8 @@ dependencies = [
 
 [[package]]
 name = "kube"
-version = "0.53.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "38a92e9c744815d199c09b9a4799efb3efc1f2528a6a3c35fb38115b0d691f17"
+version = "0.54.0"
+source = "git+https://github.com/olix0r/kube-rs?branch=ver/api-bump#d3af80a0a1e491abe1f2e3de9f6056b0676a51e9"
 dependencies = [
  "base64",
  "bytes",
@@ -671,9 +670,8 @@ dependencies = [
  "hyper-tls",
  "jsonpath_lib",
  "k8s-openapi",
+ "kube-core",
  "kube-derive",
- "log",
- "once_cell",
  "openssl",
  "pem",
  "pin-project 1.0.7",
@@ -691,10 +689,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "kube-core"
+version = "0.54.0"
+source = "git+https://github.com/olix0r/kube-rs?branch=ver/api-bump#d3af80a0a1e491abe1f2e3de9f6056b0676a51e9"
+dependencies = [
+ "http",
+ "k8s-openapi",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "url",
+]
+
+[[package]]
 name = "kube-derive"
-version = "0.53.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "47c6bddeb174717fc806c11a56484d930d2ee9984195ba4c7b8ffa146ac5a770"
+version = "0.54.0"
+source = "git+https://github.com/olix0r/kube-rs?branch=ver/api-bump#d3af80a0a1e491abe1f2e3de9f6056b0676a51e9"
 dependencies = [
  "darling",
  "proc-macro2",
@@ -705,9 +715,8 @@ dependencies = [
 
 [[package]]
 name = "kube-runtime"
-version = "0.53.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "49a005e33a497a96ab203f4aa567262df420e494023712d85339469e93e8135e"
+version = "0.54.0"
+source = "git+https://github.com/olix0r/kube-rs?branch=ver/api-bump#d3af80a0a1e491abe1f2e3de9f6056b0676a51e9"
 dependencies = [
  "dashmap",
  "derivative",

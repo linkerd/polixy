@@ -162,12 +162,11 @@ impl Index {
             HashEntry::Occupied(mut entry) => {
                 // If something about the server changed, we need to update the config to reflect
                 // the change.
-                let new_labels =
-                    if Some(entry.get().meta.labels.as_ref()) != srv.metadata.labels.as_ref() {
-                        Some(k8s::Labels::from(srv.metadata.labels))
-                    } else {
-                        None
-                    };
+                let new_labels = if entry.get().meta.labels.as_ref() != &srv.metadata.labels {
+                    Some(k8s::Labels::from(srv.metadata.labels))
+                } else {
+                    None
+                };
 
                 let new_protocol = if entry.get().meta.protocol == protocol {
                     Some(protocol)

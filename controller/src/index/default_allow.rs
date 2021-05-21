@@ -38,13 +38,9 @@ pub(super) struct DefaultAllows {
 
 impl DefaultAllow {
     pub fn from_annotation(meta: &k8s::ObjectMeta) -> Result<Option<Self>> {
-        if let Some(annotations) = meta.annotations.as_ref() {
-            if let Some(v) = annotations.get(ANNOTATION) {
-                let mode = v.parse()?;
-                Ok(Some(mode))
-            } else {
-                Ok(None)
-            }
+        if let Some(v) = meta.annotations.get(ANNOTATION) {
+            let mode = v.parse()?;
+            Ok(Some(mode))
         } else {
             Ok(None)
         }

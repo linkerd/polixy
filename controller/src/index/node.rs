@@ -104,16 +104,17 @@ fn cidr_to_kubelet_ip(cidr: String) -> Result<IpAddr> {
 fn kubelet_ips(node: k8s::Node) -> Result<KubeletIps> {
     let spec = node.spec.ok_or_else(|| anyhow!("node missing spec"))?;
 
-    let addrs = if let Some(nets) = spec.pod_cidrs {
-        nets.into_iter()
-            .map(cidr_to_kubelet_ip)
-            .collect::<Result<Vec<_>>>()?
-    } else {
+    let addrs = if spec.pod_cidrs.is_empty() {
         let cidr = spec
             .pod_cidr
             .ok_or_else(|| anyhow!("node missing pod_cidr"))?;
         let ip = cidr_to_kubelet_ip(cidr)?;
         vec![ip]
+    } else {
+        spec.pod_cidrs
+            .into_iter()
+            .map(cidr_to_kubelet_ip)
+            .collect::<Result<Vec<_>>>()?
     };
 
     Ok(KubeletIps(addrs.into()))

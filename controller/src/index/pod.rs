@@ -191,7 +191,7 @@ impl Index {
                 );
 
                 let p = pod_entry.get_mut();
-                if Some(p.labels.as_ref()) != pod.metadata.labels.as_ref() {
+                if p.labels.as_ref() != &pod.metadata.labels {
                     let labels = k8s::Labels::from(pod.metadata.labels);
                     p.labels = labels;
                     p.link_servers(&servers);
@@ -280,42 +280,40 @@ fn collect_pod_servers(
     let mut lookups = HashMap::new();
 
     for container in spec.containers.into_iter() {
-        if let Some(ps) = container.ports {
-            for p in ps.into_iter() {
-                if p.protocol.map(|p| p == "TCP").unwrap_or(true) {
-                    let port = p.container_port as u16;
-                    if pod_servers.by_port.contains_key(&port) {
-                        debug!(port, "Port duplicated");
-                        continue;
-                    }
-
-                    let (tx, rx) = watch::channel(server_rx.clone());
-                    let pod_port = Arc::new(PodServer {
-                        tx,
-                        server_name: Mutex::new(None),
-                    });
-
-                    let name = p.name.map(k8s::polixy::server::PortName::from);
-                    if let Some(name) = name.clone() {
-                        pod_servers
-                            .by_name
-                            .entry(name)
-                            .or_default()
-                            .push(pod_port.clone());
-                    }
-
-                    trace!(%port, ?name, "Adding port");
-                    pod_servers.by_port.insert(port, pod_port);
-                    lookups.insert(
-                        port,
-                        Lookup {
-                            rx,
-                            name,
-                            pod_ips: pod_ips.clone(),
-                            kubelet_ips: kubelet_ips.clone(),
-                        },
-                    );
+        for p in container.ports.into_iter() {
+            if p.protocol.map(|p| p == "TCP").unwrap_or(true) {
+                let port = p.container_port as u16;
+                if pod_servers.by_port.contains_key(&port) {
+                    debug!(port, "Port duplicated");
+                    continue;
                 }
+
+                let (tx, rx) = watch::channel(server_rx.clone());
+                let pod_port = Arc::new(PodServer {
+                    tx,
+                    server_name: Mutex::new(None),
+                });
+
+                let name = p.name.map(k8s::polixy::server::PortName::from);
+                if let Some(name) = name.clone() {
+                    pod_servers
+                        .by_name
+                        .entry(name)
+                        .or_default()
+                        .push(pod_port.clone());
+                }
+
+                trace!(%port, ?name, "Adding port");
+                pod_servers.by_port.insert(port, pod_port);
+                lookups.insert(
+                    port,
+                    Lookup {
+                        rx,
+                        name,
+                        pod_ips: pod_ips.clone(),
+                        kubelet_ips: kubelet_ips.clone(),
+                    },
+                );
             }
         }
     }
@@ -324,16 +322,18 @@ fn collect_pod_servers(
 }
 
 fn mk_pod_ips(status: k8s::PodStatus) -> Result<PodIps> {
-    let ips = if let Some(ips) = status.pod_ips {
-        ips.iter()
-            .flat_map(|ip| ip.ip.as_ref())
-            .map(|ip| ip.parse().map_err(Into::into))
-            .collect::<Result<Vec<IpAddr>>>()?
-    } else {
+    let ips = if status.pod_ips.is_empty() {
         status
             .pod_ip
             .iter()
             .map(|ip| ip.parse::<IpAddr>().map_err(Into::into))
+            .collect::<Result<Vec<IpAddr>>>()?
+    } else {
+        status
+            .pod_ips
+            .iter()
+            .flat_map(|ip| ip.ip.as_ref())
+            .map(|ip| ip.parse().map_err(Into::into))
             .collect::<Result<Vec<IpAddr>>>()?
     };
     if ips.is_empty() {

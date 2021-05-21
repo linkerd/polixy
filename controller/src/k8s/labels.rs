@@ -93,10 +93,10 @@ impl std::iter::FromIterator<Expression> for Selector {
 
 // === Labels ===
 
-impl From<Option<Map>> for Labels {
+impl From<Map> for Labels {
     #[inline]
-    fn from(labels: Option<Map>) -> Self {
-        Self(Arc::new(labels.unwrap_or_default()))
+    fn from(labels: Map) -> Self {
+        Self(Arc::new(labels))
     }
 }
 

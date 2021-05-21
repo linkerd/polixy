@@ -17,7 +17,11 @@ pub(super) struct NodeIndex {
 //=== impl NodeIndex ===
 
 impl NodeIndex {
-    pub fn get(&self, name: &k8s::NodeName) -> Result<KubeletIps> {
+    pub fn get<N>(&self, name: &N) -> Result<KubeletIps>
+    where
+        k8s::NodeName: std::borrow::Borrow<N>,
+        N: std::hash::Hash + Eq + std::fmt::Display + ?Sized,
+    {
         self.index
             .get(name)
             .cloned()

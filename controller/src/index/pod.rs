@@ -1,6 +1,6 @@
 use super::{DefaultAllow, Index, Namespace, SrvIndex};
 use crate::{
-    k8s::{self, polixy},
+    k8s::{self, polixy, ResourceExt},
     KubeletIps, Lookup, PodIps, ServerRx, ServerRxTx,
 };
 use anyhow::{anyhow, bail, Result};
@@ -155,10 +155,9 @@ impl Index {
                 let kubelet_ips = {
                     let name = spec
                         .node_name
-                        .clone()
-                        .map(k8s::NodeName::from)
+                        .as_ref()
                         .ok_or_else(|| anyhow!("pod missing node name"))?;
-                    self.nodes.get(&name)?
+                    self.nodes.get(name.as_str())?
                 };
 
                 let status = pod.status.ok_or_else(|| anyhow!("pod missing status"))?;
@@ -168,10 +167,9 @@ impl Index {
                 let (pod_servers, lookups) =
                     collect_pod_servers(spec, default_rx.clone(), pod_ips, kubelet_ips);
 
-                let labels = k8s::Labels::from(pod.metadata.labels);
                 let pod = Pod {
                     servers: pod_servers,
-                    labels,
+                    labels: pod.metadata.labels.into(),
                     default_rx,
                 };
                 pod.link_servers(&servers);
@@ -192,8 +190,7 @@ impl Index {
 
                 let p = pod_entry.get_mut();
                 if p.labels.as_ref() != &pod.metadata.labels {
-                    let labels = k8s::Labels::from(pod.metadata.labels);
-                    p.labels = labels;
+                    p.labels = pod.metadata.labels.into();
                     p.link_servers(&servers);
                 }
             }
@@ -247,10 +244,9 @@ impl Index {
 
         let mut result = Ok(());
         for pod in pods.into_iter() {
-            let ns_name = k8s::NsName::from_pod(&pod);
-            if let Some(ns) = prior_pods.get_mut(&ns_name) {
-                let pod_name = k8s::PodName::from_pod(&pod);
-                ns.remove(&pod_name);
+            let ns_name = pod.namespace().unwrap();
+            if let Some(ns) = prior_pods.get_mut(ns_name.as_str()) {
+                ns.remove(pod.name().as_str());
             }
 
             if let Err(error) = self.apply_pod(pod) {

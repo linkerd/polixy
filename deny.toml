@@ -31,13 +31,21 @@ highlight = "all"
 deny = []
 skip-tree = []
 # Kube seems to pull in a bunch of old dependencies transitively.
-skip = [{ name = "ansi_term" }, { name = "pin-project" }, { name = "pin-project-internal" }, { name = "strsim" }]
+skip = [
+    { name = "ansi_term" },
+    { name = "pin-project" },
+    { name = "pin-project-internal" },
+    { name = "strsim" },
+
+    # https://github.com/freestrings/jsonpath/issues/68
+    { name = "env_logger" },
+]
 
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = []
+allow-git = ["https://github.com/Arnavion/k8s-openapi"]
 
 [sources.allow-org]
 github = ["olix0r", "linkerd"]

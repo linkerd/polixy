@@ -61,7 +61,7 @@ impl SrvIndex {
     pub fn remove_authz<N>(&mut self, name: &N)
     where
         k8s::polixy::authz::Name: std::borrow::Borrow<N>,
-        N: Ord,
+        N: Ord + ?Sized,
     {
         for srv in self.index.values_mut() {
             srv.remove_authz(name);
@@ -98,7 +98,7 @@ impl Server {
     fn remove_authz<N>(&mut self, name: &N)
     where
         k8s::polixy::authz::Name: std::borrow::Borrow<N>,
-        N: Ord,
+        N: Ord + ?Sized,
     {
         if self.authorizations.remove(name).is_some() {
             debug!("Removing authorization from server");

@@ -105,7 +105,10 @@ impl Index {
 
                 up = authorizations.recv() => match up {
                     k8s::Event::Applied(authz) => self.apply_authz(authz).context("applying an authorization"),
-                    k8s::Event::Deleted(authz) => self.delete_authz(authz).context("deleting an authorization"),
+                    k8s::Event::Deleted(authz) => {
+                        self.delete_authz(authz);
+                        Ok(())
+                    }
                     k8s::Event::Restarted(authzs) => self.reset_authzs(authzs).context("resetting authorizations"),
                 },
             };

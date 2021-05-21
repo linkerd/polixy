@@ -81,6 +81,12 @@ impl Name {
     }
 }
 
+impl std::borrow::Borrow<str> for Name {
+    fn borrow(&self) -> &str {
+        self.0.as_ref()
+    }
+}
+
 impl<T: Into<Arc<str>>> From<T> for Name {
     fn from(t: T) -> Self {
         Self(t.into())

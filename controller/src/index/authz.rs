@@ -1,9 +1,9 @@
-use super::{Index, Namespace, ServerSelector};
+use super::{Index, ServerSelector, SrvIndex};
 use crate::{
-    k8s::{self, polixy},
+    k8s::{self, polixy, ResourceExt},
     ClientAuthn, ClientAuthz, ClientNetwork, Identity, ServiceAccountRef,
 };
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, bail, Result};
 use ipnet::IpNet;
 use std::{
     collections::{hash_map::Entry as HashEntry, HashMap, HashSet},
@@ -26,6 +26,39 @@ struct Authz {
 // === impl AuthzIndex ===
 
 impl AuthzIndex {
+    /// Updates
+    fn apply(&mut self, servers: &mut SrvIndex, authz: polixy::ServerAuthorization) -> Result<()> {
+        let name = polixy::authz::Name::from_authz(&authz);
+        let authz = mk_authz(authz)?;
+
+        match self.index.entry(name) {
+            HashEntry::Vacant(entry) => {
+                servers.add_authz(entry.key(), &authz.servers, authz.clients.clone());
+                entry.insert(authz);
+            }
+
+            HashEntry::Occupied(mut entry) => {
+                // If the authorization changed materially, then update it in all servers.
+                if entry.get() != &authz {
+                    servers.add_authz(entry.key(), &authz.servers, authz.clients.clone());
+                    entry.insert(authz);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn delete<A>(&mut self, servers: &mut SrvIndex, name: &A)
+    where
+        k8s::polixy::authz::Name: std::borrow::Borrow<A>,
+        A: Ord + Hash + Eq + ?Sized,
+    {
+        servers.remove_authz(name);
+        self.index.remove(name);
+        debug!("Removed authz");
+    }
+
     pub fn filter_selected(
         &self,
         name: k8s::polixy::server::Name,
@@ -64,32 +97,11 @@ impl Index {
         )
     )]
     pub(super) fn apply_authz(&mut self, authz: polixy::ServerAuthorization) -> Result<()> {
-        let ns_name = k8s::NsName::from_authz(&authz);
-        let authz_name = polixy::authz::Name::from_authz(&authz);
-        let authz = mk_authz(&ns_name, authz.spec)?;
+        let ns = self
+            .namespaces
+            .get_or_default(k8s::NsName::from_authz(&authz));
 
-        let Namespace {
-            ref mut authzs,
-            ref mut servers,
-            ..
-        } = self.namespaces.get_or_default(ns_name);
-
-        match authzs.index.entry(authz_name) {
-            HashEntry::Vacant(entry) => {
-                servers.add_authz(entry.key(), &authz.servers, authz.clients.clone());
-                entry.insert(authz);
-            }
-
-            HashEntry::Occupied(mut entry) => {
-                // If the authorization changed materially, then update it in all servers.
-                if entry.get() != &authz {
-                    servers.add_authz(entry.key(), &authz.servers, authz.clients.clone());
-                    entry.insert(authz);
-                }
-            }
-        };
-
-        Ok(())
+        ns.authzs.apply(&mut ns.servers, authz)
     }
 
     #[instrument(
@@ -99,35 +111,19 @@ impl Index {
             name = ?authz.metadata.name,
         )
     )]
-    pub(super) fn delete_authz(&mut self, authz: polixy::ServerAuthorization) -> Result<()> {
-        let ns = k8s::NsName::from_authz(&authz);
-        let authz = polixy::authz::Name::from_authz(&authz);
-        self.rm_authz(&ns, &authz)
-            .with_context(|| format!("ns={}, authz={}", ns, authz))
-    }
-
-    fn rm_authz<N, A>(&mut self, ns_name: &N, authz_name: &A) -> Result<()>
-    where
-        k8s::NsName: std::borrow::Borrow<N>,
-        N: Hash + Eq,
-        k8s::polixy::authz::Name: std::borrow::Borrow<A>,
-        A: Ord,
-    {
-        let ns = self
+    pub(super) fn delete_authz(&mut self, authz: polixy::ServerAuthorization) {
+        if let Some(ns) = self
             .namespaces
             .index
-            .get_mut(ns_name)
-            .ok_or_else(|| anyhow!("removing authz from non-existent namespace"))?;
-
-        ns.servers.remove_authz(authz_name);
-
-        debug!("Removed authz");
-        Ok(())
+            .get_mut(authz.namespace().unwrap().as_str())
+        {
+            ns.authzs.delete(&mut ns.servers, authz.name().as_str());
+        }
     }
 
     #[instrument(skip(self, authzs))]
     pub(super) fn reset_authzs(&mut self, authzs: Vec<polixy::ServerAuthorization>) -> Result<()> {
-        let mut prior_authzs = self
+        let mut prior = self
             .namespaces
             .index
             .iter()
@@ -139,10 +135,8 @@ impl Index {
 
         let mut result = Ok(());
         for authz in authzs.into_iter() {
-            let ns_name = k8s::NsName::from_authz(&authz);
-            if let Some(ns) = prior_authzs.get_mut(&ns_name) {
-                let authz_name = polixy::authz::Name::from_authz(&authz);
-                ns.remove(&authz_name);
+            if let Some(ns) = prior.get_mut(authz.namespace().unwrap().as_str()) {
+                ns.remove(authz.name().as_str());
             }
 
             if let Err(e) = self.apply_authz(authz) {
@@ -150,10 +144,10 @@ impl Index {
             }
         }
 
-        for (ns_name, ns_authzs) in prior_authzs.into_iter() {
-            for authz_name in ns_authzs.into_iter() {
-                if let Err(e) = self.rm_authz(&ns_name, &authz_name) {
-                    result = Err(e);
+        for (ns_name, authzs) in prior {
+            if let Some(ns) = self.namespaces.index.get_mut(&ns_name) {
+                for name in authzs.into_iter() {
+                    ns.authzs.delete(&mut ns.servers, &name);
                 }
             }
         }
@@ -162,7 +156,9 @@ impl Index {
     }
 }
 
-fn mk_authz(ns_name: &k8s::NsName, spec: polixy::authz::ServerAuthorizationSpec) -> Result<Authz> {
+fn mk_authz(srv: polixy::authz::ServerAuthorization) -> Result<Authz> {
+    let polixy::authz::ServerAuthorization { metadata, spec, .. } = srv;
+
     let servers = {
         let polixy::authz::Server { name, selector } = spec.server;
         match (name, selector) {
@@ -237,12 +233,10 @@ fn mk_authz(ns_name: &k8s::NsName, spec: polixy::authz::ServerAuthorizationSpec)
                 let name = sa.name;
                 let ns = sa
                     .namespace
-                    .map(k8s::NsName::from_string)
-                    .unwrap_or_else(|| ns_name.clone());
+                    .unwrap_or_else(|| metadata.namespace.clone().unwrap());
                 debug!(ns = %ns, serviceaccount = %name, "Authenticated");
-                // FIXME configurable cluster domain
                 service_accounts.push(ServiceAccountRef {
-                    ns,
+                    ns: k8s::NsName::from_string(ns),
                     name: name.into(),
                 });
             }

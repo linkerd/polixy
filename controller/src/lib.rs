@@ -1,3 +1,9 @@
+//! Linkerd Policy Controller
+//!
+//! The policy controller serves discovery requests from inbound proxies, indicating how the proxy
+//! should admit connections into a Pod. It watches cluster resources (Namespaces, Nodes, Pods,
+//! Servers, and ServerAuthorizations).
+
 pub mod grpc;
 mod index;
 mod k8s;

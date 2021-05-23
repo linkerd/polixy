@@ -7,7 +7,7 @@ use tracing::info;
 #[derive(Debug, StructOpt)]
 #[structopt(name = "polixy", about = "A policy resource prototype")]
 struct Args {
-    #[structopt(long, env, default_value = "http://127.0.0.1:8910")]
+    #[structopt(long, env, default_value = "http://127.0.0.1:8090")]
     grpc_addr: String,
 
     #[structopt(subcommand)]

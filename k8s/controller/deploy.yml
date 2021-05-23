@@ -10,8 +10,8 @@ metadata:
 spec:
   ports:
     - name: grpc
-      port: 8910
-      targetPort: 8910
+      port: 8090
+      targetPort: 8090
   selector:
     app.kubernetes.io/name: controller
     app.kubernetes.io/part-of: polixy
@@ -46,12 +46,12 @@ spec:
             - name: RUST_LOG
               value: polixy=trace,info
           args:
-            - --port=8910
+            - --port=8090
             - --identity-domain=cluster.local
             - --cluster-networks=10.42.0.0/16
             - --default-allow=all-authenticated
           ports:
-            - containerPort: 8910
+            - containerPort: 8090
               name: grpc
           resources:
             requests:

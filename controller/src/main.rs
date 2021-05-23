@@ -1,19 +1,25 @@
 use anyhow::{Context, Result};
 use futures::{future, prelude::*};
 use polixy_controller::{DefaultAllow, LookupHandle};
+use std::net::SocketAddr;
 use structopt::StructOpt;
 use tokio::time;
 use tracing::{debug, info, instrument};
 
 #[derive(Debug, StructOpt)]
 #[structopt(name = "polixy", about = "A policy resource prototype")]
-struct Command {
-    #[structopt(short, long, default_value = "8910")]
-    port: u16,
+struct Args {
+    // #[structopt(short, long, default_value = "0.0.0.0:8080")]
+    // admin_addr: SocketAddr,
+    #[structopt(short, long, default_value = "0.0.0.0:8090")]
+    grpc_addr: SocketAddr,
+
     #[structopt(long, default_value = "cluster.local")]
     identity_domain: String,
 
-    /// Network CIDRs of pod IPs
+    /// Network CIDRs of pod IPs.
+    ///
+    /// The default reflects k3d's default node network.
     #[structopt(long, default_value = "10.42.0.0/16")]
     cluster_networks: Vec<ipnet::IpNet>,
 
@@ -25,12 +31,13 @@ struct Command {
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
-    let Command {
-        port,
+    let Args {
+        // admin_addr: _,
+        grpc_addr,
         identity_domain,
         cluster_networks,
         default_allow,
-    } = Command::from_args();
+    } = Args::from_args();
 
     let (drain_tx, drain_rx) = linkerd_drain::channel();
 
@@ -43,7 +50,7 @@ async fn main() -> Result<()> {
         LookupHandle::run(client, cluster_networks, default_allow, DETECT_TIMEOUT);
     let index_task = tokio::spawn(index_task);
 
-    let grpc = tokio::spawn(grpc(port, handle, drain_rx, identity_domain));
+    let grpc = tokio::spawn(grpc(grpc_addr, handle, drain_rx, identity_domain));
 
     tokio::select! {
         _ = shutdown(drain_tx) => Ok(()),
@@ -62,12 +69,11 @@ async fn main() -> Result<()> {
 
 #[instrument(skip(handle, drain, identity_domain))]
 async fn grpc(
-    port: u16,
+    addr: SocketAddr,
     handle: LookupHandle,
     drain: linkerd_drain::Watch,
     identity_domain: String,
 ) -> Result<()> {
-    let addr = ([0, 0, 0, 0], port).into();
     let server = polixy_controller::grpc::Server::new(handle, drain.clone(), identity_domain);
     let (close_tx, close_rx) = tokio::sync::oneshot::channel();
     tokio::pin! {

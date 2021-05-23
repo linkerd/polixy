@@ -51,7 +51,7 @@ spec:
             - name: LISTEN_ADDR
               value: 0.0.0.0:8080
             - name: GRPC_ADDR
-              value: http://controller.polixy:8910
+              value: http://controller.polixy:8090
             - name: NAMESPACE
               valueFrom:
                 fieldRef:

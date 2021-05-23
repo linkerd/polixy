@@ -50,7 +50,7 @@ jobs:
 
       - name: Apply CRDs
         run: ./target/bin/kubectl apply -f ./k8s/crds
-c
+
       - name: Create ns/emojivoto
         run: ./target/bin/kubectl create ns emojivoto
 

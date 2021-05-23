@@ -1,7 +1,6 @@
 use crate::{
-    k8s::{NsName, PodName},
-    ClientAuthn, ClientAuthz, ClientNetwork, Identity, InboundServerConfig, KubeletIps, Lookup,
-    LookupHandle, PodIps, ProxyProtocol, ServerRxRx, ServiceAccountRef,
+    lookup, ClientAuthn, ClientAuthz, ClientNetwork, Identity, InboundServerConfig, KubeletIps,
+    PodIps, ProxyProtocol, ServerRxRx, ServiceAccountRef,
 };
 use futures::prelude::*;
 use polixy_grpc as proto;
@@ -10,14 +9,14 @@ use tracing::trace;
 
 #[derive(Clone, Debug)]
 pub struct Server {
-    lookup: LookupHandle,
+    lookup: lookup::Reader,
     drain: linkerd_drain::Watch,
     identity_domain: Arc<str>,
 }
 
 impl Server {
     pub fn new(
-        lookup: LookupHandle,
+        lookup: lookup::Reader,
         drain: linkerd_drain::Watch,
         identity_domain: impl Into<Arc<str>>,
     ) -> Self {
@@ -39,7 +38,7 @@ impl Server {
             .await
     }
 
-    fn lookup(&self, workload: String, port: u32) -> Result<Lookup, tonic::Status> {
+    fn lookup(&self, workload: String, port: u32) -> Result<lookup::PodPort, tonic::Status> {
         // Parse a workload name in the form namespace:name.
         let (ns, name) = match workload.split_once(':') {
             None => {
@@ -54,10 +53,7 @@ impl Server {
                     workload
                 )));
             }
-            Some((ns, pod)) => (
-                NsName::from_string(ns.to_string()),
-                PodName::from(pod.to_string()),
-            ),
+            Some((ns, pod)) => (ns, pod),
         };
 
         // Ensure that the port is in the valid range.
@@ -86,8 +82,7 @@ impl proto::polixy_server::Polixy for Server {
         req: tonic::Request<proto::InboundPort>,
     ) -> Result<tonic::Response<proto::InboundServer>, tonic::Status> {
         let proto::InboundPort { workload, port } = req.into_inner();
-        let Lookup {
-            name: _,
+        let lookup::PodPort {
             pod_ips,
             kubelet_ips,
             rx,
@@ -111,8 +106,7 @@ impl proto::polixy_server::Polixy for Server {
         req: tonic::Request<proto::InboundPort>,
     ) -> Result<tonic::Response<BoxWatchStream>, tonic::Status> {
         let proto::InboundPort { workload, port } = req.into_inner();
-        let Lookup {
-            name: _,
+        let lookup::PodPort {
             pod_ips,
             kubelet_ips,
             rx,

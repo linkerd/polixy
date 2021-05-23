@@ -110,6 +110,12 @@ impl NsName {
     }
 }
 
+impl AsRef<str> for NsName {
+    fn as_ref(&self) -> &str {
+        self.0.as_ref()
+    }
+}
+
 impl std::borrow::Borrow<str> for NsName {
     fn borrow(&self) -> &str {
         self.0.as_ref()
@@ -127,6 +133,12 @@ impl fmt::Display for NsName {
 impl PodName {
     pub fn from_pod(p: &Pod) -> Self {
         Self::from(p.name())
+    }
+}
+
+impl AsRef<str> for PodName {
+    fn as_ref(&self) -> &str {
+        self.0.as_ref()
     }
 }
 

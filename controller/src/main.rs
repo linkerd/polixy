@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use futures::{future, prelude::*};
-use polixy_controller::{DefaultAllow, LookupHandle};
+use polixy_controller::DefaultAllow;
 use std::net::SocketAddr;
 use structopt::StructOpt;
 use tokio::{sync::watch, time};
@@ -50,7 +50,7 @@ async fn main() -> Result<()> {
     let admin = tokio::spawn(polixy_controller::admin::serve(admin_addr, ready_rx));
 
     const DETECT_TIMEOUT: time::Duration = time::Duration::from_secs(10);
-    let (handle, index_task) = LookupHandle::run(
+    let (handle, index_task) = polixy_controller::index(
         client,
         ready_tx,
         cluster_networks,
@@ -84,7 +84,7 @@ async fn main() -> Result<()> {
 #[instrument(skip(handle, drain, identity_domain))]
 async fn grpc(
     addr: SocketAddr,
-    handle: LookupHandle,
+    handle: polixy_controller::Reader,
     drain: linkerd_drain::Watch,
     identity_domain: String,
 ) -> Result<()> {

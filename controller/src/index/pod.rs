@@ -1,7 +1,7 @@
 use super::{DefaultAllow, Index, Namespace, SrvIndex};
 use crate::{
     k8s::{self, polixy, ResourceExt},
-    KubeletIps, Lookup, PodIps, ServerRx, ServerRxTx, SharedLookupMap,
+    lookup, KubeletIps, PodIps, ServerRx, ServerRxTx,
 };
 use anyhow::{anyhow, bail, Result};
 use parking_lot::Mutex;
@@ -130,7 +130,7 @@ impl Index {
             name = ?pod.metadata.name,
         )
     )]
-    pub(super) fn apply_pod(&mut self, pod: k8s::Pod, lookups: &mut SharedLookupMap) -> Result<()> {
+    pub(super) fn apply_pod(&mut self, pod: k8s::Pod, lookups: &mut lookup::Index) -> Result<()> {
         let ns_name = k8s::NsName::from_pod(&pod);
         let Namespace {
             default_allow,
@@ -174,14 +174,9 @@ impl Index {
                 };
                 pod.link_servers(&servers);
 
-                if lookups
-                    .entry(ns_name)
-                    .or_default()
-                    .insert(pod_name, pod_lookups)
-                    .is_some()
-                {
-                    unreachable!("pod must not exist in lookups");
-                }
+                lookups
+                    .set(ns_name, pod_name, pod_lookups)
+                    .expect("pod must not already exist");
 
                 pod_entry.insert(pod);
             }
@@ -189,10 +184,7 @@ impl Index {
             HashEntry::Occupied(mut pod_entry) => {
                 // Note that the default-allow annotation may not be changed at runtime.
                 debug_assert!(
-                    lookups
-                        .get(&ns_name)
-                        .map(|ns| ns.contains_key(&pod_name))
-                        .unwrap_or(false),
+                    lookups.contains(&ns_name, &pod_name),
                     "pod must exist in lookups"
                 );
 
@@ -214,11 +206,7 @@ impl Index {
             name = ?pod.metadata.name,
         )
     )]
-    pub(super) fn delete_pod(
-        &mut self,
-        pod: k8s::Pod,
-        lookups: &mut SharedLookupMap,
-    ) -> Result<()> {
+    pub(super) fn delete_pod(&mut self, pod: k8s::Pod, lookups: &mut lookup::Index) -> Result<()> {
         let ns_name = k8s::NsName::from_pod(&pod);
         let pod_name = k8s::PodName::from_pod(&pod);
         self.rm_pod(ns_name, pod_name, lookups)
@@ -228,7 +216,7 @@ impl Index {
         &mut self,
         ns: k8s::NsName,
         pod: k8s::PodName,
-        lookups: &mut SharedLookupMap,
+        lookups: &mut lookup::Index,
     ) -> Result<()> {
         self.namespaces
             .index
@@ -239,11 +227,7 @@ impl Index {
             .remove(&pod)
             .ok_or_else(|| anyhow!("pod {} doesn't exist", pod))?;
 
-        lookups
-            .get_mut(&ns)
-            .ok_or_else(|| anyhow!("namespace {} doesn't exist", ns))?
-            .remove(&pod)
-            .ok_or_else(|| anyhow!("pod doesn't exist in namespace"))?;
+        lookups.unset(&ns, &pod)?;
 
         debug!("Removed pod");
 
@@ -254,7 +238,7 @@ impl Index {
     pub(super) fn reset_pods(
         &mut self,
         pods: Vec<k8s::Pod>,
-        lookups: &mut SharedLookupMap,
+        lookups: &mut lookup::Index,
     ) -> Result<()> {
         let mut prior_pods = self
             .namespaces
@@ -294,7 +278,7 @@ fn collect_pod_servers(
     server_rx: ServerRx,
     pod_ips: PodIps,
     kubelet_ips: KubeletIps,
-) -> (Arc<PodServers>, Arc<HashMap<u16, Lookup>>) {
+) -> (Arc<PodServers>, lookup::PodPorts) {
     let mut pod_servers = PodServers::default();
     let mut lookups = HashMap::new();
 
@@ -313,8 +297,9 @@ fn collect_pod_servers(
                     server_name: Mutex::new(None),
                 });
 
+                trace!(%port, name = ?p.name, "Adding port");
                 let name = p.name.map(k8s::polixy::server::PortName::from);
-                if let Some(name) = name.clone() {
+                if let Some(name) = name {
                     pod_servers
                         .by_name
                         .entry(name)
@@ -322,13 +307,11 @@ fn collect_pod_servers(
                         .push(pod_port.clone());
                 }
 
-                trace!(%port, ?name, "Adding port");
                 pod_servers.by_port.insert(port, pod_port);
                 lookups.insert(
                     port,
-                    Lookup {
+                    lookup::PodPort {
                         rx,
-                        name,
                         pod_ips: pod_ips.clone(),
                         kubelet_ips: kubelet_ips.clone(),
                     },

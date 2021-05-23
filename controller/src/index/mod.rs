@@ -12,7 +12,7 @@ use self::{
     node::NodeIndex,
     server::SrvIndex,
 };
-use crate::{k8s, ClientAuthz, SharedLookupMap};
+use crate::{k8s, lookup, ClientAuthz};
 use anyhow::{Context, Error};
 use std::sync::Arc;
 use tokio::{sync::watch, time};
@@ -61,7 +61,7 @@ impl Index {
         mut self,
         resources: k8s::ResourceWatches,
         ready_tx: watch::Sender<bool>,
-        mut lookups: SharedLookupMap,
+        mut lookups: lookup::Index,
     ) -> Error {
         let k8s::ResourceWatches {
             mut namespaces,

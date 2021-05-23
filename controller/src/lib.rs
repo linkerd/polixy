@@ -8,22 +8,12 @@ pub mod admin;
 pub mod grpc;
 mod index;
 mod k8s;
+mod lookup;
 
-pub use self::index::DefaultAllow;
-use dashmap::DashMap;
+pub use self::{index::DefaultAllow, lookup::Reader};
 use ipnet::IpNet;
-use std::{
-    collections::{BTreeMap, HashMap},
-    fmt,
-    net::IpAddr,
-    sync::Arc,
-};
+use std::{collections::BTreeMap, fmt, net::IpAddr, sync::Arc};
 use tokio::{sync::watch, time};
-
-#[derive(Clone, Debug)]
-pub struct LookupHandle(SharedLookupMap);
-
-type SharedLookupMap = Arc<DashMap<k8s::NsName, DashMap<k8s::PodName, Arc<HashMap<u16, Lookup>>>>>;
 
 /// Watches a server's configuration for server/authorization changes.
 type ServerRx = watch::Receiver<InboundServerConfig>;
@@ -32,14 +22,6 @@ type ServerTx = watch::Sender<InboundServerConfig>;
 /// Watches a pod port's for a new `ServerRx`.
 pub type ServerRxRx = watch::Receiver<ServerRx>;
 type ServerRxTx = watch::Sender<ServerRx>;
-
-#[derive(Clone, Debug)]
-pub struct Lookup {
-    pub name: Option<k8s::polixy::server::PortName>,
-    pub pod_ips: PodIps,
-    pub kubelet_ips: KubeletIps,
-    pub rx: ServerRxRx,
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InboundServerConfig {
@@ -97,31 +79,24 @@ pub struct PodIps(Arc<[IpAddr]>);
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct KubeletIps(Arc<[IpAddr]>);
 
-// === impl LookupHandle ===
+pub fn index(
+    watches: impl Into<k8s::ResourceWatches>,
+    ready: watch::Sender<bool>,
+    cluster_networks: Vec<ipnet::IpNet>,
+    default_mode: DefaultAllow,
+    detect_timeout: time::Duration,
+) -> (
+    lookup::Reader,
+    impl std::future::Future<Output = anyhow::Error>,
+) {
+    let (lookups, reader) = lookup::Index::pair();
 
-impl LookupHandle {
-    pub fn run(
-        watches: impl Into<k8s::ResourceWatches>,
-        ready: watch::Sender<bool>,
-        cluster_networks: Vec<ipnet::IpNet>,
-        default_mode: DefaultAllow,
-        detect_timeout: time::Duration,
-    ) -> (Self, impl std::future::Future<Output = anyhow::Error>) {
-        let lookups = SharedLookupMap::default();
+    // Watches Nodes, Pods, Servers, and Authorizations to update the lookup map
+    // with an entry for each linkerd-injected pod.
+    let idx = index::Index::new(cluster_networks, default_mode, detect_timeout);
+    let task = idx.index(watches.into(), ready, lookups);
 
-        // Watches Nodes, Pods, Servers, and Authorizations to update the lookup map
-        // with an entry for each linkerd-injected pod.
-        let idx = index::Index::new(cluster_networks, default_mode, detect_timeout);
-
-        (
-            Self(lookups.clone()),
-            idx.index(watches.into(), ready, lookups),
-        )
-    }
-
-    pub fn lookup(&self, ns: &k8s::NsName, name: &k8s::PodName, port: u16) -> Option<Lookup> {
-        self.0.get(ns)?.get(name)?.get(&port).cloned()
-    }
+    (reader, task)
 }
 
 // === impl Identity ===

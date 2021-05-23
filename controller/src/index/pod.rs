@@ -1,7 +1,7 @@
 use super::{DefaultAllow, Index, Namespace, SrvIndex};
 use crate::{
     k8s::{self, polixy, ResourceExt},
-    KubeletIps, Lookup, PodIps, ServerRx, ServerRxTx,
+    KubeletIps, Lookup, PodIps, ServerRx, ServerRxTx, SharedLookupMap,
 };
 use anyhow::{anyhow, bail, Result};
 use parking_lot::Mutex;
@@ -124,13 +124,13 @@ impl PodServers {
 impl Index {
     /// Builds a `Pod`, linking it with servers and nodes.
     #[instrument(
-        skip(self, pod),
+        skip(self, pod, lookups),
         fields(
             ns = ?pod.metadata.namespace,
             name = ?pod.metadata.name,
         )
     )]
-    pub(super) fn apply_pod(&mut self, pod: k8s::Pod) -> Result<()> {
+    pub(super) fn apply_pod(&mut self, pod: k8s::Pod, lookups: &mut SharedLookupMap) -> Result<()> {
         let ns_name = k8s::NsName::from_pod(&pod);
         let Namespace {
             default_allow,
@@ -164,7 +164,7 @@ impl Index {
                 let pod_ips = mk_pod_ips(status)?;
 
                 let default_rx = self.default_allows.get(default_allow);
-                let (pod_servers, lookups) =
+                let (pod_servers, pod_lookups) =
                     collect_pod_servers(spec, default_rx.clone(), pod_ips, kubelet_ips);
 
                 let pod = Pod {
@@ -174,7 +174,7 @@ impl Index {
                 };
                 pod.link_servers(&servers);
 
-                if self.lookups.insert((ns_name, pod_name), lookups).is_some() {
+                if lookups.insert((ns_name, pod_name), pod_lookups).is_some() {
                     unreachable!("pod must not exist in lookups");
                 }
 
@@ -184,7 +184,7 @@ impl Index {
             HashEntry::Occupied(mut pod_entry) => {
                 // Note that the default-allow annotation may not be changed at runtime.
                 debug_assert!(
-                    self.lookups.contains_key(&(ns_name, pod_name)),
+                    lookups.contains_key(&(ns_name, pod_name)),
                     "pod must exist in lookups"
                 );
 
@@ -206,13 +206,22 @@ impl Index {
             name = ?pod.metadata.name,
         )
     )]
-    pub(super) fn delete_pod(&mut self, pod: k8s::Pod) -> Result<()> {
+    pub(super) fn delete_pod(
+        &mut self,
+        pod: k8s::Pod,
+        lookups: &mut SharedLookupMap,
+    ) -> Result<()> {
         let ns_name = k8s::NsName::from_pod(&pod);
         let pod_name = k8s::PodName::from_pod(&pod);
-        self.rm_pod(ns_name, pod_name)
+        self.rm_pod(ns_name, pod_name, lookups)
     }
 
-    fn rm_pod(&mut self, ns: k8s::NsName, pod: k8s::PodName) -> Result<()> {
+    fn rm_pod(
+        &mut self,
+        ns: k8s::NsName,
+        pod: k8s::PodName,
+        lookups: &mut SharedLookupMap,
+    ) -> Result<()> {
         self.namespaces
             .index
             .get_mut(&ns)
@@ -222,7 +231,7 @@ impl Index {
             .remove(&pod)
             .ok_or_else(|| anyhow!("pod {} doesn't exist", pod))?;
 
-        self.lookups
+        lookups
             .remove(&(ns, pod))
             .ok_or_else(|| anyhow!("pod doesn't exist in namespace"))?;
 
@@ -232,7 +241,11 @@ impl Index {
     }
 
     #[instrument(skip(self, pods))]
-    pub(super) fn reset_pods(&mut self, pods: Vec<k8s::Pod>) -> Result<()> {
+    pub(super) fn reset_pods(
+        &mut self,
+        pods: Vec<k8s::Pod>,
+        lookups: &mut SharedLookupMap,
+    ) -> Result<()> {
         let mut prior_pods = self
             .namespaces
             .iter()
@@ -249,14 +262,14 @@ impl Index {
                 ns.remove(pod.name().as_str());
             }
 
-            if let Err(error) = self.apply_pod(pod) {
+            if let Err(error) = self.apply_pod(pod, lookups) {
                 result = Err(error);
             }
         }
 
         for (ns, pods) in prior_pods.into_iter() {
             for pod in pods.into_iter() {
-                if let Err(error) = self.rm_pod(ns.clone(), pod) {
+                if let Err(error) = self.rm_pod(ns.clone(), pod, lookups) {
                     result = Err(error);
                 }
             }

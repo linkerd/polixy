@@ -19,10 +19,6 @@ use tokio::{sync::watch, time};
 use tracing::{debug, instrument, warn};
 
 pub struct Index {
-    /// A shared map containing watches for all pods.  API clients simply
-    /// retrieve watches from this pre-populated map.
-    lookups: SharedLookupMap,
-
     /// Holds per-namespace pod/server/authorization indexes.
     namespaces: NamespaceIndex,
 
@@ -43,13 +39,11 @@ enum ServerSelector {
 
 impl Index {
     pub(crate) fn new(
-        lookups: SharedLookupMap,
         cluster_nets: Vec<ipnet::IpNet>,
         default_allow: DefaultAllow,
         detect_timeout: time::Duration,
     ) -> Self {
         Self {
-            lookups,
             namespaces: NamespaceIndex::new(default_allow),
             nodes: NodeIndex::default(),
             default_allows: DefaultAllows::new(cluster_nets, detect_timeout),
@@ -67,6 +61,7 @@ impl Index {
         mut self,
         resources: k8s::ResourceWatches,
         ready_tx: watch::Sender<bool>,
+        mut lookups: SharedLookupMap,
     ) -> Error {
         let k8s::ResourceWatches {
             mut namespaces,
@@ -94,9 +89,9 @@ impl Index {
                 },
 
                 up = pods.recv() => match up {
-                    k8s::Event::Applied(pod) => self.apply_pod(pod).context("applying a pod"),
-                    k8s::Event::Deleted(pod) => self.delete_pod(pod).context("deleting a pod"),
-                    k8s::Event::Restarted(pods) => self.reset_pods(pods).context("resetting pods"),
+                    k8s::Event::Applied(pod) => self.apply_pod(pod, &mut lookups).context("applying a pod"),
+                    k8s::Event::Deleted(pod) => self.delete_pod(pod, &mut lookups).context("deleting a pod"),
+                    k8s::Event::Restarted(pods) => self.reset_pods(pods, &mut lookups).context("resetting pods"),
                 },
 
                 up = servers.recv() => match up {

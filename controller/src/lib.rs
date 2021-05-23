@@ -111,14 +111,12 @@ impl LookupHandle {
 
         // Watches Nodes, Pods, Servers, and Authorizations to update the lookup map
         // with an entry for each linkerd-injected pod.
-        let idx = index::Index::new(
-            lookups.clone(),
-            cluster_networks,
-            default_mode,
-            detect_timeout,
-        );
+        let idx = index::Index::new(cluster_networks, default_mode, detect_timeout);
 
-        (Self(lookups), idx.index(watches.into(), ready))
+        (
+            Self(lookups.clone()),
+            idx.index(watches.into(), ready, lookups),
+        )
     }
 
     pub fn lookup(&self, ns: k8s::NsName, name: k8s::PodName, port: u16) -> Option<Lookup> {

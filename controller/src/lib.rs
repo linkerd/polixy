@@ -23,7 +23,7 @@ use tokio::{sync::watch, time};
 #[derive(Clone, Debug)]
 pub struct LookupHandle(SharedLookupMap);
 
-type SharedLookupMap = Arc<DashMap<(k8s::NsName, k8s::PodName), Arc<HashMap<u16, Lookup>>>>;
+type SharedLookupMap = Arc<DashMap<k8s::NsName, DashMap<k8s::PodName, Arc<HashMap<u16, Lookup>>>>>;
 
 /// Watches a server's configuration for server/authorization changes.
 type ServerRx = watch::Receiver<InboundServerConfig>;
@@ -119,8 +119,8 @@ impl LookupHandle {
         )
     }
 
-    pub fn lookup(&self, ns: k8s::NsName, name: k8s::PodName, port: u16) -> Option<Lookup> {
-        self.0.get(&(ns, name))?.get(&port).cloned()
+    pub fn lookup(&self, ns: &k8s::NsName, name: &k8s::PodName, port: u16) -> Option<Lookup> {
+        self.0.get(ns)?.get(name)?.get(&port).cloned()
     }
 }
 

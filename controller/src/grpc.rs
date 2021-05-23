@@ -73,14 +73,9 @@ impl Server {
 
         // Lookup the configuration for an inbound port. If the pod hasn't (yet)
         // been indexed, return a Not Found error.
-        self.lookup
-            .lookup(ns.clone(), name.clone(), port)
-            .ok_or_else(|| {
-                tonic::Status::not_found(format!(
-                    "unknown pod ns={} name={} port={}",
-                    ns, name, port
-                ))
-            })
+        self.lookup.lookup(&ns, &name, port).ok_or_else(|| {
+            tonic::Status::not_found(format!("unknown pod ns={} name={} port={}", ns, name, port))
+        })
     }
 }
 

@@ -174,7 +174,12 @@ impl Index {
                 };
                 pod.link_servers(&servers);
 
-                if lookups.insert((ns_name, pod_name), pod_lookups).is_some() {
+                if lookups
+                    .entry(ns_name)
+                    .or_default()
+                    .insert(pod_name, pod_lookups)
+                    .is_some()
+                {
                     unreachable!("pod must not exist in lookups");
                 }
 
@@ -184,7 +189,10 @@ impl Index {
             HashEntry::Occupied(mut pod_entry) => {
                 // Note that the default-allow annotation may not be changed at runtime.
                 debug_assert!(
-                    lookups.contains_key(&(ns_name, pod_name)),
+                    lookups
+                        .get(&ns_name)
+                        .map(|ns| ns.contains_key(&pod_name))
+                        .unwrap_or(false),
                     "pod must exist in lookups"
                 );
 
@@ -232,7 +240,9 @@ impl Index {
             .ok_or_else(|| anyhow!("pod {} doesn't exist", pod))?;
 
         lookups
-            .remove(&(ns, pod))
+            .get_mut(&ns)
+            .ok_or_else(|| anyhow!("namespace {} doesn't exist", ns))?
+            .remove(&pod)
             .ok_or_else(|| anyhow!("pod doesn't exist in namespace"))?;
 
         debug!("Removed pod");

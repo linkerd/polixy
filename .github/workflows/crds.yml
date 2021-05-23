@@ -1,0 +1,65 @@
+name: Custom Resource Definitions
+
+on:
+  pull_request: {}
+  push:
+    branches:
+      - "main"
+
+env:
+  K3D_VERSION: v4.4.4
+  KUBECTL_VERSION: v1.21.1
+
+jobs:
+  test:
+    name: CRD Tests
+    permissions:
+      contents: read
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@5a4ac9002d0be2fb38bd78e4b4dbde5606d7042f # v2.3.4
+
+      - run: mkdir -p ./target/bin
+
+      - name: Fetch kubectl ${{ env.KUBECTL_VERSION }}
+        run: |
+          # Fetch kubectl
+          curl -vsL --retry 2 \
+            --output ./target/bin/kubectl \
+            "https://storage.googleapis.com/kubernetes-release/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          chmod 755 ./target/bin/kubectl
+
+      - name: Fetch k3d ${{ env.K3D_VERSION }}
+        run: |
+          # Fetch k3d
+          curl -vsL --retry 2 \
+            --output ./target/bin/k3d \
+            "https://github.com/rancher/k3d/releases/download/${K3D_VERSION}/k3d-linux-amd64"
+          chmod 755 ./target/bin/k3d
+
+      - name: Create cluster
+        run: |
+          ./target/bin/k3d cluster create
+          ./target/bin/kubectl cluster-info
+          ./target/bin/kubectl version
+
+      - name: Apply CRDs
+        run: ./target/bin/kubectl apply -f ./k8s/crds
+
+      - name: Create ns/emojivoto
+        run: ./target/bin/kubectl create ns emojivoto
+
+      - name: Apply srv/prom
+        run: ./target/bin/kubectl apply -f ./k8s/emojivoto/prom-server.yml
+
+      - name: Apply srv/emoji-grpc
+        run: ./target/bin/kubectl apply -f ./k8s/emojivoto/emoji-server.yml
+
+      - name: Apply srv/voting-grpc
+        run: ./target/bin/kubectl apply -f ./k8s/emojivoto/voting-server.yml
+
+      - name: Apply srv/web-grpc
+        run: ./target/bin/kubectl apply -f ./k8s/emojivoto/web-server.yml

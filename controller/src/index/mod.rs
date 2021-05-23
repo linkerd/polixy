@@ -61,7 +61,7 @@ impl Index {
         mut self,
         resources: k8s::ResourceWatches,
         ready_tx: watch::Sender<bool>,
-        mut lookups: lookup::Index,
+        mut lookups: lookup::Writer,
     ) -> Error {
         let k8s::ResourceWatches {
             mut namespaces,

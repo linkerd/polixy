@@ -8,9 +8,9 @@ pub mod admin;
 pub mod grpc;
 mod index;
 mod k8s;
-mod lookup;
+pub mod lookup;
 
-pub use self::{index::DefaultAllow, lookup::Reader};
+pub use self::index::DefaultAllow;
 use ipnet::IpNet;
 use std::{collections::BTreeMap, fmt, net::IpAddr, sync::Arc};
 use tokio::{sync::watch, time};
@@ -89,12 +89,12 @@ pub fn index(
     lookup::Reader,
     impl std::future::Future<Output = anyhow::Error>,
 ) {
-    let (lookups, reader) = lookup::Index::pair();
+    let (writer, reader) = lookup::pair();
 
     // Watches Nodes, Pods, Servers, and Authorizations to update the lookup map
     // with an entry for each linkerd-injected pod.
     let idx = index::Index::new(cluster_networks, default_mode, detect_timeout);
-    let task = idx.index(watches.into(), ready, lookups);
+    let task = idx.index(watches.into(), ready, writer);
 
     (reader, task)
 }

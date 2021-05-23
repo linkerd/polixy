@@ -4,20 +4,29 @@ use dashmap::{mapref::entry::Entry, DashMap};
 use std::{collections::HashMap, sync::Arc};
 
 #[derive(Debug, Default)]
-pub(crate) struct Index(Map);
+pub(crate) struct Writer(ByNs);
 
 #[derive(Clone, Debug)]
-pub struct Reader(Map);
+pub struct Reader(ByNs);
 
-type Map = Arc<DashMap<String, DashMap<String, PodPorts>>>;
+type ByNs = Arc<DashMap<String, ByPod>>;
+type ByPod = DashMap<String, ByPort>;
 
-pub type PodPorts = Box<HashMap<u16, PodPort>>;
+// Boxed to enforce immutability.
+type ByPort = Box<HashMap<u16, PodPort>>;
 
 #[derive(Clone, Debug)]
 pub struct PodPort {
     pub kubelet_ips: KubeletIps,
     pub pod_ips: PodIps,
     pub rx: ServerRxRx,
+}
+
+pub(crate) fn pair() -> (Writer, Reader) {
+    let by_ns = ByNs::default();
+    let w = Writer(by_ns.clone());
+    let r = Reader(by_ns);
+    (w, r)
 }
 
 // === impl Reader ===
@@ -28,15 +37,9 @@ impl Reader {
     }
 }
 
-// === impl Index ===
+// === impl Writer ===
 
-impl Index {
-    pub(crate) fn pair() -> (Self, Reader) {
-        let map = Map::default();
-        let reader = Reader(map.clone());
-        (Self(map), reader)
-    }
-
+impl Writer {
     pub(crate) fn contains(&self, ns: impl AsRef<str>, pod: impl AsRef<str>) -> bool {
         self.0
             .get(ns.as_ref())
@@ -48,7 +51,7 @@ impl Index {
         &mut self,
         ns: impl ToString,
         pod: impl ToString,
-        ports: impl Into<PodPorts>,
+        ports: impl IntoIterator<Item = (u16, PodPort)>,
     ) -> Result<()> {
         match self
             .0
@@ -57,7 +60,7 @@ impl Index {
             .entry(pod.to_string())
         {
             Entry::Vacant(entry) => {
-                entry.insert(ports.into());
+                entry.insert(ports.into_iter().collect::<HashMap<_, _>>().into());
                 Ok(())
             }
             Entry::Occupied(_) => Err(anyhow!(
@@ -68,7 +71,7 @@ impl Index {
         }
     }
 
-    pub(crate) fn unset(&mut self, ns: impl AsRef<str>, pod: impl AsRef<str>) -> Result<PodPorts> {
+    pub(crate) fn unset(&mut self, ns: impl AsRef<str>, pod: impl AsRef<str>) -> Result<ByPort> {
         let pods = self
             .0
             .get_mut(ns.as_ref())

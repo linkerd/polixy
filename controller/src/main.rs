@@ -84,7 +84,7 @@ async fn main() -> Result<()> {
 #[instrument(skip(handle, drain, identity_domain))]
 async fn grpc(
     addr: SocketAddr,
-    handle: polixy_controller::Reader,
+    handle: polixy_controller::lookup::Reader,
     drain: linkerd_drain::Watch,
     identity_domain: String,
 ) -> Result<()> {

@@ -130,7 +130,7 @@ impl Index {
             name = ?pod.metadata.name,
         )
     )]
-    pub(super) fn apply_pod(&mut self, pod: k8s::Pod, lookups: &mut lookup::Index) -> Result<()> {
+    pub(super) fn apply_pod(&mut self, pod: k8s::Pod, lookups: &mut lookup::Writer) -> Result<()> {
         let ns_name = k8s::NsName::from_pod(&pod);
         let Namespace {
             default_allow,
@@ -206,7 +206,7 @@ impl Index {
             name = ?pod.metadata.name,
         )
     )]
-    pub(super) fn delete_pod(&mut self, pod: k8s::Pod, lookups: &mut lookup::Index) -> Result<()> {
+    pub(super) fn delete_pod(&mut self, pod: k8s::Pod, lookups: &mut lookup::Writer) -> Result<()> {
         let ns_name = k8s::NsName::from_pod(&pod);
         let pod_name = k8s::PodName::from_pod(&pod);
         self.rm_pod(ns_name, pod_name, lookups)
@@ -216,7 +216,7 @@ impl Index {
         &mut self,
         ns: k8s::NsName,
         pod: k8s::PodName,
-        lookups: &mut lookup::Index,
+        lookups: &mut lookup::Writer,
     ) -> Result<()> {
         self.namespaces
             .index
@@ -238,7 +238,7 @@ impl Index {
     pub(super) fn reset_pods(
         &mut self,
         pods: Vec<k8s::Pod>,
-        lookups: &mut lookup::Index,
+        lookups: &mut lookup::Writer,
     ) -> Result<()> {
         let mut prior_pods = self
             .namespaces
@@ -278,7 +278,7 @@ fn collect_pod_servers(
     server_rx: ServerRx,
     pod_ips: PodIps,
     kubelet_ips: KubeletIps,
-) -> (Arc<PodServers>, lookup::PodPorts) {
+) -> (Arc<PodServers>, HashMap<u16, lookup::PodPort>) {
     let mut servers = PodServers::default();
     let mut lookups = HashMap::new();
 
@@ -319,7 +319,7 @@ fn collect_pod_servers(
         }
     }
 
-    (servers.into(), lookups.into())
+    (servers.into(), lookups)
 }
 
 fn mk_pod_ips(status: k8s::PodStatus) -> Result<PodIps> {

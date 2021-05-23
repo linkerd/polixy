@@ -42,13 +42,15 @@ jobs:
 
       - name: Create cluster
         run: |
-          ./target/bin/k3d cluster create
+          # We really just need a k8s API server without any runtime facilities.
+          ./target/bin/k3d cluster create \
+              --k3s-server-arg '--disable=coredns,servicelb,traefik,local-storage,metrics-server'
           ./target/bin/kubectl cluster-info
           ./target/bin/kubectl version
 
       - name: Apply CRDs
         run: ./target/bin/kubectl apply -f ./k8s/crds
-
+c
       - name: Create ns/emojivoto
         run: ./target/bin/kubectl create ns emojivoto
 
@@ -61,5 +63,5 @@ jobs:
       - name: Apply srv/voting-grpc
         run: ./target/bin/kubectl apply -f ./k8s/emojivoto/voting-server.yml
 
-      - name: Apply srv/web-grpc
+      - name: Apply srv/web-http
         run: ./target/bin/kubectl apply -f ./k8s/emojivoto/web-server.yml

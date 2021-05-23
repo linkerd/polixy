@@ -24,15 +24,12 @@ pub struct ServerSpec {
     pub proxy_protocol: Option<ProxyProtocol>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize, Serialize, JsonSchema)]
-pub struct PortName(String);
-
 /// References a pod spec's port by name or number.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize, Serialize, JsonSchema)]
 #[serde(untagged)]
 pub enum Port {
     Number(u16),
-    Name(PortName),
+    Name(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
@@ -66,26 +63,6 @@ impl std::borrow::Borrow<str> for Name {
 }
 
 impl fmt::Display for Name {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-// === PortName ===
-
-impl<T: Into<String>> From<T> for PortName {
-    fn from(p: T) -> Self {
-        Self(p.into())
-    }
-}
-
-impl std::borrow::Borrow<str> for PortName {
-    fn borrow(&self) -> &str {
-        self.0.as_ref()
-    }
-}
-
-impl fmt::Display for PortName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
     }

@@ -30,7 +30,7 @@ struct Pod {
 #[derive(Debug, Default)]
 struct PodServers {
     by_port: HashMap<u16, Arc<PodServer>>,
-    by_name: HashMap<polixy::server::PortName, Vec<Arc<PodServer>>>,
+    by_name: HashMap<String, Vec<Arc<PodServer>>>,
 }
 
 #[derive(Debug)]
@@ -279,14 +279,14 @@ fn collect_pod_servers(
     pod_ips: PodIps,
     kubelet_ips: KubeletIps,
 ) -> (Arc<PodServers>, lookup::PodPorts) {
-    let mut pod_servers = PodServers::default();
+    let mut servers = PodServers::default();
     let mut lookups = HashMap::new();
 
     for container in spec.containers.into_iter() {
         for p in container.ports.into_iter() {
             if p.protocol.map(|p| p == "TCP").unwrap_or(true) {
                 let port = p.container_port as u16;
-                if pod_servers.by_port.contains_key(&port) {
+                if servers.by_port.contains_key(&port) {
                     debug!(port, "Port duplicated");
                     continue;
                 }
@@ -298,16 +298,15 @@ fn collect_pod_servers(
                 });
 
                 trace!(%port, name = ?p.name, "Adding port");
-                let name = p.name.map(k8s::polixy::server::PortName::from);
-                if let Some(name) = name {
-                    pod_servers
+                if let Some(name) = p.name {
+                    servers
                         .by_name
                         .entry(name)
                         .or_default()
                         .push(pod_port.clone());
                 }
 
-                pod_servers.by_port.insert(port, pod_port);
+                servers.by_port.insert(port, pod_port);
                 lookups.insert(
                     port,
                     lookup::PodPort {
@@ -320,7 +319,7 @@ fn collect_pod_servers(
         }
     }
 
-    (pod_servers.into(), lookups.into())
+    (servers.into(), lookups.into())
 }
 
 fn mk_pod_ips(status: k8s::PodStatus) -> Result<PodIps> {

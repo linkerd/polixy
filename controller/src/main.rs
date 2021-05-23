@@ -3,14 +3,15 @@ use futures::{future, prelude::*};
 use polixy_controller::{DefaultAllow, LookupHandle};
 use std::net::SocketAddr;
 use structopt::StructOpt;
-use tokio::time;
+use tokio::{sync::watch, time};
 use tracing::{debug, info, instrument};
 
 #[derive(Debug, StructOpt)]
 #[structopt(name = "polixy", about = "A policy resource prototype")]
 struct Args {
-    // #[structopt(short, long, default_value = "0.0.0.0:8080")]
-    // admin_addr: SocketAddr,
+    #[structopt(short, long, default_value = "0.0.0.0:8080")]
+    admin_addr: SocketAddr,
+
     #[structopt(short, long, default_value = "0.0.0.0:8090")]
     grpc_addr: SocketAddr,
 
@@ -32,7 +33,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let Args {
-        // admin_addr: _,
+        admin_addr,
         grpc_addr,
         identity_domain,
         cluster_networks,
@@ -45,25 +46,38 @@ async fn main() -> Result<()> {
         .await
         .context("failed to initialize kubernetes client")?;
 
+    let (ready_tx, ready_rx) = watch::channel(false);
+    let admin = tokio::spawn(polixy_controller::admin::serve(admin_addr, ready_rx));
+
     const DETECT_TIMEOUT: time::Duration = time::Duration::from_secs(10);
-    let (handle, index_task) =
-        LookupHandle::run(client, cluster_networks, default_allow, DETECT_TIMEOUT);
+    let (handle, index_task) = LookupHandle::run(
+        client,
+        ready_tx,
+        cluster_networks,
+        default_allow,
+        DETECT_TIMEOUT,
+    );
     let index_task = tokio::spawn(index_task);
 
     let grpc = tokio::spawn(grpc(grpc_addr, handle, drain_rx, identity_domain));
 
     tokio::select! {
-        _ = shutdown(drain_tx) => Ok(()),
-        res = grpc => match res {
-            Ok(res) => res.context("grpc server failed"),
-            Err(e) if e.is_cancelled() => Ok(()),
-            Err(e) => Err(e).context("grpc server panicked"),
-        },
-        res = index_task => match res {
-            Ok(e) => Err(e).context("indexer failed"),
-            Err(e) if e.is_cancelled() => Ok(()),
-            Err(e) => Err(e).context("indexer panicked"),
-        },
+       _ = shutdown(drain_tx) => Ok(()),
+       res = grpc => match res {
+           Ok(res) => res.context("grpc server failed"),
+           Err(e) if e.is_cancelled() => Ok(()),
+           Err(e) => Err(e).context("grpc server panicked"),
+       },
+       res = index_task => match res {
+           Ok(e) => Err(e).context("indexer failed"),
+           Err(e) if e.is_cancelled() => Ok(()),
+           Err(e) => Err(e).context("indexer panicked"),
+       },
+       res = admin => match res {
+           Ok(res) => res.context("admin server failed"),
+           Err(e) if e.is_cancelled() => Ok(()),
+           Err(e) => Err(e).context("admin server panicked"),
+       },
     }
 }
 

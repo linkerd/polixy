@@ -15,8 +15,8 @@ use self::{
 use crate::{k8s, ClientAuthz, SharedLookupMap};
 use anyhow::{Context, Error};
 use std::sync::Arc;
-use tokio::time;
-use tracing::{instrument, warn};
+use tokio::{sync::watch, time};
+use tracing::{debug, instrument, warn};
 
 pub struct Index {
     /// A shared map containing watches for all pods.  API clients simply
@@ -62,8 +62,12 @@ impl Index {
     /// worry about concurrent access for the internal indexing structures.  All updates are
     /// published to the shared `lookups` map after indexing occurs; but the indexing task is solely
     /// responsible for mutating it. The associated `Handle` is used for reads against this.
-    #[instrument(skip(self, resources), fields(result))]
-    pub(crate) async fn index(mut self, resources: k8s::ResourceWatches) -> Error {
+    #[instrument(skip(self, resources, ready_tx), fields(result))]
+    pub(crate) async fn index(
+        mut self,
+        resources: k8s::ResourceWatches,
+        ready_tx: watch::Sender<bool>,
+    ) -> Error {
         let k8s::ResourceWatches {
             mut namespaces,
             mut nodes,
@@ -72,6 +76,7 @@ impl Index {
             mut authorizations,
         } = resources;
 
+        let mut ready = false;
         loop {
             let res = tokio::select! {
                 // Track the kubelet IPs for all nodes.
@@ -112,8 +117,21 @@ impl Index {
                     k8s::Event::Restarted(authzs) => self.reset_authzs(authzs).context("resetting authorizations"),
                 },
             };
+
             if let Err(error) = res {
                 warn!(?error);
+            }
+
+            // Notify the readiness watch if readiness changes.
+            let ready_now = nodes.ready()
+                && namespaces.ready()
+                && pods.ready()
+                && servers.ready()
+                && authorizations.ready();
+            if ready != ready_now {
+                let _ = ready_tx.send(ready_now);
+                ready = ready_now;
+                debug!(%ready);
             }
         }
     }

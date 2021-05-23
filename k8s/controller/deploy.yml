@@ -41,18 +41,33 @@ spec:
       serviceAccountName: controller
       containers:
         - name: main
-          image: ghcr.io/olix0r/polixy-controller:v0
+          image: ghcr.io/olix0r/polixy-controller:v1
           env:
             - name: RUST_LOG
               value: polixy=trace,info
           args:
-            - --port=8090
+            - --admin-addr=0.0.0.0:8080
+            - --grpc-addr=0.0.0.0:8090
             - --identity-domain=cluster.local
             - --cluster-networks=10.42.0.0/16
             - --default-allow=all-authenticated
           ports:
+            - containerPort: 8080
+              name: admin-http
             - containerPort: 8090
               name: grpc
+          readinessProbe:
+            httpGet:
+              port: admin-http
+              path: /ready
+          livenessProbe:
+            # Allow the controller to reman disconnected from the k8s API for 2 minutes before
+            # failing the container.
+            periodSeconds: 10
+            failureThreshold: 12
+            httpGet:
+              port: admin-http
+              path: /ready
           resources:
             requests:
               cpu: 10m

@@ -4,6 +4,7 @@
 //! should admit connections into a Pod. It watches cluster resources (Namespaces, Nodes, Pods,
 //! Servers, and ServerAuthorizations).
 
+pub mod admin;
 pub mod grpc;
 mod index;
 mod k8s;
@@ -101,6 +102,7 @@ pub struct KubeletIps(Arc<[IpAddr]>);
 impl LookupHandle {
     pub fn run(
         watches: impl Into<k8s::ResourceWatches>,
+        ready: watch::Sender<bool>,
         cluster_networks: Vec<ipnet::IpNet>,
         default_mode: DefaultAllow,
         detect_timeout: time::Duration,
@@ -116,7 +118,7 @@ impl LookupHandle {
             detect_timeout,
         );
 
-        (Self(lookups), idx.index(watches.into()))
+        (Self(lookups), idx.index(watches.into(), ready))
     }
 
     pub fn lookup(&self, ns: k8s::NsName, name: k8s::PodName, port: u16) -> Option<Lookup> {

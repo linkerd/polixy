@@ -655,8 +655,8 @@ dependencies = [
 
 [[package]]
 name = "kube"
-version = "0.54.0"
-source = "git+https://github.com/olix0r/kube-rs?branch=ver/api-bump#d3af80a0a1e491abe1f2e3de9f6056b0676a51e9"
+version = "0.55.0"
+source = "git+https://github.com/olix0r/kube-rs?branch=ver/api-bump#7b25fa2f4b80e88368a606fc012f1a177d7bd2dc"
 dependencies = [
  "base64",
  "bytes",
@@ -690,8 +690,8 @@ dependencies = [
 
 [[package]]
 name = "kube-core"
-version = "0.54.0"
-source = "git+https://github.com/olix0r/kube-rs?branch=ver/api-bump#d3af80a0a1e491abe1f2e3de9f6056b0676a51e9"
+version = "0.55.0"
+source = "git+https://github.com/olix0r/kube-rs?branch=ver/api-bump#7b25fa2f4b80e88368a606fc012f1a177d7bd2dc"
 dependencies = [
  "http",
  "k8s-openapi",
@@ -703,8 +703,8 @@ dependencies = [
 
 [[package]]
 name = "kube-derive"
-version = "0.54.0"
-source = "git+https://github.com/olix0r/kube-rs?branch=ver/api-bump#d3af80a0a1e491abe1f2e3de9f6056b0676a51e9"
+version = "0.55.0"
+source = "git+https://github.com/olix0r/kube-rs?branch=ver/api-bump#7b25fa2f4b80e88368a606fc012f1a177d7bd2dc"
 dependencies = [
  "darling",
  "proc-macro2",
@@ -715,8 +715,8 @@ dependencies = [
 
 [[package]]
 name = "kube-runtime"
-version = "0.54.0"
-source = "git+https://github.com/olix0r/kube-rs?branch=ver/api-bump#d3af80a0a1e491abe1f2e3de9f6056b0676a51e9"
+version = "0.55.0"
+source = "git+https://github.com/olix0r/kube-rs?branch=ver/api-bump#7b25fa2f4b80e88368a606fc012f1a177d7bd2dc"
 dependencies = [
  "dashmap",
  "derivative",

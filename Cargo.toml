@@ -4,3 +4,5 @@ members = ["client", "controller", "grpc"]
 
 [patch.crates-io]
 k8s-openapi = { git = "https://github.com/Arnavion/k8s-openapi" }
+kube = { git = "https://github.com/olix0r/kube-rs", branch = "ver/api-bump" }
+kube-runtime = { git = "https://github.com/olix0r/kube-rs", branch = "ver/api-bump" }

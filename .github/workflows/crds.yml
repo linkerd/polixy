@@ -44,7 +44,9 @@ jobs:
         run: |
           # We really just need a k8s API server without any runtime facilities.
           ./target/bin/k3d cluster create \
-              --k3s-server-arg '--disable=coredns,servicelb,traefik,local-storage,metrics-server'
+              --k3s-server-arg '--disable=coredns,servicelb,traefik,local-storage,metrics-server' \
+              --no-hostip --no-lb
+
           ./target/bin/kubectl cluster-info
           ./target/bin/kubectl version
 

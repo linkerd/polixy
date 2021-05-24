@@ -1,4 +1,4 @@
-use super::{DefaultAllow, Index, Namespace, SrvIndex};
+use super::{DefaultAllow, Index, Namespace, NodeIndex, SrvIndex};
 use crate::{
     k8s::{self, polixy, ResourceExt},
     lookup, KubeletIps, PodIps, ServerRx, ServerRxTx,
@@ -22,101 +22,21 @@ pub(super) struct PodIndex {
 
 #[derive(Debug)]
 struct Pod {
-    servers: Arc<PodServers>,
+    ports: Arc<PortIndex>,
     labels: k8s::Labels,
-    default_rx: ServerRx,
+    default_allow_rx: ServerRx,
 }
 
 #[derive(Debug, Default)]
-struct PodServers {
-    by_port: HashMap<u16, Arc<PodServer>>,
-    by_name: HashMap<String, Vec<Arc<PodServer>>>,
+struct PortIndex {
+    by_port: HashMap<u16, Arc<ServerTx>>,
+    by_name: HashMap<String, Vec<Arc<ServerTx>>>,
 }
 
 #[derive(Debug)]
-struct PodServer {
+struct ServerTx {
     server_name: Mutex<Option<polixy::server::Name>>,
     tx: ServerRxTx,
-}
-
-// === impl PodIndex ===
-
-impl PodIndex {
-    pub(super) fn link_servers(&self, servers: &SrvIndex) {
-        for pod in self.index.values() {
-            pod.link_servers(&servers)
-        }
-    }
-
-    pub fn reset_server<N>(&self, name: &N)
-    where
-        k8s::polixy::server::Name: Borrow<N>,
-        N: Hash + Eq + ?Sized,
-    {
-        for (pod_name, pod) in self.index.iter() {
-            let rx = pod.default_rx.clone();
-            for (port_num, port) in pod.servers.by_port.iter() {
-                let mut sn = port.server_name.lock();
-                if sn.as_ref().map(|n| n.borrow()) == Some(name) {
-                    debug!(pod = %pod_name, port = %port_num, "Removing server from pod");
-                    *sn = None;
-                    port.tx
-                        .send(rx.clone())
-                        .expect("pod config receiver must still be held");
-                } else {
-                    trace!(pod = %pod_name, port = %port_num, server = ?sn, "Server does not match");
-                }
-            }
-        }
-    }
-}
-
-// === impl Pod ===
-
-impl Pod {
-    pub fn link_servers(&self, servers: &SrvIndex) {
-        for (name, port, rx) in servers.iter_matching(self.labels.clone()) {
-            for port in self.servers.collect_port(&port).into_iter() {
-                let mut sn = port.server_name.lock();
-                if let Some(sn) = sn.as_ref() {
-                    if sn != name {
-                        // TODO handle conflicts differently?
-                        tracing::warn!("Pod port matches multiple servers: {} and {}", sn, name);
-                        debug_assert!(false);
-                        continue;
-                    }
-                }
-                *sn = Some(name.clone());
-
-                port.tx
-                    .send(rx.clone())
-                    .expect("pod config receiver must be set");
-                debug!(server = %name, "Pod server updated");
-            }
-        }
-    }
-}
-
-// === impl PodServers ===
-
-impl PodServers {
-    fn collect_port(&self, port_match: &polixy::server::Port) -> Vec<Arc<PodServer>> {
-        match port_match {
-            polixy::server::Port::Number(ref port) => self
-                .by_port
-                .get(port)
-                .into_iter()
-                .cloned()
-                .collect::<Vec<_>>(),
-            polixy::server::Port::Name(ref name) => self
-                .by_name
-                .get(name)
-                .into_iter()
-                .flat_map(|p| p.iter())
-                .cloned()
-                .collect::<Vec<_>>(),
-        }
-    }
 }
 
 // === impl Index ===
@@ -131,72 +51,19 @@ impl Index {
         )
     )]
     pub(super) fn apply_pod(&mut self, pod: k8s::Pod, lookups: &mut lookup::Writer) -> Result<()> {
-        let ns_name = k8s::NsName::from_pod(&pod);
         let Namespace {
             default_allow,
             ref mut pods,
             ref mut servers,
             ..
-        } = self.namespaces.get_or_default(ns_name.clone());
+        } = self.namespaces.get_or_default(k8s::NsName::from_pod(&pod));
 
-        let pod_name = k8s::PodName::from_pod(&pod);
-        match pods.index.entry(pod_name.clone()) {
-            HashEntry::Vacant(pod_entry) => {
-                let default_allow = match DefaultAllow::from_annotation(&pod.metadata) {
-                    Ok(Some(allow)) => allow,
-                    Ok(None) => *default_allow,
-                    Err(error) => {
-                        warn!(%error, "Ignoring invalid default-allow annotation");
-                        *default_allow
-                    }
-                };
+        let default_allow = *default_allow;
+        let allows = self.default_allows.clone();
+        let mk_default_allow =
+            move |da: Option<DefaultAllow>| allows.get(da.unwrap_or(default_allow));
 
-                let spec = pod.spec.ok_or_else(|| anyhow!("pod missing spec"))?;
-                let kubelet_ips = {
-                    let name = spec
-                        .node_name
-                        .as_ref()
-                        .ok_or_else(|| anyhow!("pod missing node name"))?;
-                    self.nodes.get(name.as_str())?
-                };
-
-                let status = pod.status.ok_or_else(|| anyhow!("pod missing status"))?;
-                let pod_ips = mk_pod_ips(status)?;
-
-                let default_rx = self.default_allows.get(default_allow);
-                let (pod_servers, pod_lookups) =
-                    collect_pod_servers(spec, default_rx.clone(), pod_ips, kubelet_ips);
-
-                let pod = Pod {
-                    servers: pod_servers,
-                    labels: pod.metadata.labels.into(),
-                    default_rx,
-                };
-                pod.link_servers(&servers);
-
-                lookups
-                    .set(ns_name, pod_name, pod_lookups)
-                    .expect("pod must not already exist");
-
-                pod_entry.insert(pod);
-            }
-
-            HashEntry::Occupied(mut pod_entry) => {
-                // Note that the default-allow annotation may not be changed at runtime.
-                debug_assert!(
-                    lookups.contains(&ns_name, &pod_name),
-                    "pod must exist in lookups"
-                );
-
-                let p = pod_entry.get_mut();
-                if p.labels.as_ref() != &pod.metadata.labels {
-                    p.labels = pod.metadata.labels.into();
-                    p.link_servers(&servers);
-                }
-            }
-        }
-
-        Ok(())
+        pods.apply(pod, &self.nodes, servers, lookups, mk_default_allow)
     }
 
     #[instrument(
@@ -273,72 +140,257 @@ impl Index {
     }
 }
 
-fn collect_pod_servers(
-    spec: k8s::PodSpec,
-    server_rx: ServerRx,
-    pod_ips: PodIps,
-    kubelet_ips: KubeletIps,
-) -> (Arc<PodServers>, HashMap<u16, lookup::PodPort>) {
-    let mut servers = PodServers::default();
-    let mut lookups = HashMap::new();
+// === impl PodIndex ===
 
-    for container in spec.containers.into_iter() {
-        for p in container.ports.into_iter() {
-            if p.protocol.map(|p| p == "TCP").unwrap_or(true) {
-                let port = p.container_port as u16;
-                if servers.by_port.contains_key(&port) {
-                    debug!(port, "Port duplicated");
-                    continue;
-                }
+impl PodIndex {
+    fn apply(
+        &mut self,
+        pod: k8s::Pod,
+        nodes: &NodeIndex,
+        servers: &mut SrvIndex,
+        lookups: &mut lookup::Writer,
+        get_default_allow_rx: impl Fn(Option<DefaultAllow>) -> ServerRx,
+    ) -> Result<()> {
+        let ns_name = pod.namespace().expect("pod must have a namespace");
+        let pod_name = pod.name();
+        match self.index.entry(pod_name.clone().into()) {
+            HashEntry::Vacant(pod_entry) => {
+                let spec = pod.spec.ok_or_else(|| anyhow!("pod missing spec"))?;
+                let status = pod.status.ok_or_else(|| anyhow!("pod missing status"))?;
 
-                let (tx, rx) = watch::channel(server_rx.clone());
-                let pod_port = Arc::new(PodServer {
-                    tx,
-                    server_name: Mutex::new(None),
-                });
+                // Lookup the pod's node's kubelet IP or stop processing the update. When the pod
+                // gets assigned to a node, we'll get a new update and proceed. This is needed
+                // because we always permit kubelet access.
+                let kubelet = match spec.node_name.as_ref() {
+                    Some(node) => {
+                        // We've received a pod update before the node is known. This should be
+                        // effectively impossible. We could technically handle this (unlikely)
+                        // situation gracefully, but it would require updating pods on node
+                        // creation, which seems unnecessarily complex.
+                        nodes.get(node.as_str()).expect("node not yet indexed")
+                    }
+                    None => {
+                        debug!("Pod is not yet assigned to a Node");
+                        return Ok(());
+                    }
+                };
 
-                trace!(%port, name = ?p.name, "Adding port");
-                if let Some(name) = p.name {
-                    servers
-                        .by_name
-                        .entry(name)
-                        .or_default()
-                        .push(pod_port.clone());
-                }
+                // Similarly, lookup the pod's IPs so we can return it with port lookups so servers
+                // can ignore connections targeting other endpoints.
+                let pod_ips = Self::mk_pod_ips(status)?;
 
-                servers.by_port.insert(port, pod_port);
-                lookups.insert(
-                    port,
-                    lookup::PodPort {
-                        rx,
-                        pod_ips: pod_ips.clone(),
-                        kubelet_ips: kubelet_ips.clone(),
-                    },
+                // Check the pod for a default-allow annotation. If it's set, use it; otherwise use
+                // the default policy from the namespace or cluster. We retain this value (and not
+                // only the policy) so that we can more conveniently de-duplicate changes
+                let default_allow_rx = match DefaultAllow::from_annotation(&pod.metadata) {
+                    Ok(allow) => get_default_allow_rx(allow),
+                    Err(error) => {
+                        warn!(%error, "Ignoring invalid default-allow annotation");
+                        get_default_allow_rx(None)
+                    }
+                };
+
+                // Read the pod's ports and extract:
+                // - `ServerTx`s to be linkerd against the server index; and
+                // - lookup receivers to be returned to API clients.
+                let (port_index, pod_lookups) =
+                    Self::extract_ports(spec, default_allow_rx.clone(), pod_ips, kubelet);
+
+                // Start tracking the pod's metadata so it can be linked against servers as they are
+                // created. Immediately link the pod against the server index.
+                let pod = Pod {
+                    default_allow_rx,
+                    labels: pod.metadata.labels.into(),
+                    ports: port_index.into(),
+                };
+                pod.link_servers(&servers);
+                pod_entry.insert(pod);
+
+                // The pod has been linked against servers and is registered for subsequent updates,
+                // so make it discoverable to API clients.
+                lookups
+                    .set(ns_name, pod_name, pod_lookups)
+                    .expect("pod must not already exist");
+
+                Ok(())
+            }
+
+            HashEntry::Occupied(mut entry) => {
+                debug_assert!(
+                    lookups.contains(&ns_name, &pod_name),
+                    "pod must exist in lookups"
                 );
+
+                // Labels can be updated at runtime (even though that's kind of weird). If the
+                // labels have changed, then we relink servers to pods in case label selections have
+                // changed.
+                let p = entry.get_mut();
+                if p.labels.as_ref() != &pod.metadata.labels {
+                    p.labels = pod.metadata.labels.into();
+                    p.link_servers(&servers);
+                }
+
+                // Note that the default-allow annotation may not be changed at runtime.
+                Ok(())
             }
         }
     }
 
-    (servers.into(), lookups)
+    /// Extracts port information from a pod spec.
+    fn extract_ports(
+        spec: k8s::PodSpec,
+        server_rx: ServerRx,
+        pod_ips: PodIps,
+        kubelet: KubeletIps,
+    ) -> (PortIndex, HashMap<u16, lookup::PodPort>) {
+        let mut servers = PortIndex::default();
+        let mut lookups = HashMap::new();
+
+        for container in spec.containers.into_iter() {
+            for p in container.ports.into_iter() {
+                if p.protocol.map(|p| p == "TCP").unwrap_or(true) {
+                    let port = p.container_port as u16;
+                    if servers.by_port.contains_key(&port) {
+                        debug!(port, "Port duplicated");
+                        continue;
+                    }
+
+                    let (tx, rx) = watch::channel(server_rx.clone());
+                    let pod_port = Arc::new(ServerTx {
+                        tx,
+                        server_name: Mutex::new(None),
+                    });
+
+                    trace!(%port, name = ?p.name, "Adding port");
+                    if let Some(name) = p.name {
+                        servers
+                            .by_name
+                            .entry(name)
+                            .or_default()
+                            .push(pod_port.clone());
+                    }
+
+                    servers.by_port.insert(port, pod_port);
+                    lookups.insert(
+                        port,
+                        lookup::PodPort {
+                            rx,
+                            pod_ips: pod_ips.clone(),
+                            kubelet_ips: kubelet.clone(),
+                        },
+                    );
+                }
+            }
+        }
+
+        (servers, lookups)
+    }
+
+    /// Extract the pod's IPs or throws an error.
+    fn mk_pod_ips(status: k8s::PodStatus) -> Result<PodIps> {
+        let ips = if status.pod_ips.is_empty() {
+            status
+                .pod_ip
+                .iter()
+                .map(|ip| ip.parse::<IpAddr>().map_err(Into::into))
+                .collect::<Result<Vec<IpAddr>>>()?
+        } else {
+            status
+                .pod_ips
+                .iter()
+                .flat_map(|ip| ip.ip.as_ref())
+                .map(|ip| ip.parse().map_err(Into::into))
+                .collect::<Result<Vec<IpAddr>>>()?
+        };
+        if ips.is_empty() {
+            bail!("pod missing IP addresses");
+        };
+        Ok(PodIps(ips.into()))
+    }
+
+    pub(super) fn link_servers(&self, servers: &SrvIndex) {
+        for pod in self.index.values() {
+            pod.link_servers(&servers)
+        }
+    }
+
+    pub(super) fn reset_server<N>(&self, name: &N)
+    where
+        k8s::polixy::server::Name: Borrow<N>,
+        N: Hash + Eq + ?Sized,
+    {
+        for (pod_name, pod) in self.index.iter() {
+            let rx = pod.default_allow_rx.clone();
+            for (port_num, port) in pod.ports.by_port.iter() {
+                let mut sn = port.server_name.lock();
+                if sn.as_ref().map(|n| n.borrow()) == Some(name) {
+                    debug!(pod = %pod_name, port = %port_num, "Removing server from pod");
+                    *sn = None;
+                    port.tx
+                        .send(rx.clone())
+                        .expect("pod config receiver must still be held");
+                } else {
+                    trace!(pod = %pod_name, port = %port_num, server = ?sn, "Server does not match");
+                }
+            }
+        }
+    }
 }
 
-fn mk_pod_ips(status: k8s::PodStatus) -> Result<PodIps> {
-    let ips = if status.pod_ips.is_empty() {
-        status
-            .pod_ip
-            .iter()
-            .map(|ip| ip.parse::<IpAddr>().map_err(Into::into))
-            .collect::<Result<Vec<IpAddr>>>()?
-    } else {
-        status
-            .pod_ips
-            .iter()
-            .flat_map(|ip| ip.ip.as_ref())
-            .map(|ip| ip.parse().map_err(Into::into))
-            .collect::<Result<Vec<IpAddr>>>()?
-    };
-    if ips.is_empty() {
-        bail!("pod missing IP addresses");
-    };
-    Ok(PodIps(ips.into()))
+// === impl Pod ===
+
+impl Pod {
+    /// Links this pods to server (by label selector).
+    //
+    // XXX This doesn't properly reset a policy when a server is removed or de-selects a pod.
+    fn link_servers(&self, servers: &SrvIndex) {
+        for (name, port, rx) in servers.iter_matching(self.labels.clone()) {
+            for port in self.ports.collect_port(&port).into_iter() {
+                // Either this port is using a default allow policy, and the server name is unset,
+                // or multiple servers select this pod. If there's a conflict, we panic if the proxy
+                // is running in debug mode. In release mode, we log a warning and ignore the
+                // conflicting server.
+                let mut sn = port.server_name.lock();
+                if let Some(sn) = sn.as_ref() {
+                    if sn != name {
+                        debug_assert!(false, "Pod port must not match multiple servers");
+                        tracing::warn!("Pod port matches multiple servers: {} and {}", sn, name);
+                        continue;
+                    }
+                }
+                *sn = Some(name.clone());
+
+                port.tx
+                    .send(rx.clone())
+                    .expect("pod config receiver must be set");
+                debug!(server = %name, "Pod server updated");
+            }
+        }
+    }
+}
+
+// === impl PortIndex ===
+
+impl PortIndex {
+    /// Finds all ports on this pod that match a server's port reference.
+    ///
+    /// Numeric port matches will only return a single server, generally, while named port
+    /// references may select an arbitrary number of server ports.
+    fn collect_port(&self, port_match: &polixy::server::Port) -> Vec<Arc<ServerTx>> {
+        match port_match {
+            polixy::server::Port::Number(ref port) => self
+                .by_port
+                .get(port)
+                .into_iter()
+                .cloned()
+                .collect::<Vec<_>>(),
+            polixy::server::Port::Name(ref name) => self
+                .by_name
+                .get(name)
+                .into_iter()
+                .flat_map(|p| p.iter())
+                .cloned()
+                .collect::<Vec<_>>(),
+        }
+    }
 }

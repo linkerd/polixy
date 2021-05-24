@@ -1,6 +1,6 @@
 use crate::{
     k8s, ClientAuthn, ClientAuthz, ClientNetwork, Identity, InboundServerConfig, ProxyProtocol,
-    ServerRx, ServerTx,
+    ServerRx,
 };
 use anyhow::{anyhow, Error, Result};
 use tokio::{sync::watch, time};
@@ -13,25 +13,17 @@ pub enum DefaultAllow {
     AllUnauthenticated,
     ClusterAuthenticated,
     ClusterUnauthenticated,
-    None,
+    Deny,
 }
 
 /// Default server configs to use when no server matches.
+#[derive(Clone, Debug)]
 pub(super) struct DefaultAllows {
     all_authed_rx: ServerRx,
-    _all_authed_tx: ServerTx,
-
     all_unauthed_rx: ServerRx,
-    _all_unauthed_tx: ServerTx,
-
     cluster_authed_rx: ServerRx,
-    _cluster_authed_tx: ServerTx,
-
     cluster_unauthed_rx: ServerRx,
-    _cluster_unauthed_tx: ServerTx,
-
     deny_rx: ServerRx,
-    _deny_tx: ServerTx,
 }
 
 // === impl DefaultAllow ===
@@ -56,7 +48,7 @@ impl std::str::FromStr for DefaultAllow {
             "all-unauthenticated" => Ok(Self::AllUnauthenticated),
             "cluster-authenticated" => Ok(Self::ClusterAuthenticated),
             "cluster-unauthenticated" => Ok(Self::ClusterUnauthenticated),
-            "none" => Ok(Self::None),
+            "deny" => Ok(Self::Deny),
             s => Err(anyhow!("invalid mode: {}", s)),
         }
     }
@@ -69,7 +61,7 @@ impl std::fmt::Display for DefaultAllow {
             Self::AllUnauthenticated => "all-unauthenticated".fmt(f),
             Self::ClusterAuthenticated => "cluster-authenticated".fmt(f),
             Self::ClusterUnauthenticated => "cluster-unauthenticated".fmt(f),
-            Self::None => "none".fmt(f),
+            Self::Deny => "deny".fmt(f),
         }
     }
 }
@@ -77,7 +69,12 @@ impl std::fmt::Display for DefaultAllow {
 // === impl DefaultAllows ===
 
 impl DefaultAllows {
-    pub fn new(cluster_nets: Vec<ipnet::IpNet>, detect_timeout: time::Duration) -> Self {
+    /// Create default allow policy receivers.
+    ///
+    /// These receivers are never updated. The senders are spawned onto a background task so that
+    /// the receivers continue to be live. The background task completes once all receivers are
+    /// dropped.
+    pub fn spawn(cluster_nets: Vec<ipnet::IpNet>, detect_timeout: time::Duration) -> Self {
         let any_authenticated = ClientAuthn::TlsAuthenticated {
             identities: vec![Identity::Suffix(vec![].into())],
             service_accounts: vec![],
@@ -88,56 +85,58 @@ impl DefaultAllows {
             ipnet::IpNet::V6(Default::default()),
         ];
 
-        let (_all_authed_tx, all_authed_rx) = watch::channel(mk_detect_config(
+        let (all_authed_tx, all_authed_rx) = watch::channel(mk_detect_config(
             "_all_authed",
             detect_timeout,
             all_nets.iter().cloned(),
             any_authenticated.clone(),
         ));
 
-        let (_all_unauthed_tx, all_unauthed_rx) = watch::channel(mk_detect_config(
+        let (all_unauthed_tx, all_unauthed_rx) = watch::channel(mk_detect_config(
             "_all_unauthed",
             detect_timeout,
             all_nets.iter().cloned(),
             ClientAuthn::Unauthenticated,
         ));
 
-        let (_cluster_authed_tx, cluster_authed_rx) = watch::channel(mk_detect_config(
+        let (cluster_authed_tx, cluster_authed_rx) = watch::channel(mk_detect_config(
             "_cluster_authed",
             detect_timeout,
             cluster_nets.iter().cloned(),
             any_authenticated,
         ));
 
-        let (_cluster_unauthed_tx, cluster_unauthed_rx) = watch::channel(mk_detect_config(
+        let (cluster_unauthed_tx, cluster_unauthed_rx) = watch::channel(mk_detect_config(
             "_cluster_unauthed",
             detect_timeout,
             cluster_nets.into_iter(),
             ClientAuthn::Unauthenticated,
         ));
 
-        let (_deny_tx, deny_rx) = watch::channel(InboundServerConfig {
+        let (deny_tx, deny_rx) = watch::channel(InboundServerConfig {
             protocol: ProxyProtocol::Detect {
                 timeout: detect_timeout,
             },
             authorizations: Default::default(),
         });
 
+        // Ensure the senders are not dropped until all receivers are dropped.
+        tokio::spawn(async move {
+            tokio::join!(
+                all_authed_tx.closed(),
+                all_unauthed_tx.closed(),
+                cluster_authed_tx.closed(),
+                cluster_unauthed_tx.closed(),
+                deny_tx.closed(),
+            );
+        });
+
         Self {
             all_authed_rx,
-            _all_authed_tx,
-
             all_unauthed_rx,
-            _all_unauthed_tx,
-
             cluster_authed_rx,
-            _cluster_authed_tx,
-
             cluster_unauthed_rx,
-            _cluster_unauthed_tx,
-
             deny_rx,
-            _deny_tx,
         }
     }
 
@@ -147,7 +146,7 @@ impl DefaultAllows {
             DefaultAllow::AllUnauthenticated => self.all_unauthed_rx.clone(),
             DefaultAllow::ClusterAuthenticated => self.cluster_authed_rx.clone(),
             DefaultAllow::ClusterUnauthenticated => self.cluster_unauthed_rx.clone(),
-            DefaultAllow::None => self.deny_rx.clone(),
+            DefaultAllow::Deny => self.deny_rx.clone(),
         }
     }
 }

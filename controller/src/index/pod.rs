@@ -147,7 +147,7 @@ impl PodIndex {
         &mut self,
         pod: k8s::Pod,
         nodes: &NodeIndex,
-        servers: &mut SrvIndex,
+        servers: &SrvIndex,
         lookups: &mut lookup::Writer,
         get_default_allow_rx: impl Fn(Option<DefaultAllow>) -> ServerRx,
     ) -> Result<()> {

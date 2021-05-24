@@ -26,8 +26,8 @@ struct Authz {
 // === impl AuthzIndex ===
 
 impl AuthzIndex {
-    /// Updates
-    fn apply(&mut self, servers: &mut SrvIndex, authz: polixy::ServerAuthorization) -> Result<()> {
+    /// Updates the authorization and server indexes with a new or updated authorization instance.
+    fn apply(&mut self, authz: polixy::ServerAuthorization, servers: &mut SrvIndex) -> Result<()> {
         let name = polixy::authz::Name::from_authz(&authz);
         let authz = mk_authz(authz)?;
 
@@ -49,12 +49,11 @@ impl AuthzIndex {
         Ok(())
     }
 
-    fn delete<A>(&mut self, servers: &mut SrvIndex, name: &A)
+    fn delete<A>(&mut self, name: &A)
     where
         k8s::polixy::authz::Name: std::borrow::Borrow<A>,
         A: Ord + Hash + Eq + ?Sized,
     {
-        servers.remove_authz(name);
         self.index.remove(name);
         debug!("Removed authz");
     }
@@ -101,7 +100,7 @@ impl Index {
             .namespaces
             .get_or_default(k8s::NsName::from_authz(&authz));
 
-        ns.authzs.apply(&mut ns.servers, authz)
+        ns.authzs.apply(authz, &mut ns.servers)
     }
 
     #[instrument(
@@ -117,7 +116,9 @@ impl Index {
             .index
             .get_mut(authz.namespace().unwrap().as_str())
         {
-            ns.authzs.delete(&mut ns.servers, authz.name().as_str());
+            let name = authz.name();
+            ns.servers.remove_authz(name.as_str());
+            ns.authzs.delete(name.as_str());
         }
     }
 
@@ -147,7 +148,8 @@ impl Index {
         for (ns_name, authzs) in prior {
             if let Some(ns) = self.namespaces.index.get_mut(&ns_name) {
                 for name in authzs.into_iter() {
-                    ns.authzs.delete(&mut ns.servers, &name);
+                    ns.servers.remove_authz(&name);
+                    ns.authzs.delete(&name);
                 }
             }
         }

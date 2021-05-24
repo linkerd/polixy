@@ -1,4 +1,4 @@
-use super::{ClientAuthz, Index, Namespace, ServerSelector};
+use super::{authz::AuthzIndex, ClientAuthz, Index, Namespace, ServerSelector};
 use crate::{
     k8s::{self, polixy, ResourceExt},
     InboundServerConfig, ProxyProtocol, ServerRx, ServerTx,
@@ -82,58 +82,14 @@ impl SrvIndex {
             }
         })
     }
-}
 
-// === impl Server ===
-
-impl Server {
-    fn add_authz(&mut self, name: polixy::authz::Name, authz: ClientAuthz) {
-        debug!("Adding authorization to server");
-        self.authorizations.insert(name, authz);
-        let mut config = self.rx.borrow().clone();
-        config.authorizations = self.authorizations.clone();
-        self.tx.send(config).expect("config must send")
-    }
-
-    fn remove_authz<N>(&mut self, name: &N)
-    where
-        k8s::polixy::authz::Name: std::borrow::Borrow<N>,
-        N: Ord + ?Sized,
-    {
-        if self.authorizations.remove(name).is_some() {
-            debug!("Removing authorization from server");
-            let mut config = self.rx.borrow().clone();
-            config.authorizations = self.authorizations.clone();
-            self.tx.send(config).expect("config must send")
-        }
-    }
-}
-
-// === impl Index ===
-
-impl Index {
-    /// Builds a `Server`, linking it against authorizations and pod ports.
-    #[instrument(
-        skip(self, srv),
-        fields(
-            ns = ?srv.metadata.namespace,
-            name = ?srv.metadata.name,
-        )
-    )]
-    pub(super) fn apply_server(&mut self, srv: polixy::Server) {
-        let ns_name = k8s::NsName::from_srv(&srv);
-        let Namespace {
-            ref pods,
-            authzs: ref ns_authzs,
-            ref mut servers,
-            default_allow: _,
-        } = self.namespaces.get_or_default(ns_name);
-
+    /// Update the index with a server instance.
+    fn apply(&mut self, srv: polixy::Server, ns_authzs: &AuthzIndex) {
         let srv_name = polixy::server::Name::from_server(&srv);
         let port = srv.spec.port;
         let protocol = mk_protocol(srv.spec.proxy_protocol.as_ref());
 
-        match servers.index.entry(srv_name) {
+        match self.index.entry(srv_name) {
             HashEntry::Vacant(entry) => {
                 let labels = k8s::Labels::from(srv.metadata.labels);
                 let authzs = ns_authzs
@@ -215,10 +171,59 @@ impl Index {
                 entry.get_mut().meta.port = port;
             }
         }
+    }
+}
+
+// === impl Server ===
+
+impl Server {
+    fn add_authz(&mut self, name: polixy::authz::Name, authz: ClientAuthz) {
+        debug!("Adding authorization to server");
+        self.authorizations.insert(name, authz);
+        let mut config = self.rx.borrow().clone();
+        config.authorizations = self.authorizations.clone();
+        self.tx.send(config).expect("config must send")
+    }
+
+    fn remove_authz<N>(&mut self, name: &N)
+    where
+        k8s::polixy::authz::Name: std::borrow::Borrow<N>,
+        N: Ord + ?Sized,
+    {
+        if self.authorizations.remove(name).is_some() {
+            debug!("Removing authorization from server");
+            let mut config = self.rx.borrow().clone();
+            config.authorizations = self.authorizations.clone();
+            self.tx.send(config).expect("config must send")
+        }
+    }
+}
+
+// === impl Index ===
+
+impl Index {
+    /// Builds a `Server`, linking it against authorizations and pod ports.
+    #[instrument(
+        skip(self, srv),
+        fields(
+            ns = ?srv.metadata.namespace,
+            name = ?srv.metadata.name,
+        )
+    )]
+    pub(super) fn apply_server(&mut self, srv: polixy::Server) {
+        let ns_name = k8s::NsName::from_srv(&srv);
+        let Namespace {
+            ref pods,
+            ref mut authzs,
+            ref mut servers,
+            default_allow: _,
+        } = self.namespaces.get_or_default(ns_name);
+
+        servers.apply(srv, authzs);
 
         // If we've updated the server->pod selection, then we need to re-index
         // all pods and servers.
-        pods.link_servers(&servers);
+        pods.link_servers(servers);
     }
 
     #[instrument(
@@ -294,7 +299,7 @@ impl Index {
 fn mk_protocol(p: Option<&polixy::server::ProxyProtocol>) -> ProxyProtocol {
     match p {
         Some(polixy::server::ProxyProtocol::Unknown) | None => ProxyProtocol::Detect {
-            timeout: time::Duration::from_secs(5),
+            timeout: time::Duration::from_secs(10),
         },
         Some(polixy::server::ProxyProtocol::Http1) => ProxyProtocol::Http1,
         Some(polixy::server::ProxyProtocol::Http2) => ProxyProtocol::Http2,

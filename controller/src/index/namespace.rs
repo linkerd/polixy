@@ -1,8 +1,6 @@
 use super::{authz::AuthzIndex, pod::PodIndex, server::SrvIndex, DefaultAllow};
-use crate::k8s::{self, ResourceExt};
-use anyhow::{bail, Result};
-use std::collections::{HashMap, HashSet};
-use tracing::{debug, instrument, warn};
+use crate::k8s;
+use std::collections::HashMap;
 
 #[derive(Debug)]
 pub(super) struct NamespaceIndex {
@@ -14,8 +12,7 @@ pub(super) struct NamespaceIndex {
 
 #[derive(Debug)]
 pub(super) struct Namespace {
-    /// Holds the per-namespace default-allow policy, possibly from an annotation override on the
-    /// namespace object.
+    /// Holds the global default-allow policy, which may be overridden per-workload.
     pub default_allow: DefaultAllow,
 
     pub pods: PodIndex,
@@ -45,73 +42,5 @@ impl NamespaceIndex {
 
     pub fn iter(&self) -> impl Iterator<Item = (&k8s::NsName, &Namespace)> {
         self.index.iter()
-    }
-
-    #[instrument(
-        skip(self, ns),
-        fields(ns = ?ns.metadata.name)
-    )]
-    pub(super) fn apply(&mut self, ns: k8s::Namespace) -> Result<()> {
-        // Read the `default-allow` annotation from the ns metadata, which indicates the default
-        // behavior for pod-ports in the namespace that lack a server instance.
-        let allow = match DefaultAllow::from_annotation(&ns.metadata) {
-            Ok(Some(mode)) => mode,
-            Ok(None) => self.default_allow,
-            Err(error) => {
-                warn!(%error, "invalid default-allow annotation");
-                self.default_allow
-            }
-        };
-
-        // Get the cached namespace index (or load the default).
-        let ns = self.get_or_default(k8s::NsName::from_ns(&ns));
-        ns.default_allow = allow;
-
-        // We don't update the default-allow of running pods, as it is essentially bound to the pod
-        // at inject-time.
-
-        Ok(())
-    }
-
-    #[instrument(
-        skip(self, ns),
-        fields(ns = ?ns.metadata.name)
-    )]
-    pub(super) fn delete(&mut self, ns: k8s::Namespace) -> Result<()> {
-        let name = k8s::NsName::from_ns(&ns);
-        self.rm(&name)
-    }
-
-    #[instrument(skip(self, nss))]
-    pub(super) fn reset(&mut self, nss: Vec<k8s::Namespace>) -> Result<()> {
-        // Avoid rebuilding data for nodes that have not changed.
-        let mut prior_names = self.index.keys().cloned().collect::<HashSet<_>>();
-
-        let mut result = Ok(());
-        for ns in nss.into_iter() {
-            prior_names.remove(ns.name().as_str());
-            if let Err(error) = self.apply(ns) {
-                warn!(%error, "Failed to apply namespace");
-                result = Err(error);
-            }
-        }
-
-        for name in prior_names.into_iter() {
-            debug!(?name, "Removing defunct namespace");
-            if let Err(error) = self.rm(&name) {
-                result = Err(error);
-            }
-        }
-
-        result
-    }
-
-    fn rm(&mut self, name: &k8s::NsName) -> Result<()> {
-        if self.index.remove(name).is_none() {
-            bail!("node {} already deleted", name);
-        }
-
-        debug!(%name, "Deleted");
-        Ok(())
     }
 }

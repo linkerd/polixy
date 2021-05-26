@@ -72,7 +72,6 @@ impl Index {
         mut lookups: lookup::Writer,
     ) -> Error {
         let k8s::ResourceWatches {
-            mut namespaces,
             mut nodes,
             mut pods,
             mut servers,
@@ -87,13 +86,6 @@ impl Index {
                     k8s::Event::Applied(node) => self.nodes.apply(node).context("applying a node"),
                     k8s::Event::Deleted(node) => self.nodes.delete(node).context("deleting a node"),
                     k8s::Event::Restarted(nodes) => self.nodes.reset(nodes).context("resetting nodes"),
-                },
-
-                // Track namespace-level annotations
-                up = namespaces.recv() => match up {
-                    k8s::Event::Applied(ns) => self.namespaces.apply(ns).context("applying a namespace"),
-                    k8s::Event::Deleted(ns) => self.namespaces.delete(ns).context("deleting a namespace"),
-                    k8s::Event::Restarted(nss) => self.namespaces.reset(nss).context("resetting namespaces"),
                 },
 
                 up = pods.recv() => match up {
@@ -126,11 +118,8 @@ impl Index {
             }
 
             // Notify the readiness watch if readiness changes.
-            let ready_now = nodes.ready()
-                && namespaces.ready()
-                && pods.ready()
-                && servers.ready()
-                && authorizations.ready();
+            let ready_now =
+                nodes.ready() && pods.ready() && servers.ready() && authorizations.ready();
             if ready != ready_now {
                 let _ = ready_tx.send(ready_now);
                 ready = ready_now;

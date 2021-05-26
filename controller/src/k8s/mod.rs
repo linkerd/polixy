@@ -27,7 +27,6 @@ pub struct PodName(Arc<str>);
 
 /// Resource watches.
 pub struct ResourceWatches {
-    pub(crate) namespaces: Watch<Namespace>,
     pub(crate) nodes: Watch<Node>,
     pub(crate) pods: Watch<Pod>,
     pub(crate) servers: Watch<polixy::Server>,
@@ -39,7 +38,6 @@ pub struct ResourceWatches {
 impl From<kube::Client> for ResourceWatches {
     fn from(client: kube::Client) -> Self {
         Self {
-            namespaces: watcher(Api::all(client.clone()), ListParams::default()).into(),
             nodes: watcher(Api::all(client.clone()), ListParams::default()).into(),
             pods: watcher(
                 Api::all(client.clone()),
@@ -81,10 +79,6 @@ impl fmt::Display for NodeName {
 // === NsName ===
 
 impl NsName {
-    pub fn from_ns(ns: &Namespace) -> Self {
-        Self(ns.name().into())
-    }
-
     pub fn from_pod(p: &Pod) -> Self {
         let ns = p.namespace().expect("Pods must be namespaced");
         Self::from_string(ns)

@@ -72,29 +72,29 @@ impl Index {
         mut lookups: lookup::Writer,
     ) -> Error {
         let k8s::ResourceWatches {
-            mut nodes,
-            mut pods,
-            mut servers,
-            mut authorizations,
+            mut nodes_rx,
+            mut pods_rx,
+            mut servers_rx,
+            mut authorizations_rx,
         } = resources;
 
         let mut ready = false;
         loop {
             let res = tokio::select! {
                 // Track the kubelet IPs for all nodes.
-                up = nodes.recv() => match up {
+                up = nodes_rx.recv() => match up {
                     k8s::Event::Applied(node) => self.nodes.apply(node).context("applying a node"),
                     k8s::Event::Deleted(node) => self.nodes.delete(node).context("deleting a node"),
                     k8s::Event::Restarted(nodes) => self.nodes.reset(nodes).context("resetting nodes"),
                 },
 
-                up = pods.recv() => match up {
+                up = pods_rx.recv() => match up {
                     k8s::Event::Applied(pod) => self.apply_pod(pod, &mut lookups).context("applying a pod"),
                     k8s::Event::Deleted(pod) => self.delete_pod(pod, &mut lookups).context("deleting a pod"),
                     k8s::Event::Restarted(pods) => self.reset_pods(pods, &mut lookups).context("resetting pods"),
                 },
 
-                up = servers.recv() => match up {
+                up = servers_rx.recv() => match up {
                     k8s::Event::Applied(srv) => {
                         self.apply_server(srv);
                         Ok(())
@@ -103,7 +103,7 @@ impl Index {
                     k8s::Event::Restarted(srvs) => self.reset_servers(srvs).context("resetting servers"),
                 },
 
-                up = authorizations.recv() => match up {
+                up = authorizations_rx.recv() => match up {
                     k8s::Event::Applied(authz) => self.apply_authz(authz).context("applying an authorization"),
                     k8s::Event::Deleted(authz) => {
                         self.delete_authz(authz);
@@ -118,8 +118,10 @@ impl Index {
             }
 
             // Notify the readiness watch if readiness changes.
-            let ready_now =
-                nodes.ready() && pods.ready() && servers.ready() && authorizations.ready();
+            let ready_now = nodes_rx.ready()
+                && pods_rx.ready()
+                && servers_rx.ready()
+                && authorizations_rx.ready();
             if ready != ready_now {
                 let _ = ready_tx.send(ready_now);
                 ready = ready_now;

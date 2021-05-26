@@ -27,10 +27,10 @@ pub struct PodName(Arc<str>);
 
 /// Resource watches.
 pub struct ResourceWatches {
-    pub(crate) nodes: Watch<Node>,
-    pub(crate) pods: Watch<Pod>,
-    pub(crate) servers: Watch<polixy::Server>,
-    pub(crate) authorizations: Watch<polixy::ServerAuthorization>,
+    pub(crate) nodes_rx: Watch<Node>,
+    pub(crate) pods_rx: Watch<Pod>,
+    pub(crate) servers_rx: Watch<polixy::Server>,
+    pub(crate) authorizations_rx: Watch<polixy::ServerAuthorization>,
 }
 
 // === impl ResourceWatches ===
@@ -38,14 +38,14 @@ pub struct ResourceWatches {
 impl From<kube::Client> for ResourceWatches {
     fn from(client: kube::Client) -> Self {
         Self {
-            nodes: watcher(Api::all(client.clone()), ListParams::default()).into(),
-            pods: watcher(
+            nodes_rx: watcher(Api::all(client.clone()), ListParams::default()).into(),
+            pods_rx: watcher(
                 Api::all(client.clone()),
                 ListParams::default().labels("linkerd.io/control-plane-ns"),
             )
             .into(),
-            servers: watcher(Api::all(client.clone()), ListParams::default()).into(),
-            authorizations: watcher(Api::all(client), ListParams::default()).into(),
+            servers_rx: watcher(Api::all(client.clone()), ListParams::default()).into(),
+            authorizations_rx: watcher(Api::all(client), ListParams::default()).into(),
         }
     }
 }

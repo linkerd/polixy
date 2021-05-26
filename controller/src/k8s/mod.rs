@@ -17,9 +17,6 @@ pub use k8s_openapi::{
 pub use kube::api::ResourceExt;
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct NodeName(Arc<str>);
-
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct NsName(Arc<str>);
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
@@ -47,32 +44,6 @@ impl From<kube::Client> for ResourceWatches {
             servers_rx: watcher(Api::all(client.clone()), ListParams::default()).into(),
             authorizations_rx: watcher(Api::all(client), ListParams::default()).into(),
         }
-    }
-}
-
-// === NodeName ===
-
-impl NodeName {
-    pub fn from_node(n: &Node) -> Self {
-        Self::from(n.name())
-    }
-}
-
-impl<T: Into<Arc<str>>> From<T> for NodeName {
-    fn from(ns: T) -> Self {
-        Self(ns.into())
-    }
-}
-
-impl std::borrow::Borrow<str> for NodeName {
-    fn borrow(&self) -> &str {
-        self.0.as_ref()
-    }
-}
-
-impl fmt::Display for NodeName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
     }
 }
 

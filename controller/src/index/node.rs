@@ -1,6 +1,10 @@
 //! Node->Kubelet IP
 
-use crate::{k8s, KubeletIps};
+use super::Index;
+use crate::{
+    k8s::{self, ResourceExt},
+    KubeletIps,
+};
 use anyhow::{anyhow, Context, Result};
 use ipnet::IpNet;
 use std::{
@@ -11,23 +15,20 @@ use tracing::{debug, instrument, trace, warn};
 
 #[derive(Debug, Default)]
 pub(super) struct NodeIndex {
-    index: HashMap<k8s::NodeName, KubeletIps>,
+    index: HashMap<String, KubeletIps>,
 }
 
-//=== impl NodeIndex ===
+// === impl NodeIndex ===
 
 impl NodeIndex {
-    pub fn get<N>(&self, name: &N) -> Result<KubeletIps>
-    where
-        k8s::NodeName: std::borrow::Borrow<N>,
-        N: std::hash::Hash + Eq + std::fmt::Display + ?Sized,
-    {
-        self.index
-            .get(name)
-            .cloned()
-            .ok_or_else(|| anyhow!("node IP does not exist for node {}", name))
+    pub fn get(&self, name: &str) -> Option<KubeletIps> {
+        self.index.get(name).cloned()
     }
+}
 
+// === impl Index ===
+
+impl Index {
     /// Tracks the kubelet IP for each node.
     ///
     /// As pods are we created, we refer to the node->kubelet index to automatically allow traffic
@@ -36,57 +37,51 @@ impl NodeIndex {
         skip(self, node),
         fields(name = ?node.metadata.name)
     )]
-    pub fn apply(&mut self, node: k8s::Node) -> Result<()> {
-        let name = k8s::NodeName::from_node(&node);
-
-        match self.index.entry(name) {
+    pub fn apply_node(&mut self, node: k8s::Node) -> Result<()> {
+        match self.nodes.index.entry(node.name()) {
             HashEntry::Vacant(entry) => {
                 let ips = kubelet_ips(node)
                     .with_context(|| format!("failed to load kubelet IPs for {}", entry.key()))?;
                 debug!(?ips, "Adding");
                 entry.insert(ips);
+                // TODO check pods waiting on this node's registry.
             }
+
             HashEntry::Occupied(_) => trace!("Already existed"),
         }
 
         Ok(())
     }
 
-    #[instrument(
-        skip(self, node),
-        fields(name = ?node.metadata.name)
-    )]
-    pub fn delete(&mut self, node: k8s::Node) -> Result<()> {
-        let name = k8s::NodeName::from_node(&node);
-        if self.index.remove(&name).is_some() {
-            debug!("Deleted");
-            Ok(())
-        } else {
-            Err(anyhow!("node {} already deleted", name))
-        }
+    #[instrument(skip(self))]
+    pub fn delete_node(&mut self, name: &str) -> Result<()> {
+        self.nodes
+            .index
+            .remove(name)
+            .ok_or_else(|| anyhow!("node {} already deleted", name))?;
+        debug!("Deleted");
+        Ok(())
     }
 
     #[instrument(skip(self, nodes))]
-    pub fn reset(&mut self, nodes: Vec<k8s::Node>) -> Result<()> {
+    pub fn reset_nodes(&mut self, nodes: Vec<k8s::Node>) -> Result<()> {
         // Avoid rebuilding data for nodes that have not changed.
-        let mut prior_names = self.index.keys().cloned().collect::<HashSet<_>>();
+        let mut prior = self.nodes.index.keys().cloned().collect::<HashSet<_>>();
 
         let mut result = Ok(());
         for node in nodes.into_iter() {
-            let name = k8s::NodeName::from_node(&node);
-            if !prior_names.remove(&name) {
-                if let Err(error) = self.apply(node) {
-                    warn!(%name, %error, "Failed to apply node");
-                    result = Err(error);
-                }
-            } else {
+            let name = node.name();
+            if !prior.remove(&name) {
                 trace!(%name, "Already existed");
+            } else if let Err(error) = self.apply_node(node) {
+                warn!(%name, %error, "Failed to apply node");
+                result = Err(error);
             }
         }
 
-        for name in prior_names.into_iter() {
+        for name in prior.into_iter() {
             debug!(?name, "Removing defunct node");
-            let removed = self.index.remove(&name).is_some();
+            let removed = self.nodes.index.remove(&name).is_some();
             debug_assert!(removed, "node must be removable");
             if !removed {
                 result = Err(anyhow!("node {} already removed", name));

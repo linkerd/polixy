@@ -12,7 +12,10 @@ use self::{
     node::NodeIndex,
     server::SrvIndex,
 };
-use crate::{k8s, lookup, ClientAuthz};
+use crate::{
+    k8s::{self, ResourceExt},
+    lookup, ClientAuthz,
+};
 use anyhow::{Context, Error};
 use std::sync::Arc;
 use tokio::{sync::watch, time};
@@ -83,9 +86,9 @@ impl Index {
             let res = tokio::select! {
                 // Track the kubelet IPs for all nodes.
                 up = nodes_rx.recv() => match up {
-                    k8s::Event::Applied(node) => self.nodes.apply(node).context("applying a node"),
-                    k8s::Event::Deleted(node) => self.nodes.delete(node).context("deleting a node"),
-                    k8s::Event::Restarted(nodes) => self.nodes.reset(nodes).context("resetting nodes"),
+                    k8s::Event::Applied(node) => self.apply_node(node).context("applying a node"),
+                    k8s::Event::Deleted(node) => self.delete_node(&node.name()).context("deleting a node"),
+                    k8s::Event::Restarted(nodes) => self.reset_nodes(nodes).context("resetting nodes"),
                 },
 
                 up = pods_rx.recv() => match up {

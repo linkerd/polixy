@@ -15,7 +15,7 @@ use tracing::{debug, instrument, trace, warn};
 
 #[derive(Debug, Default)]
 pub(super) struct PodIndex {
-    index: HashMap<k8s::PodName, Pod>,
+    index: HashMap<String, Pod>,
 }
 
 #[derive(Debug)]
@@ -54,7 +54,9 @@ impl Index {
             ref mut pods,
             ref mut servers,
             ..
-        } = self.namespaces.get_or_default(k8s::NsName::from_pod(&pod));
+        } = self
+            .namespaces
+            .get_or_default(pod.namespace().expect("namespace must be set"));
 
         let default_allow = *default_allow;
         let allows = self.default_allows.clone();
@@ -72,24 +74,19 @@ impl Index {
         )
     )]
     pub(super) fn delete_pod(&mut self, pod: k8s::Pod, lookups: &mut lookup::Writer) -> Result<()> {
-        let ns_name = k8s::NsName::from_pod(&pod);
-        let pod_name = k8s::PodName::from_pod(&pod);
-        self.rm_pod(ns_name, pod_name, lookups)
+        let ns_name = pod.namespace().expect("namespace must be set");
+        let pod_name = pod.name();
+        self.rm_pod(ns_name.as_str(), pod_name.as_str(), lookups)
     }
 
-    fn rm_pod(
-        &mut self,
-        ns: k8s::NsName,
-        pod: k8s::PodName,
-        lookups: &mut lookup::Writer,
-    ) -> Result<()> {
+    fn rm_pod(&mut self, ns: &str, pod: &str, lookups: &mut lookup::Writer) -> Result<()> {
         self.namespaces
             .index
-            .get_mut(&ns)
+            .get_mut(ns)
             .ok_or_else(|| anyhow!("namespace {} doesn't exist", ns))?
             .pods
             .index
-            .remove(&pod)
+            .remove(pod)
             .ok_or_else(|| anyhow!("pod {} doesn't exist", pod))?;
 
         lookups.unset(&ns, &pod)?;
@@ -128,7 +125,7 @@ impl Index {
 
         for (ns, pods) in prior_pods.into_iter() {
             for pod in pods.into_iter() {
-                if let Err(error) = self.rm_pod(ns.clone(), pod, lookups) {
+                if let Err(error) = self.rm_pod(ns.as_str(), pod.as_str(), lookups) {
                     result = Err(error);
                 }
             }
@@ -151,7 +148,7 @@ impl PodIndex {
     ) -> Result<()> {
         let ns_name = pod.namespace().expect("pod must have a namespace");
         let pod_name = pod.name();
-        match self.index.entry(pod_name.clone().into()) {
+        match self.index.entry(pod_name) {
             HashEntry::Vacant(pod_entry) => {
                 let spec = pod.spec.ok_or_else(|| anyhow!("pod missing spec"))?;
                 let status = pod.status.ok_or_else(|| anyhow!("pod missing status"))?;
@@ -202,20 +199,21 @@ impl PodIndex {
                     servers: ports.into(),
                 };
                 pod.link_servers(&servers);
-                pod_entry.insert(pod);
 
                 // The pod has been linked against servers and is registered for subsequent updates,
                 // so make it discoverable to API clients.
                 lookups
-                    .set(ns_name, pod_name, pod_lookups)
+                    .set(ns_name, pod_entry.key(), pod_lookups)
                     .expect("pod must not already exist");
+
+                pod_entry.insert(pod);
 
                 Ok(())
             }
 
             HashEntry::Occupied(mut entry) => {
                 debug_assert!(
-                    lookups.contains(&ns_name, &pod_name),
+                    lookups.contains(&ns_name, entry.key()),
                     "pod must exist in lookups"
                 );
 

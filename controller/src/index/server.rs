@@ -196,7 +196,7 @@ impl Index {
         )
     )]
     pub(super) fn apply_server(&mut self, srv: polixy::Server) {
-        let ns_name = k8s::NsName::from_srv(&srv);
+        let ns_name = srv.namespace().expect("namespace must be set");
         let Namespace {
             ref pods,
             ref mut authzs,
@@ -254,7 +254,7 @@ impl Index {
 
         let mut result = Ok(());
         for srv in srvs.into_iter() {
-            let ns_name = k8s::NsName::from_srv(&srv);
+            let ns_name = srv.namespace().expect("namespace must be set");
             if let Some(ns) = prior_servers.get_mut(&ns_name) {
                 ns.remove(srv.name().as_str());
             }
@@ -264,7 +264,7 @@ impl Index {
 
         for (ns_name, ns_servers) in prior_servers.into_iter() {
             for srv_name in ns_servers.into_iter() {
-                if let Err(e) = self.rm_server(ns_name.to_string().as_str(), &srv_name) {
+                if let Err(e) = self.rm_server(ns_name.as_str(), &srv_name) {
                     result = Err(e);
                 }
             }

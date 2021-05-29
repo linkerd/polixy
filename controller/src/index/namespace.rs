@@ -1,10 +1,9 @@
 use super::{authz::AuthzIndex, pod::PodIndex, server::SrvIndex, DefaultAllow};
-use crate::k8s;
 use std::collections::HashMap;
 
 #[derive(Debug)]
 pub(super) struct NamespaceIndex {
-    pub index: HashMap<k8s::NsName, Namespace>,
+    pub index: HashMap<String, Namespace>,
 
     // The global default-allow policy.
     default_allow: DefaultAllow,
@@ -30,9 +29,9 @@ impl NamespaceIndex {
         }
     }
 
-    pub fn get_or_default(&mut self, name: k8s::NsName) -> &mut Namespace {
+    pub fn get_or_default(&mut self, name: impl Into<String>) -> &mut Namespace {
         let default_allow = self.default_allow;
-        self.index.entry(name).or_insert_with(|| Namespace {
+        self.index.entry(name.into()).or_insert_with(|| Namespace {
             default_allow,
             pods: PodIndex::default(),
             servers: SrvIndex::default(),
@@ -40,7 +39,7 @@ impl NamespaceIndex {
         })
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (&k8s::NsName, &Namespace)> {
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &Namespace)> {
         self.index.iter()
     }
 }

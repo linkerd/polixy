@@ -69,8 +69,8 @@ pub enum Identity {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ServiceAccountRef {
-    ns: k8s::NsName,
-    name: Arc<str>,
+    ns: String,
+    name: String,
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]

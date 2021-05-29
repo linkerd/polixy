@@ -94,7 +94,7 @@ impl Index {
     pub(super) fn apply_authz(&mut self, authz: polixy::ServerAuthorization) -> Result<()> {
         let ns = self
             .namespaces
-            .get_or_default(k8s::NsName::from_authz(&authz));
+            .get_or_default(authz.namespace().expect("namespace required"));
 
         ns.authzs.apply(authz, &mut ns.servers)
     }
@@ -232,10 +232,7 @@ fn mk_authz(srv: polixy::authz::ServerAuthorization) -> Result<Authz> {
                     .namespace
                     .unwrap_or_else(|| metadata.namespace.clone().unwrap());
                 debug!(ns = %ns, serviceaccount = %name, "Authenticated");
-                service_accounts.push(ServiceAccountRef {
-                    ns: k8s::NsName::from_string(ns),
-                    name: name.into(),
-                });
+                service_accounts.push(ServiceAccountRef { ns, name });
             }
 
             if identities.is_empty() && service_accounts.is_empty() {

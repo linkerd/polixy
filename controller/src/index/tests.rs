@@ -4,8 +4,9 @@ use ipnet::{IpNet, Ipv4Net, Ipv6Net};
 use std::{str::FromStr, sync::Arc};
 use tokio::time;
 
+/// Tests that pod servers are configured with defaults based on the `DefaultAllow` policy
 #[tokio::test]
-async fn pod_default() {
+async fn pod_without_server() {
     let cluster_net = IpNet::from_str("192.0.2.0/24").unwrap();
     let pod_net = IpNet::from_str("192.0.2.2/28").unwrap();
     let (kubelet_ip, pod_ip) = {
@@ -93,17 +94,14 @@ async fn pod_default() {
 
         idx.apply_node(node("node-0", pod_net)).unwrap();
 
-        idx.apply_pod(
-            pod(
-                "ns-0",
-                "pod-0",
-                "node-0",
-                pod_ip,
-                Some(("container-0", vec![8000, 9000])),
-            ),
-            &mut lookup_tx,
-        )
-        .unwrap();
+        let p = pod(
+            "ns-0",
+            "pod-0",
+            "node-0",
+            pod_ip,
+            Some(("container-0", vec![8000, 9000])),
+        );
+        idx.apply_pod(p, &mut lookup_tx).unwrap();
 
         let deny_config = InboundServerConfig {
             authorizations: authz,
@@ -130,15 +128,40 @@ async fn pod_default() {
     }
 }
 
-fn node(name: impl Into<String>, net: IpNet) -> k8s::Node {
+/// Tests observing a pod before its node has been observed.
+#[tokio::test]
+#[should_panic]
+async fn pod_before_node() {
+    let cluster_net = IpNet::from_str("192.0.2.0/24").unwrap();
+    let pod_net = IpNet::from_str("192.0.2.2/28").unwrap();
+    let (_kubelet_ip, pod_ip) = {
+        let mut ips = pod_net.hosts();
+        (ips.next().unwrap(), ips.next().unwrap())
+    };
+    let detect_timeout = time::Duration::from_secs(1);
+
+    let mut idx = Index::new(vec![cluster_net], DefaultAllow::Deny, detect_timeout);
+    let (mut lookup_tx, _lookup_rx) = crate::lookup::pair();
+
+    let p = pod(
+        "ns-0",
+        "pod-0",
+        "node-0",
+        pod_ip,
+        Some(("container-0", vec![8000, 9000])),
+    );
+    let _panics = idx.apply_pod(p, &mut lookup_tx);
+}
+
+fn node(name: impl Into<String>, pod_net: IpNet) -> k8s::Node {
     k8s::Node {
         metadata: k8s::ObjectMeta {
             name: Some(name.into()),
             ..Default::default()
         },
         spec: Some(k8s::api::core::v1::NodeSpec {
-            pod_cidr: Some(net.to_string()),
-            pod_cidrs: vec![net.to_string()],
+            pod_cidr: Some(pod_net.to_string()),
+            pod_cidrs: vec![pod_net.to_string()],
             ..Default::default()
         }),
         status: Some(k8s::api::core::v1::NodeStatus::default()),

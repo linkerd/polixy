@@ -35,7 +35,7 @@ async fn pod_default() {
         service_accounts: vec![],
     };
 
-    for (default, authz) in [
+    let cases = vec![
         (DefaultAllow::Deny, Default::default()),
         (
             DefaultAllow::AllAuthenticated,
@@ -85,10 +85,10 @@ async fn pod_default() {
             .into_iter()
             .collect::<BTreeMap<_, _>>(),
         ),
-    ]
-    .iter()
-    {
-        let mut idx = Index::new(vec![cluster_net], *default, detect_timeout);
+    ];
+
+    for (default, authz) in cases.into_iter() {
+        let mut idx = Index::new(vec![cluster_net], default, detect_timeout);
         let (mut lookup_tx, lookup_rx) = crate::lookup::pair();
 
         idx.apply_node(node("node-0", pod_net)).unwrap();
@@ -106,7 +106,7 @@ async fn pod_default() {
         .unwrap();
 
         let deny_config = InboundServerConfig {
-            authorizations: authz.clone(),
+            authorizations: authz,
             protocol: crate::ProxyProtocol::Detect {
                 timeout: detect_timeout,
             },

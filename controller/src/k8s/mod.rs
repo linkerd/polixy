@@ -11,7 +11,10 @@ pub use self::{
     watch::{Event, Watch},
 };
 pub use k8s_openapi::{
-    api::core::v1::{Namespace, Node, Pod, PodSpec, PodStatus},
+    api::{
+        self,
+        core::v1::{Namespace, Node, NodeSpec, Pod, PodSpec, PodStatus},
+    },
     apimachinery::pkg::apis::meta::v1::ObjectMeta,
 };
 pub use kube::api::ResourceExt;

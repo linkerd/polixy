@@ -58,7 +58,7 @@ impl Index {
         self.nodes
             .index
             .remove(name)
-            .ok_or_else(|| anyhow!("node {} already deleted", name))?;
+            .ok_or_else(|| anyhow!("node {} does not exist", name))?;
         debug!("Deleted");
         Ok(())
     }

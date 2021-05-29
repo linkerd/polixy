@@ -4,6 +4,8 @@ mod namespace;
 mod node;
 mod pod;
 mod server;
+#[cfg(test)]
+mod tests;
 
 pub use self::default_allow::DefaultAllow;
 use self::{
@@ -47,10 +49,14 @@ impl Index {
         detect_timeout: time::Duration,
     ) -> Self {
         // Create a common set of receivers for all supported default policies.
+        //
+        // XXX We shouldn't spawn in the constructor if we can avoid it. Instead, it seems best if
+        // we can avoid having to wire this into the pods at all and lazily bind the default policy
+        // at discovery time?
         let default_allows = DefaultAllows::spawn(cluster_nets, detect_timeout);
 
-        // provide the cluster-wide default allow policy to the namespace index so that it may be
-        // overridden by namespace- and workload-level overrides.
+        // Provide the cluster-wide default-allow policy to the namespace index so that it may be
+        // used when a workload-level annotation is not set.
         let namespaces = NamespaceIndex::new(default_allow);
 
         Self {

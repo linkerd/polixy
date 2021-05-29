@@ -6,9 +6,7 @@ use crate::{
 use anyhow::{anyhow, bail, Result};
 use parking_lot::Mutex;
 use std::{
-    borrow::Borrow,
     collections::{hash_map::Entry as HashEntry, HashMap, HashSet},
-    hash::Hash,
     net::IpAddr,
     sync::Arc,
 };
@@ -35,7 +33,7 @@ struct PortServers {
 
 #[derive(Debug)]
 struct Server {
-    name: Mutex<Option<polixy::server::Name>>,
+    name: Mutex<Option<String>>,
     tx: ServerRxTx,
 }
 
@@ -314,16 +312,12 @@ impl PodIndex {
         }
     }
 
-    pub(super) fn reset_server<N>(&self, name: &N)
-    where
-        k8s::polixy::server::Name: Borrow<N>,
-        N: Hash + Eq + ?Sized,
-    {
+    pub(super) fn reset_server(&self, name: &str) {
         for (pod_name, pod) in self.index.iter() {
             let rx = pod.default_allow_rx.clone();
             for (port, server) in pod.servers.by_port.iter() {
                 let mut sn = server.name.lock();
-                if sn.as_ref().map(|n| n.borrow()) == Some(name) {
+                if sn.as_ref().map(|n| n.as_str()) == Some(name) {
                     debug!(pod = %pod_name, %port, "Removing server from pod");
                     *sn = None;
                     server
@@ -352,7 +346,7 @@ impl Pod {
         }
     }
 
-    fn link_server_port(&self, name: &k8s::polixy::server::Name, rx: &ServerRx, port: Arc<Server>) {
+    fn link_server_port(&self, name: &str, rx: &ServerRx, port: Arc<Server>) {
         // Either this port is using a default allow policy, and the server name is unset,
         // or multiple servers select this pod. If there's a conflict, we panic if the proxy
         // is running in debug mode. In release mode, we log a warning and ignore the
@@ -365,7 +359,7 @@ impl Pod {
                 return;
             }
         }
-        *sn = Some(name.clone());
+        *sn = Some(name.to_string());
 
         port.tx
             .send(rx.clone())

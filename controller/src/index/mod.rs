@@ -36,7 +36,7 @@ pub struct Index {
 /// Selects servers for an authorization.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum ServerSelector {
-    Name(k8s::polixy::server::Name),
+    Name(String),
     Selector(Arc<k8s::labels::Selector>),
 }
 

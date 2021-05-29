@@ -6,8 +6,6 @@ use crate::{
 use anyhow::{anyhow, bail, Result};
 use std::{
     collections::{hash_map::Entry as HashEntry, BTreeMap, HashMap, HashSet},
-    fmt,
-    hash::Hash,
     sync::Arc,
 };
 use tokio::{sync::watch, time};
@@ -15,13 +13,13 @@ use tracing::{debug, instrument, trace};
 
 #[derive(Debug, Default)]
 pub(super) struct SrvIndex {
-    index: HashMap<polixy::server::Name, Server>,
+    index: HashMap<String, Server>,
 }
 
 #[derive(Debug)]
 struct Server {
     meta: ServerMeta,
-    authorizations: BTreeMap<polixy::authz::Name, ClientAuthz>,
+    authorizations: BTreeMap<String, ClientAuthz>,
     rx: ServerRx,
     tx: ServerTx,
 }
@@ -37,12 +35,7 @@ pub struct ServerMeta {
 // === impl SrvIndex ===
 
 impl SrvIndex {
-    pub fn add_authz(
-        &mut self,
-        name: &polixy::authz::Name,
-        selector: &ServerSelector,
-        authz: ClientAuthz,
-    ) {
+    pub fn add_authz(&mut self, name: &str, selector: &ServerSelector, authz: ClientAuthz) {
         for (srv_name, srv) in self.index.iter_mut() {
             let matches = match selector {
                 ServerSelector::Name(ref n) => n == srv_name,
@@ -50,7 +43,7 @@ impl SrvIndex {
             };
             if matches {
                 debug!(server = %srv_name, authz = %name, "Adding authz to server");
-                srv.add_authz(name.clone(), authz.clone());
+                srv.add_authz(name.to_string(), authz.clone());
             } else {
                 debug!(server = %srv_name, authz = %name, "Removing authz from server");
                 srv.remove_authz(name);
@@ -58,11 +51,7 @@ impl SrvIndex {
         }
     }
 
-    pub fn remove_authz<N>(&mut self, name: &N)
-    where
-        k8s::polixy::authz::Name: std::borrow::Borrow<N>,
-        N: Ord + ?Sized,
-    {
+    pub fn remove_authz(&mut self, name: &str) {
         for srv in self.index.values_mut() {
             srv.remove_authz(name);
         }
@@ -71,12 +60,12 @@ impl SrvIndex {
     pub fn iter_matching(
         &self,
         labels: k8s::Labels,
-    ) -> impl Iterator<Item = (&polixy::server::Name, &polixy::server::Port, &ServerRx)> {
+    ) -> impl Iterator<Item = (&str, &polixy::server::Port, &ServerRx)> {
         self.index.iter().filter_map(move |(srv_name, server)| {
             let matches = server.meta.pod_selector.matches(&labels);
             trace!(server = %srv_name, %matches);
             if matches {
-                Some((srv_name, &server.meta.port, &server.rx))
+                Some((srv_name.as_str(), &server.meta.port, &server.rx))
             } else {
                 None
             }
@@ -85,7 +74,7 @@ impl SrvIndex {
 
     /// Update the index with a server instance.
     fn apply(&mut self, srv: polixy::Server, ns_authzs: &AuthzIndex) {
-        let srv_name = polixy::server::Name::from_server(&srv);
+        let srv_name = srv.name();
         let port = srv.spec.port;
         let protocol = mk_protocol(srv.spec.proxy_protocol.as_ref());
 
@@ -93,8 +82,8 @@ impl SrvIndex {
             HashEntry::Vacant(entry) => {
                 let labels = k8s::Labels::from(srv.metadata.labels);
                 let authzs = ns_authzs
-                    .filter_selected(entry.key().clone(), labels.clone())
-                    .map(|(n, a)| (n.clone(), a.clone()))
+                    .filter_selected(entry.key(), labels.clone())
+                    .map(|(n, a)| (n, a.clone()))
                     .collect::<BTreeMap<_, _>>();
                 let meta = ServerMeta {
                     labels,
@@ -139,8 +128,8 @@ impl SrvIndex {
 
                     if let Some(labels) = new_labels {
                         let authzs = ns_authzs
-                            .filter_selected(entry.key().clone(), labels.clone())
-                            .map(|(n, a)| (n.clone(), a.clone()))
+                            .filter_selected(entry.key(), labels.clone())
+                            .map(|(n, a)| (n, a.clone()))
                             .collect::<BTreeMap<_, _>>();
                         debug!(authzs = ?authzs.keys());
                         config.authorizations = authzs.clone();
@@ -177,19 +166,15 @@ impl SrvIndex {
 // === impl Server ===
 
 impl Server {
-    fn add_authz(&mut self, name: polixy::authz::Name, authz: ClientAuthz) {
+    fn add_authz(&mut self, name: impl Into<String>, authz: ClientAuthz) {
         debug!("Adding authorization to server");
-        self.authorizations.insert(name, authz);
+        self.authorizations.insert(name.into(), authz);
         let mut config = self.rx.borrow().clone();
         config.authorizations = self.authorizations.clone();
         self.tx.send(config).expect("config must send")
     }
 
-    fn remove_authz<N>(&mut self, name: &N)
-    where
-        k8s::polixy::authz::Name: std::borrow::Borrow<N>,
-        N: Ord + ?Sized,
-    {
+    fn remove_authz(&mut self, name: &str) {
         if self.authorizations.remove(name).is_some() {
             debug!("Removing authorization from server");
             let mut config = self.rx.borrow().clone();
@@ -238,13 +223,7 @@ impl Index {
         self.rm_server(ns_name.as_str(), srv.name().as_str())
     }
 
-    fn rm_server<N, S>(&mut self, ns_name: &N, srv_name: &S) -> Result<()>
-    where
-        k8s::NsName: std::borrow::Borrow<N>,
-        N: Hash + Eq + fmt::Display + ?Sized,
-        k8s::polixy::server::Name: std::borrow::Borrow<S>,
-        S: Hash + Eq + fmt::Display + ?Sized,
-    {
+    fn rm_server(&mut self, ns_name: &str, srv_name: &str) -> Result<()> {
         let ns =
             self.namespaces.index.get_mut(ns_name).ok_or_else(|| {
                 anyhow!("removing server from non-existent namespace {}", ns_name)
@@ -277,8 +256,7 @@ impl Index {
         for srv in srvs.into_iter() {
             let ns_name = k8s::NsName::from_srv(&srv);
             if let Some(ns) = prior_servers.get_mut(&ns_name) {
-                let srv_name = polixy::server::Name::from_server(&srv);
-                ns.remove(&srv_name);
+                ns.remove(srv.name().as_str());
             }
 
             self.apply_server(srv);
@@ -286,7 +264,7 @@ impl Index {
 
         for (ns_name, ns_servers) in prior_servers.into_iter() {
             for srv_name in ns_servers.into_iter() {
-                if let Err(e) = self.rm_server(&ns_name, &srv_name) {
+                if let Err(e) = self.rm_server(ns_name.to_string().as_str(), &srv_name) {
                     result = Err(e);
                 }
             }

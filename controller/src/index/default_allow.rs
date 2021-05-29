@@ -171,8 +171,6 @@ fn mk_detect_config(
 
     InboundServerConfig {
         protocol: ProxyProtocol::Detect { timeout },
-        authorizations: Some((k8s::polixy::authz::Name::from(name), authz))
-            .into_iter()
-            .collect(),
+        authorizations: Some((name.to_string(), authz)).into_iter().collect(),
     }
 }

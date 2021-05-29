@@ -1,5 +1,5 @@
 use super::*;
-use crate::*;
+use crate::{k8s::polixy::server::Port, *};
 use ipnet::{IpNet, Ipv4Net, Ipv6Net};
 use std::{str::FromStr, sync::Arc};
 use tokio::time;
@@ -92,9 +92,9 @@ async fn pod_without_server() {
         let mut idx = Index::new(vec![cluster_net], default, detect_timeout);
         let (mut lookup_tx, lookup_rx) = crate::lookup::pair();
 
-        idx.apply_node(node("node-0", pod_net)).unwrap();
+        idx.apply_node(mk_node("node-0", pod_net)).unwrap();
 
-        let p = pod(
+        let p = mk_pod(
             "ns-0",
             "pod-0",
             "node-0",
@@ -143,7 +143,7 @@ async fn pod_before_node() {
     let mut idx = Index::new(vec![cluster_net], DefaultAllow::Deny, detect_timeout);
     let (mut lookup_tx, _lookup_rx) = crate::lookup::pair();
 
-    let p = pod(
+    let p = mk_pod(
         "ns-0",
         "pod-0",
         "node-0",
@@ -153,7 +153,7 @@ async fn pod_before_node() {
     let _panics = idx.apply_pod(p, &mut lookup_tx);
 }
 
-fn node(name: impl Into<String>, pod_net: IpNet) -> k8s::Node {
+fn mk_node(name: impl Into<String>, pod_net: IpNet) -> k8s::Node {
     k8s::Node {
         metadata: k8s::ObjectMeta {
             name: Some(name.into()),
@@ -168,7 +168,7 @@ fn node(name: impl Into<String>, pod_net: IpNet) -> k8s::Node {
     }
 }
 
-fn pod(
+fn mk_pod(
     ns: impl Into<String>,
     name: impl Into<String>,
     node: impl Into<String>,
@@ -205,5 +205,58 @@ fn pod(
             }],
             ..Default::default()
         }),
+    }
+}
+
+fn mk_server(
+    ns: impl Into<String>,
+    name: impl Into<String>,
+    port: Port,
+    srv_labels: impl IntoIterator<Item = (&'static str, &'static str)>,
+    pod_labels: impl IntoIterator<Item = (&'static str, &'static str)>,
+) -> k8s::polixy::Server {
+    k8s::polixy::Server {
+        api_version: "v1alpha1".to_string(),
+        kind: "Server".to_string(),
+        metadata: k8s::ObjectMeta {
+            namespace: Some(ns.into()),
+            name: Some(name.into()),
+            labels: srv_labels
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            ..Default::default()
+        },
+        spec: k8s::polixy::ServerSpec {
+            port,
+            pod_selector: pod_labels.into_iter().collect(),
+            proxy_protocol: Some(k8s::polixy::server::ProxyProtocol::Http1),
+        },
+    }
+}
+
+fn mk_authz(
+    ns: impl Into<String>,
+    name: impl Into<String>,
+    server: impl Into<String>,
+) -> k8s::polixy::ServerAuthorization {
+    k8s::polixy::ServerAuthorization {
+        api_version: "v1alpha1".to_string(),
+        kind: "ServerAuthorization".to_string(),
+        metadata: k8s::ObjectMeta {
+            namespace: Some(ns.into()),
+            name: Some(name.into()),
+            ..Default::default()
+        },
+        spec: k8s::polixy::ServerAuthorizationSpec {
+            server: k8s::polixy::authz::Server {
+                name: Some(server.into()),
+                selector: None,
+            },
+            client: k8s::polixy::authz::Client {
+                // TODO
+                ..Default::default()
+            },
+        },
     }
 }

@@ -7,14 +7,13 @@ use anyhow::{anyhow, bail, Result};
 use ipnet::IpNet;
 use std::{
     collections::{hash_map::Entry as HashEntry, HashMap, HashSet},
-    hash::Hash,
     sync::Arc,
 };
 use tracing::{debug, instrument, trace};
 
 #[derive(Debug, Default)]
 pub struct AuthzIndex {
-    index: HashMap<polixy::authz::Name, Authz>,
+    index: HashMap<String, Authz>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -28,7 +27,7 @@ struct Authz {
 impl AuthzIndex {
     /// Updates the authorization and server indexes with a new or updated authorization instance.
     fn apply(&mut self, authz: polixy::ServerAuthorization, servers: &mut SrvIndex) -> Result<()> {
-        let name = polixy::authz::Name::from_authz(&authz);
+        let name = authz.name();
         let authz = mk_authz(authz)?;
 
         match self.index.entry(name) {
@@ -49,20 +48,17 @@ impl AuthzIndex {
         Ok(())
     }
 
-    fn delete<A>(&mut self, name: &A)
-    where
-        k8s::polixy::authz::Name: std::borrow::Borrow<A>,
-        A: Ord + Hash + Eq + ?Sized,
-    {
+    fn delete(&mut self, name: &str) {
         self.index.remove(name);
         debug!("Removed authz");
     }
 
     pub fn filter_selected(
         &self,
-        name: k8s::polixy::server::Name,
+        name: impl Into<String>,
         labels: k8s::Labels,
-    ) -> impl Iterator<Item = (&k8s::polixy::authz::Name, &ClientAuthz)> {
+    ) -> impl Iterator<Item = (String, &ClientAuthz)> {
+        let name = name.into();
         self.index.iter().filter_map(move |(authz_name, a)| {
             let matches = match a.servers {
                 ServerSelector::Name(ref n) => {
@@ -76,7 +72,7 @@ impl AuthzIndex {
             };
             debug!(authz = %authz_name, %matches);
             if matches {
-                Some((authz_name, &a.clients))
+                Some((authz_name.clone(), &a.clients))
             } else {
                 None
             }
@@ -178,7 +174,6 @@ fn mk_authz(srv: polixy::authz::ServerAuthorization) -> Result<Authz> {
             debug!(%net, "Unauthenticated");
             let except = except
                 .into_iter()
-                .flatten()
                 .map(|cidr| cidr.parse().map_err(Into::into))
                 .collect::<Result<Vec<IpNet>>>()?;
             nets.push(ClientNetwork { net, except });
@@ -199,7 +194,7 @@ fn mk_authz(srv: polixy::authz::ServerAuthorization) -> Result<Authz> {
         .into()
     };
 
-    let authentication = if let Some(true) = spec.client.unauthenticated {
+    let authentication = if spec.client.unauthenticated {
         ClientAuthn::Unauthenticated
     } else {
         let mtls = spec
@@ -207,13 +202,13 @@ fn mk_authz(srv: polixy::authz::ServerAuthorization) -> Result<Authz> {
             .mesh_tls
             .ok_or_else(|| anyhow!("client mtls missing"))?;
 
-        if let Some(true) = mtls.unauthenticated_tls {
+        if mtls.unauthenticated_tls {
             ClientAuthn::TlsUnauthenticated
         } else {
             let mut identities = Vec::new();
             let mut service_accounts = Vec::new();
 
-            for id in mtls.identities.into_iter().flatten() {
+            for id in mtls.identities.into_iter() {
                 if id == "*" {
                     debug!(suffix = %id, "Authenticated");
                     identities.push(Identity::Suffix(Arc::new([])));
@@ -231,7 +226,7 @@ fn mk_authz(srv: polixy::authz::ServerAuthorization) -> Result<Authz> {
                 }
             }
 
-            for sa in mtls.service_accounts.into_iter().flatten() {
+            for sa in mtls.service_accounts.into_iter() {
                 let name = sa.name;
                 let ns = sa
                     .namespace

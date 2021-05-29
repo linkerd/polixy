@@ -1,13 +1,7 @@
 use super::super::labels;
-use kube::{api::ResourceExt, CustomResource};
+use kube::CustomResource;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::fmt;
-
-#[derive(
-    Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize, JsonSchema,
-)]
-pub struct Name(String);
 
 /// Describes a server interface exposed by a set of pods.
 #[derive(Clone, Debug, CustomResource, Deserialize, Serialize, JsonSchema)]
@@ -46,24 +40,4 @@ pub enum ProxyProtocol {
     Opaque,
     #[serde(rename = "TLS")]
     Tls,
-}
-
-// === Name ===
-
-impl Name {
-    pub fn from_server(s: &Server) -> Self {
-        Self(s.name())
-    }
-}
-
-impl std::borrow::Borrow<str> for Name {
-    fn borrow(&self) -> &str {
-        self.0.as_ref()
-    }
-}
-
-impl fmt::Display for Name {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
 }

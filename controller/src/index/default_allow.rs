@@ -5,8 +5,6 @@ use crate::{
 use anyhow::{anyhow, Error, Result};
 use tokio::{sync::watch, time};
 
-const ANNOTATION: &str = "polixy.linkerd.io/default-allow";
-
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum DefaultAllow {
     AllAuthenticated,
@@ -29,8 +27,10 @@ pub(super) struct DefaultAllows {
 // === impl DefaultAllow ===
 
 impl DefaultAllow {
+    pub const ANNOTATION: &'static str = "polixy.linkerd.io/default-allow";
+
     pub fn from_annotation(meta: &k8s::ObjectMeta) -> Result<Option<Self>> {
-        if let Some(v) = meta.annotations.get(ANNOTATION) {
+        if let Some(v) = meta.annotations.get(Self::ANNOTATION) {
             let mode = v.parse()?;
             Ok(Some(mode))
         } else {
@@ -172,5 +172,28 @@ fn mk_detect_config(
     InboundServerConfig {
         protocol: ProxyProtocol::Detect { timeout },
         authorizations: Some((name.to_string(), authz)).into_iter().collect(),
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_parse_displayed() {
+        for default in &[
+            DefaultAllow::Deny,
+            DefaultAllow::AllAuthenticated,
+            DefaultAllow::AllUnauthenticated,
+            DefaultAllow::ClusterAuthenticated,
+            DefaultAllow::ClusterUnauthenticated,
+        ] {
+            assert_eq!(
+                default.to_string().parse::<DefaultAllow>().unwrap(),
+                *default,
+                "failed to parse displayed {:?}",
+                *default
+            );
+        }
     }
 }

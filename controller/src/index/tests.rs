@@ -123,6 +123,69 @@ async fn incrementally_configure_server() {
     assert_eq!(*port2222.rx.borrow().borrow(), default_config);
 }
 
+// XXX this test currently fails due to a bug.
+#[tokio::test]
+#[cfg_attr(not(feature = "fixme"), ignore)]
+async fn server_update_deselects_pod() {
+    let cluster_net = IpNet::from_str("192.0.2.0/24").unwrap();
+    let pod_net = IpNet::from_str("192.0.2.2/28").unwrap();
+    let (kubelet_ip, pod_ip) = {
+        let mut ips = pod_net.hosts();
+        (ips.next().unwrap(), ips.next().unwrap())
+    };
+    let detect_timeout = time::Duration::from_secs(1);
+    let mut idx = Index::new(
+        vec![cluster_net],
+        DefaultAllow::ClusterUnauthenticated,
+        detect_timeout,
+    );
+    let (mut lookup_tx, lookup_rx) = crate::lookup::pair();
+
+    idx.apply_node(mk_node("node-0", pod_net)).unwrap();
+    let p = mk_pod(
+        "ns-0",
+        "pod-0",
+        "node-0",
+        pod_ip,
+        Some(("container-0", vec![2222])),
+    );
+    idx.apply_pod(p, &mut lookup_tx).unwrap();
+
+    let srv = {
+        let mut srv = mk_server("ns-0", "srv-0", Port::Number(2222), None, None);
+        srv.spec.proxy_protocol = Some(k8s::polixy::server::ProxyProtocol::Http2);
+        srv
+    };
+    idx.apply_server(srv.clone());
+
+    // The default policy applies for all exposed ports.
+    let port2222 = lookup_rx.lookup("ns-0", "pod-0", 2222).unwrap();
+    assert_eq!(port2222.pod_ips, PodIps(Arc::new([pod_ip])));
+    assert_eq!(port2222.kubelet_ips, KubeletIps(Arc::new([kubelet_ip])));
+    assert_eq!(
+        *port2222.rx.borrow().borrow(),
+        InboundServerConfig {
+            authorizations: Default::default(),
+            protocol: crate::ProxyProtocol::Http2,
+        }
+    );
+
+    idx.apply_server({
+        let mut srv = srv;
+        srv.spec.pod_selector = Some(("label", "value")).into_iter().collect();
+        srv
+    });
+    assert_eq!(
+        *port2222.rx.borrow().borrow(),
+        InboundServerConfig {
+            authorizations: mk_default_allow(DefaultAllow::ClusterUnauthenticated, cluster_net),
+            protocol: crate::ProxyProtocol::Detect {
+                timeout: detect_timeout,
+            },
+        }
+    );
+}
+
 /// Tests that pod servers are configured with defaults based on the global `DefaultAllow` policy.
 ///
 /// Iterates through each default policy and validates that it produces expected configurations.

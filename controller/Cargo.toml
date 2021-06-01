@@ -7,6 +7,7 @@ license = "Apache-2.0"
 publish = false
 
 [features]
+fixme = []
 rustfmt = ["polixy-grpc/rustfmt"]
 
 [dependencies]

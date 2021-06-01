@@ -198,7 +198,7 @@ impl Index {
     pub(super) fn apply_server(&mut self, srv: polixy::Server) {
         let ns_name = srv.namespace().expect("namespace must be set");
         let Namespace {
-            ref pods,
+            ref mut pods,
             ref mut authzs,
             ref mut servers,
             default_allow: _,

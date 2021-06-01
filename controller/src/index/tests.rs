@@ -142,7 +142,6 @@ async fn incrementally_configure_server() {
 
 // XXX this test currently fails due to a bug.
 #[tokio::test]
-#[cfg_attr(not(feature = "fixme"), ignore)]
 async fn server_update_deselects_pod() {
     let cluster_net = IpNet::from_str("192.0.2.0/24").unwrap();
     let pod_net = IpNet::from_str("192.0.2.2/28").unwrap();

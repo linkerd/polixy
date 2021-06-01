@@ -4,11 +4,9 @@ use crate::{
     lookup, KubeletIps, PodIps, ServerRx, ServerRxTx,
 };
 use anyhow::{anyhow, bail, Result};
-use parking_lot::Mutex;
 use std::{
     collections::{hash_map::Entry as HashEntry, HashMap, HashSet},
     net::IpAddr,
-    sync::Arc,
 };
 use tokio::sync::watch;
 use tracing::{debug, instrument, trace, warn};
@@ -20,21 +18,21 @@ pub(super) struct PodIndex {
 
 #[derive(Debug)]
 struct Pod {
-    servers: Box<PortServers>,
+    ports: PodPorts,
     labels: k8s::Labels,
     default_allow_rx: ServerRx,
 }
 
 #[derive(Debug, Default)]
-struct PortServers {
-    by_port: HashMap<u16, Arc<Server>>,
-    by_name: HashMap<String, Vec<Arc<Server>>>,
+struct PodPorts {
+    by_port: HashMap<u16, Port>,
+    by_name: HashMap<String, Vec<u16>>,
 }
 
 #[derive(Debug)]
-struct Server {
-    name: Mutex<Option<String>>,
-    tx: ServerRxTx,
+struct Port {
+    server_name: Option<String>,
+    server_tx: ServerRxTx,
 }
 
 // === impl Index ===
@@ -193,10 +191,10 @@ impl PodIndex {
 
                 // Start tracking the pod's metadata so it can be linked against servers as they are
                 // created. Immediately link the pod against the server index.
-                let pod = Pod {
+                let mut pod = Pod {
                     default_allow_rx,
                     labels: pod.metadata.labels.into(),
-                    servers: ports.into(),
+                    ports,
                 };
                 pod.link_servers(&servers);
 
@@ -238,35 +236,31 @@ impl PodIndex {
         server_rx: ServerRx,
         pod_ips: PodIps,
         kubelet: KubeletIps,
-    ) -> (PortServers, HashMap<u16, lookup::PodPort>) {
-        let mut servers = PortServers::default();
+    ) -> (PodPorts, HashMap<u16, lookup::PodPort>) {
+        let mut ports = PodPorts::default();
         let mut lookups = HashMap::new();
 
         for container in spec.containers.into_iter() {
             for p in container.ports.into_iter() {
                 if p.protocol.map(|p| p == "TCP").unwrap_or(true) {
                     let port = p.container_port as u16;
-                    if servers.by_port.contains_key(&port) {
+                    if ports.by_port.contains_key(&port) {
                         debug!(port, "Port duplicated");
                         continue;
                     }
 
-                    let (tx, rx) = watch::channel(server_rx.clone());
-                    let pod_port = Arc::new(Server {
-                        tx,
-                        name: Mutex::new(None),
-                    });
+                    let (server_tx, rx) = watch::channel(server_rx.clone());
+                    let pod_port = Port {
+                        server_name: None,
+                        server_tx,
+                    };
 
                     trace!(%port, name = ?p.name, "Adding port");
                     if let Some(name) = p.name {
-                        servers
-                            .by_name
-                            .entry(name)
-                            .or_default()
-                            .push(pod_port.clone());
+                        ports.by_name.entry(name).or_default().push(port);
                     }
 
-                    servers.by_port.insert(port, pod_port);
+                    ports.by_port.insert(port, pod_port);
                     lookups.insert(
                         port,
                         lookup::PodPort {
@@ -279,7 +273,7 @@ impl PodIndex {
             }
         }
 
-        (servers, lookups)
+        (ports, lookups)
     }
 
     /// Extract the pod's IPs or throws an error.
@@ -304,26 +298,29 @@ impl PodIndex {
         Ok(PodIps(ips.into()))
     }
 
-    pub(super) fn link_servers(&self, servers: &SrvIndex) {
-        for pod in self.index.values() {
+    pub(super) fn link_servers(&mut self, servers: &SrvIndex) {
+        for pod in self.index.values_mut() {
             pod.link_servers(&servers)
         }
     }
 
-    pub(super) fn reset_server(&self, name: &str) {
-        for (pod_name, pod) in self.index.iter() {
+    pub(super) fn reset_server(&mut self, name: &str) {
+        for (pod_name, pod) in self.index.iter_mut() {
             let rx = pod.default_allow_rx.clone();
-            for (port, server) in pod.servers.by_port.iter() {
-                let mut sn = server.name.lock();
-                if sn.as_ref().map(|n| n.as_str()) == Some(name) {
-                    debug!(pod = %pod_name, %port, "Removing server from pod");
-                    *sn = None;
-                    server
-                        .tx
+            for (p, port) in pod.ports.by_port.iter_mut() {
+                if port
+                    .server_name
+                    .as_ref()
+                    .map(|n| n == name)
+                    .unwrap_or(false)
+                {
+                    debug!(pod = %pod_name, port = %p, "Removing server from pod");
+                    port.server_name = None;
+                    port.server_tx
                         .send(rx.clone())
                         .expect("pod config receiver must still be held");
                 } else {
-                    trace!(pod = %pod_name, %port, server = ?sn, "Server does not match");
+                    trace!(pod = %pod_name, port = %p, server = ?port.server_name, "Server does not match");
                 }
             }
         }
@@ -336,58 +333,66 @@ impl Pod {
     /// Links this pods to server (by label selector).
     //
     // XXX This doesn't properly reset a policy when a server is removed or de-selects a pod.
-    fn link_servers(&self, servers: &SrvIndex) {
-        for (name, port, rx) in servers.iter_matching(self.labels.clone()) {
-            for p in self.servers.collect_port(&port).into_iter() {
-                self.link_server_port(name, rx, p);
+    fn link_servers(&mut self, servers: &SrvIndex) {
+        let mut remaining_ports = self.ports.by_port.keys().copied().collect::<HashSet<u16>>();
+
+        // Get all servers that match this pod.
+        let matching = servers.iter_matching(self.labels.clone());
+        for (name, port_match, rx) in matching {
+            // Get all pod ports that match this server.
+            for p in self.ports.collect_port(&port_match).into_iter().flatten() {
+                self.link_server_port(p, name, rx);
+                remaining_ports.remove(&p);
             }
+        }
+
+        for p in remaining_ports.into_iter() {
+            let port = self.ports.by_port.get_mut(&p).unwrap();
+            port.server_name = None;
+            port.server_tx
+                .send(self.default_allow_rx.clone())
+                .expect("pod config receiver must still be held");
         }
     }
 
-    fn link_server_port(&self, name: &str, rx: &ServerRx, port: Arc<Server>) {
+    fn link_server_port(&mut self, port: u16, name: &str, rx: &ServerRx) {
+        let port = match self.ports.by_port.get_mut(&port) {
+            Some(p) => p,
+            None => return,
+        };
+
         // Either this port is using a default allow policy, and the server name is unset,
         // or multiple servers select this pod. If there's a conflict, we panic if the proxy
         // is running in debug mode. In release mode, we log a warning and ignore the
         // conflicting server.
-        let mut sn = port.name.lock();
-        if let Some(sn) = sn.as_ref() {
+        if let Some(sn) = port.server_name.as_ref() {
             if sn != name {
                 debug_assert!(false, "Pod port must not match multiple servers");
                 tracing::warn!("Pod port matches multiple servers: {} and {}", sn, name);
-                return;
             }
+            // If the name matched there's no use in proceeding with a redundant update. If the
+            return;
         }
-        *sn = Some(name.to_string());
+        port.server_name = Some(name.to_string());
 
-        port.tx
+        port.server_tx
             .send(rx.clone())
             .expect("pod config receiver must be set");
         debug!(server = %name, "Pod server updated");
     }
 }
 
-// === impl PortServers ===
+// === impl PodPorts ===
 
-impl PortServers {
+impl PodPorts {
     /// Finds all ports on this pod that match a server's port reference.
     ///
     /// Numeric port matches will only return a single server, generally, while named port
     /// references may select an arbitrary number of server ports.
-    fn collect_port(&self, port_match: &polixy::server::Port) -> Vec<Arc<Server>> {
+    fn collect_port(&self, port_match: &polixy::server::Port) -> Option<Vec<u16>> {
         match port_match {
-            polixy::server::Port::Number(ref port) => self
-                .by_port
-                .get(port)
-                .into_iter()
-                .cloned()
-                .collect::<Vec<_>>(),
-            polixy::server::Port::Name(ref name) => self
-                .by_name
-                .get(name)
-                .into_iter()
-                .flat_map(|p| p.iter())
-                .cloned()
-                .collect::<Vec<_>>(),
+            polixy::server::Port::Number(ref port) => Some(vec![*port]),
+            polixy::server::Port::Name(ref name) => self.by_name.get(name).cloned(),
         }
     }
 }

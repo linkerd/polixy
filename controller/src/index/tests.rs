@@ -4,6 +4,8 @@ use ipnet::{IpNet, Ipv4Net, Ipv6Net};
 use std::{str::FromStr, sync::Arc};
 use tokio::time;
 
+/// Creates a pod, then a server, then an authorization--then deletes these resources in the reverse
+/// order--checking the server watch is updated at each step.
 #[tokio::test]
 async fn incrementally_configure_server() {
     let cluster_net = IpNet::from_str("192.0.2.0/24").unwrap();
@@ -22,14 +24,14 @@ async fn incrementally_configure_server() {
 
     idx.apply_node(mk_node("node-0", pod_net)).unwrap();
 
-    let p = mk_pod(
+    let pod = mk_pod(
         "ns-0",
         "pod-0",
         "node-0",
         pod_ip,
         Some(("container-0", vec![2222, 9999])),
     );
-    idx.apply_pod(p, &mut lookup_tx).unwrap();
+    idx.apply_pod(pod.clone(), &mut lookup_tx).unwrap();
 
     let default_config = InboundServerConfig {
         authorizations: mk_default_allow(DefaultAllow::ClusterUnauthenticated, cluster_net),
@@ -42,7 +44,7 @@ async fn incrementally_configure_server() {
     assert!(lookup_rx.lookup("ns-0", "pod-0", 7000).is_none());
 
     // The default policy applies for all exposed ports.
-    let port2222 = lookup_rx.lookup("ns-0", "pod-0", 2222).unwrap();
+    let mut port2222 = lookup_rx.lookup("ns-0", "pod-0", 2222).unwrap();
     assert_eq!(port2222.pod_ips, PodIps(Arc::new([pod_ip])));
     assert_eq!(port2222.kubelet_ips, KubeletIps(Arc::new([kubelet_ip])));
     assert_eq!(*port2222.rx.borrow().borrow(), default_config);
@@ -116,11 +118,26 @@ async fn incrementally_configure_server() {
 
     // Delete the authorization and check that the watch has reverted to its prior state.
     idx.delete_authz(authz);
+    assert!(matches!(
+        time::timeout(time::Duration::from_secs(1), port2222.rx.changed()).await,
+        Ok(Ok(()))
+    ));
     assert_eq!(*port2222.rx.borrow().borrow(), basic_config);
 
     // Delete the server and check that the watch has reverted the default state.
     idx.delete_server(srv).unwrap();
+    assert!(matches!(
+        time::timeout(time::Duration::from_secs(1), port2222.rx.changed()).await,
+        Ok(Ok(()))
+    ));
     assert_eq!(*port2222.rx.borrow().borrow(), default_config);
+
+    // Delete the pod and check that the watch recognizes that the watch has been closed.
+    idx.delete_pod(pod, &mut lookup_tx).unwrap();
+    assert!(matches!(
+        time::timeout(time::Duration::from_secs(1), port2222.rx.changed()).await,
+        Ok(Err(_))
+    ));
 }
 
 // XXX this test currently fails due to a bug.

@@ -27,7 +27,7 @@ async fn incrementally_configure_server() {
         "pod-0",
         "node-0",
         pod_ip,
-        Some(("container-0", vec![8000, 9000])),
+        Some(("container-0", vec![2222, 9999])),
     );
     idx.apply_pod(p, &mut lookup_tx).unwrap();
 
@@ -38,41 +38,43 @@ async fn incrementally_configure_server() {
         },
     };
 
-    // Lookup a port that's not exposed by the pod --> not found.
+    // A port that's not exposed by the pod is not found.
     assert!(lookup_rx.lookup("ns-0", "pod-0", 7000).is_none());
 
-    // Lookup port 8000 -> default config.
-    let port8000 = lookup_rx.lookup("ns-0", "pod-0", 8000).unwrap();
-    assert_eq!(port8000.pod_ips, PodIps(Arc::new([pod_ip])));
-    assert_eq!(port8000.kubelet_ips, KubeletIps(Arc::new([kubelet_ip])));
-    assert_eq!(*port8000.rx.borrow().borrow(), default_config);
+    // The default policy applies for all exposed ports.
+    let port2222 = lookup_rx.lookup("ns-0", "pod-0", 2222).unwrap();
+    assert_eq!(port2222.pod_ips, PodIps(Arc::new([pod_ip])));
+    assert_eq!(port2222.kubelet_ips, KubeletIps(Arc::new([kubelet_ip])));
+    assert_eq!(*port2222.rx.borrow().borrow(), default_config);
 
-    // Lookup port 9000 -> default config.
-    let port9000 = lookup_rx.lookup("ns-0", "pod-0", 9000).unwrap();
-    assert!(Arc::ptr_eq(&port9000.pod_ips.0, &port8000.pod_ips.0));
+    // In fact, both port resolutions should point to the same data structures (rather than being
+    // duplicated for each pod).
+    let port9999 = lookup_rx.lookup("ns-0", "pod-0", 9999).unwrap();
+    assert!(Arc::ptr_eq(&port9999.pod_ips.0, &port2222.pod_ips.0));
     assert!(Arc::ptr_eq(
-        &port9000.kubelet_ips.0,
-        &port8000.kubelet_ips.0
+        &port9999.kubelet_ips.0,
+        &port2222.kubelet_ips.0
     ));
-    assert_eq!(*port9000.rx.borrow().borrow(), default_config);
+    assert_eq!(*port9999.rx.borrow().borrow(), default_config);
 
-    // Update the server on port 8000 and check that the server is updated.
+    // Update the server on port 2222 to have a configured protocol.
     let srv = {
-        let mut srv = mk_server("ns-0", "srv-0", Port::Number(8000), None, None);
+        let mut srv = mk_server("ns-0", "srv-0", Port::Number(2222), None, None);
         srv.spec.proxy_protocol = Some(k8s::polixy::server::ProxyProtocol::Http1);
         srv
     };
     idx.apply_server(srv.clone());
+
+    // Check that the watch has been updated to reflect the above change and that this change _only_
+    // applies to the correct port.
     let basic_config = InboundServerConfig {
         authorizations: Default::default(),
         protocol: crate::ProxyProtocol::Http1,
     };
-    assert_eq!(*port8000.rx.borrow().borrow(), basic_config);
+    assert_eq!(*port2222.rx.borrow().borrow(), basic_config);
+    assert_eq!(*port9999.rx.borrow().borrow(), default_config);
 
-    // Ensure port 9000 hasn't changed.
-    assert_eq!(*port9000.rx.borrow().borrow(), default_config);
-
-    // Add a server to the
+    // Add an authorization policy that selects the server by name.
     let authz = {
         let mut az = mk_authz("ns-0", "authz-0", "srv-0");
         az.spec.client = k8s::polixy::authz::Client {
@@ -86,8 +88,9 @@ async fn incrementally_configure_server() {
     };
     idx.apply_authz(authz.clone()).unwrap();
 
+    // Check that the watch now has authorized traffic as described above.
     assert_eq!(
-        *port8000.rx.borrow().borrow(),
+        *port2222.rx.borrow().borrow(),
         InboundServerConfig {
             protocol: ProxyProtocol::Http1,
             authorizations: Some((
@@ -111,11 +114,13 @@ async fn incrementally_configure_server() {
         }
     );
 
+    // Delete the authorization and check that the watch has reverted to its prior state.
     idx.delete_authz(authz);
-    assert_eq!(*port8000.rx.borrow().borrow(), basic_config);
+    assert_eq!(*port2222.rx.borrow().borrow(), basic_config);
 
-    // idx.delete_server(srv).unwrap();
-    // assert_eq!(*port8000.rx.borrow().borrow(), basic_config);
+    // Delete the server and check that the watch has reverted the default state.
+    idx.delete_server(srv).unwrap();
+    assert_eq!(*port2222.rx.borrow().borrow(), default_config);
 }
 
 /// Tests that pod servers are configured with defaults based on the global `DefaultAllow` policy.
@@ -148,7 +153,7 @@ async fn default_allow_global() {
             "pod-0",
             "node-0",
             pod_ip,
-            Some(("container-0", vec![8000])),
+            Some(("container-0", vec![2222])),
         );
         idx.apply_pod(p, &mut lookup_tx).unwrap();
 
@@ -159,11 +164,11 @@ async fn default_allow_global() {
             },
         };
 
-        // Lookup port 8000 -> default config.
-        let port8000 = lookup_rx.lookup("ns-0", "pod-0", 8000).unwrap();
-        assert_eq!(port8000.pod_ips, PodIps(Arc::new([pod_ip])));
-        assert_eq!(port8000.kubelet_ips, KubeletIps(Arc::new([kubelet_ip])));
-        assert_eq!(*port8000.rx.borrow().borrow(), config);
+        // Lookup port 2222 -> default config.
+        let port2222 = lookup_rx.lookup("ns-0", "pod-0", 2222).unwrap();
+        assert_eq!(port2222.pod_ips, PodIps(Arc::new([pod_ip])));
+        assert_eq!(port2222.kubelet_ips, KubeletIps(Arc::new([kubelet_ip])));
+        assert_eq!(*port2222.rx.borrow().borrow(), config);
     }
 }
 
@@ -205,7 +210,7 @@ async fn default_allow_annotated() {
             "pod-0",
             "node-0",
             pod_ip,
-            Some(("container-0", vec![8000])),
+            Some(("container-0", vec![2222])),
         );
         p.annotations_mut()
             .insert(DefaultAllow::ANNOTATION.into(), default.to_string());
@@ -218,10 +223,10 @@ async fn default_allow_annotated() {
             },
         };
 
-        let port8000 = lookup_rx.lookup("ns-0", "pod-0", 8000).unwrap();
-        assert_eq!(port8000.pod_ips, PodIps(Arc::new([pod_ip])));
-        assert_eq!(port8000.kubelet_ips, KubeletIps(Arc::new([kubelet_ip])));
-        assert_eq!(*port8000.rx.borrow().borrow(), config);
+        let port2222 = lookup_rx.lookup("ns-0", "pod-0", 2222).unwrap();
+        assert_eq!(port2222.pod_ips, PodIps(Arc::new([pod_ip])));
+        assert_eq!(port2222.kubelet_ips, KubeletIps(Arc::new([kubelet_ip])));
+        assert_eq!(*port2222.rx.borrow().borrow(), config);
     }
 }
 
@@ -250,18 +255,18 @@ async fn default_allow_annotated_invalid() {
         "pod-0",
         "node-0",
         pod_ip,
-        Some(("container-0", vec![8000])),
+        Some(("container-0", vec![2222])),
     );
     p.annotations_mut()
         .insert(DefaultAllow::ANNOTATION.into(), "bogus".into());
     idx.apply_pod(p, &mut lookup_tx).unwrap();
 
-    // Lookup port 8000 -> default config.
-    let port8000 = lookup_rx.lookup("ns-0", "pod-0", 8000).unwrap();
-    assert_eq!(port8000.pod_ips, PodIps(Arc::new([pod_ip])));
-    assert_eq!(port8000.kubelet_ips, KubeletIps(Arc::new([kubelet_ip])));
+    // Lookup port 2222 -> default config.
+    let port2222 = lookup_rx.lookup("ns-0", "pod-0", 2222).unwrap();
+    assert_eq!(port2222.pod_ips, PodIps(Arc::new([pod_ip])));
+    assert_eq!(port2222.kubelet_ips, KubeletIps(Arc::new([kubelet_ip])));
     assert_eq!(
-        *port8000.rx.borrow().borrow(),
+        *port2222.rx.borrow().borrow(),
         InboundServerConfig {
             authorizations: mk_default_allow(DefaultAllow::AllUnauthenticated, cluster_net),
             protocol: crate::ProxyProtocol::Detect {
@@ -293,7 +298,7 @@ async fn pod_before_node() {
         "pod-0",
         "node-0",
         pod_ip,
-        Some(("container-0", vec![8000, 9000])),
+        Some(("container-0", vec![2222, 9999])),
     );
     let _panics = idx.apply_pod(p, &mut lookup_tx);
 }

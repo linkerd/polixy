@@ -62,24 +62,6 @@ spec:
                             items:
                               type: string
 
-                ## XXX Instead of complicating the server with a container
-                ## name reference, it's probably better to have an admission
-                ## controller that detects ambiguities... I.e., preventing
-                ## servers/pods from being created where a port matches more
-                ## than one server. It's fine if a single (by-name) server
-                ## matches more than one port on a pod.
-                #
-                # containerName:
-                #   description: >-
-                #     Indicates the name of the container that `port` refers to.
-                #
-                #     Kubernetes does not enforce port name uniqueness across
-                #     multiple containers in a port. So, when a pod has
-                #     containers with overlapping port names, this field can be
-                #     used to disambiguate a port.
-                #   type: string
-                #   pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
-
                 port:
                   description: >-
                     A port name or number. Must exist in a pod spec.

@@ -114,7 +114,6 @@ async fn incrementally_configure_server() {
     idx.delete_authz(authz);
     assert_eq!(*port8000.rx.borrow().borrow(), basic_config);
 
-    // FIXME bug
     // idx.delete_server(srv).unwrap();
     // assert_eq!(*port8000.rx.borrow().borrow(), basic_config);
 }
@@ -224,6 +223,52 @@ async fn default_allow_annotated() {
         assert_eq!(port8000.kubelet_ips, KubeletIps(Arc::new([kubelet_ip])));
         assert_eq!(*port8000.rx.borrow().borrow(), config);
     }
+}
+
+/// Tests that an invalid workload annotation is ignored in favor of the global default.
+#[tokio::test]
+async fn default_allow_annotated_invalid() {
+    let cluster_net = IpNet::from_str("192.0.2.0/24").unwrap();
+    let pod_net = IpNet::from_str("192.0.2.2/28").unwrap();
+    let (kubelet_ip, pod_ip) = {
+        let mut ips = pod_net.hosts();
+        (ips.next().unwrap(), ips.next().unwrap())
+    };
+    let detect_timeout = time::Duration::from_secs(1);
+
+    let mut idx = Index::new(
+        vec![cluster_net],
+        DefaultAllow::AllUnauthenticated,
+        detect_timeout,
+    );
+    let (mut lookup_tx, lookup_rx) = crate::lookup::pair();
+
+    idx.apply_node(mk_node("node-0", pod_net)).unwrap();
+
+    let mut p = mk_pod(
+        "ns-0",
+        "pod-0",
+        "node-0",
+        pod_ip,
+        Some(("container-0", vec![8000])),
+    );
+    p.annotations_mut()
+        .insert(DefaultAllow::ANNOTATION.into(), "bogus".into());
+    idx.apply_pod(p, &mut lookup_tx).unwrap();
+
+    // Lookup port 8000 -> default config.
+    let port8000 = lookup_rx.lookup("ns-0", "pod-0", 8000).unwrap();
+    assert_eq!(port8000.pod_ips, PodIps(Arc::new([pod_ip])));
+    assert_eq!(port8000.kubelet_ips, KubeletIps(Arc::new([kubelet_ip])));
+    assert_eq!(
+        *port8000.rx.borrow().borrow(),
+        InboundServerConfig {
+            authorizations: mk_default_allow(DefaultAllow::AllUnauthenticated, cluster_net),
+            protocol: crate::ProxyProtocol::Detect {
+                timeout: detect_timeout,
+            },
+        }
+    );
 }
 
 /// Tests observing a pod before its node has been observed.

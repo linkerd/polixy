@@ -20,7 +20,7 @@ pub(super) struct NodeIndex {
 
 #[derive(Debug)]
 enum State {
-    Pending(HashMap<(String, String), k8s::Pod>),
+    Pending(HashMap<String, HashMap<String, k8s::Pod>>),
     Known(KubeletIps),
 }
 
@@ -33,16 +33,51 @@ impl NodeIndex {
             HashEntry::Occupied(mut entry) => match entry.get_mut() {
                 State::Known(ips) => Some((pod, ips.clone())),
                 State::Pending(pods) => {
-                    let key = (pod.namespace()?, pod.name());
-                    pods.insert(key, pod);
+                    pods.entry(pod.namespace()?)
+                        .or_default()
+                        .insert(pod.name(), pod);
                     None
                 }
             },
             HashEntry::Vacant(entry) => {
-                let key = (pod.namespace()?, pod.name());
-                entry.insert(State::Pending(Some((key, pod)).into_iter().collect()));
+                let ns = pod.namespace()?;
+                let name = pod.name();
+                entry.insert(State::Pending(
+                    Some((ns, Some((name, pod)).into_iter().collect()))
+                        .into_iter()
+                        .collect(),
+                ));
                 None
             }
+        }
+    }
+
+    pub fn clear_pending_pod(&mut self, ns: &str, pod: &str) -> bool {
+        for state in self.index.values_mut() {
+            if let State::Pending(by_ns) = state {
+                if let Some(pods) = by_ns.get_mut(ns) {
+                    if pods.remove(pod).is_some() {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        false
+    }
+
+    pub fn clear_pending_pods(&mut self) {
+        let pending_nodes = self
+            .index
+            .iter()
+            .filter_map(|(node, state)| match state {
+                State::Known(_) => None,
+                State::Pending(_) => Some(node.clone()),
+            })
+            .collect::<Vec<_>>();
+
+        for node in pending_nodes {
+            self.index.remove(&node);
         }
     }
 }
@@ -86,9 +121,11 @@ impl Index {
                 };
 
                 let mut result = Ok(());
-                for (_, pod) in pods.into_iter() {
-                    if let Err(e) = self.apply_pod(pod) {
-                        result = Err(e);
+                for (_, by_ns) in pods.into_iter() {
+                    for (_, pod) in by_ns.into_iter() {
+                        if let Err(e) = self.apply_pod(pod) {
+                            result = Err(e);
+                        }
                     }
                 }
                 result

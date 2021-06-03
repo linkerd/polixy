@@ -84,6 +84,12 @@ impl Index {
     }
 
     fn rm_pod(&mut self, ns: &str, pod: &str) -> Result<()> {
+        if self.nodes.clear_pending_pod(ns, pod) {
+            // If the pod was pending that it can't be in the main index.
+            debug!("Cleared pending pod");
+            return Ok(());
+        }
+
         self.namespaces
             .index
             .get_mut(ns)
@@ -102,6 +108,8 @@ impl Index {
 
     #[instrument(skip(self, pods))]
     pub(super) fn reset_pods(&mut self, pods: Vec<k8s::Pod>) -> Result<()> {
+        self.nodes.clear_pending_pods();
+
         let mut prior_pods = self
             .namespaces
             .iter()

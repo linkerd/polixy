@@ -40,13 +40,13 @@ struct Port {
 impl Index {
     /// Builds a `Pod`, linking it with servers and nodes.
     #[instrument(
-        skip(self, pod, lookups),
+        skip(self, pod),
         fields(
             ns = ?pod.metadata.namespace,
             name = ?pod.metadata.name,
         )
     )]
-    pub(super) fn apply_pod(&mut self, pod: k8s::Pod, lookups: &mut lookup::Writer) -> Result<()> {
+    pub(super) fn apply_pod(&mut self, pod: k8s::Pod) -> Result<()> {
         let Namespace {
             default_allow,
             ref mut pods,
@@ -61,7 +61,13 @@ impl Index {
         let mk_default_allow =
             move |da: Option<DefaultAllow>| allows.get(da.unwrap_or(default_allow));
 
-        pods.apply(pod, &self.nodes, servers, lookups, mk_default_allow)
+        pods.apply(
+            pod,
+            &mut self.nodes,
+            servers,
+            &mut self.lookups,
+            mk_default_allow,
+        )
     }
 
     #[instrument(
@@ -71,13 +77,13 @@ impl Index {
             name = ?pod.metadata.name,
         )
     )]
-    pub(super) fn delete_pod(&mut self, pod: k8s::Pod, lookups: &mut lookup::Writer) -> Result<()> {
+    pub(super) fn delete_pod(&mut self, pod: k8s::Pod) -> Result<()> {
         let ns_name = pod.namespace().expect("namespace must be set");
         let pod_name = pod.name();
-        self.rm_pod(ns_name.as_str(), pod_name.as_str(), lookups)
+        self.rm_pod(ns_name.as_str(), pod_name.as_str())
     }
 
-    fn rm_pod(&mut self, ns: &str, pod: &str, lookups: &mut lookup::Writer) -> Result<()> {
+    fn rm_pod(&mut self, ns: &str, pod: &str) -> Result<()> {
         self.namespaces
             .index
             .get_mut(ns)
@@ -87,7 +93,7 @@ impl Index {
             .remove(pod)
             .ok_or_else(|| anyhow!("pod {} doesn't exist", pod))?;
 
-        lookups.unset(&ns, &pod)?;
+        self.lookups.unset(&ns, &pod)?;
 
         debug!("Removed pod");
 
@@ -95,11 +101,7 @@ impl Index {
     }
 
     #[instrument(skip(self, pods))]
-    pub(super) fn reset_pods(
-        &mut self,
-        pods: Vec<k8s::Pod>,
-        lookups: &mut lookup::Writer,
-    ) -> Result<()> {
+    pub(super) fn reset_pods(&mut self, pods: Vec<k8s::Pod>) -> Result<()> {
         let mut prior_pods = self
             .namespaces
             .iter()
@@ -116,14 +118,14 @@ impl Index {
                 ns.remove(pod.name().as_str());
             }
 
-            if let Err(error) = self.apply_pod(pod, lookups) {
+            if let Err(error) = self.apply_pod(pod) {
                 result = Err(error);
             }
         }
 
         for (ns, pods) in prior_pods.into_iter() {
             for pod in pods.into_iter() {
-                if let Err(error) = self.rm_pod(ns.as_str(), pod.as_str(), lookups) {
+                if let Err(error) = self.rm_pod(ns.as_str(), pod.as_str()) {
                     result = Err(error);
                 }
             }
@@ -139,7 +141,7 @@ impl PodIndex {
     fn apply(
         &mut self,
         pod: k8s::Pod,
-        nodes: &NodeIndex,
+        nodes: &mut NodeIndex,
         servers: &SrvIndex,
         lookups: &mut lookup::Writer,
         get_default_allow_rx: impl Fn(Option<DefaultAllow>) -> ServerRx,
@@ -148,25 +150,19 @@ impl PodIndex {
         let pod_name = pod.name();
         match self.index.entry(pod_name) {
             HashEntry::Vacant(pod_entry) => {
-                let spec = pod.spec.ok_or_else(|| anyhow!("pod missing spec"))?;
-                let status = pod.status.ok_or_else(|| anyhow!("pod missing status"))?;
-
-                // Lookup the pod's node's kubelet IP or stop processing the update. When the pod
-                // gets assigned to a node, we'll get a new update and proceed. This is needed
-                // because we always permit kubelet access.
-                let kubelet = match spec.node_name.as_ref() {
-                    Some(node) => {
-                        // We've received a pod update before the node is known. This should be
-                        // effectively impossible. We could technically handle this (unlikely)
-                        // situation gracefully, but it would require updating pods on node
-                        // creation, which seems unnecessarily complex.
-                        nodes.get(node.as_str()).expect("node not yet indexed")
-                    }
+                // Lookup the pod's node's kubelet IP or stop processing the update. If the pod does
+                // not yet have a node, it will be ignored. If the node isn't yet in the index, the
+                // pod is saved to be processed later.
+                let (pod, kubelet) = match nodes.get_or_push_pending(pod) {
+                    Some((pod, ips)) => (pod, ips),
                     None => {
-                        debug!("Pod is not yet assigned to a Node");
+                        debug!("Pod cannot yet assigned to a Node");
                         return Ok(());
                     }
                 };
+
+                let spec = pod.spec.ok_or_else(|| anyhow!("pod missing spec"))?;
+                let status = pod.status.ok_or_else(|| anyhow!("pod missing status"))?;
 
                 // Similarly, lookup the pod's IPs so we can return it with port lookups so servers
                 // can ignore connections targeting other endpoints.
@@ -346,6 +342,7 @@ impl Pod {
             }
         }
 
+        // Iterate through the ports that have not been matched to clear them.
         for p in remaining_ports.into_iter() {
             let port = self.ports.by_port.get_mut(&p).unwrap();
             port.server_name = None;

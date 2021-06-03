@@ -15,14 +15,35 @@ use tracing::{debug, instrument, trace, warn};
 
 #[derive(Debug, Default)]
 pub(super) struct NodeIndex {
-    index: HashMap<String, KubeletIps>,
+    index: HashMap<String, State>,
+}
+
+#[derive(Debug)]
+enum State {
+    Pending(HashMap<(String, String), k8s::Pod>),
+    Known(KubeletIps),
 }
 
 // === impl NodeIndex ===
 
 impl NodeIndex {
-    pub fn get(&self, name: &str) -> Option<KubeletIps> {
-        self.index.get(name).cloned()
+    pub fn get_or_push_pending(&mut self, pod: k8s::Pod) -> Option<(k8s::Pod, KubeletIps)> {
+        let node_name = pod.spec.as_ref()?.node_name.clone()?;
+        match self.index.entry(node_name) {
+            HashEntry::Occupied(mut entry) => match entry.get_mut() {
+                State::Known(ips) => Some((pod, ips.clone())),
+                State::Pending(pods) => {
+                    let key = (pod.namespace()?, pod.name());
+                    pods.insert(key, pod);
+                    None
+                }
+            },
+            HashEntry::Vacant(entry) => {
+                let key = (pod.namespace()?, pod.name());
+                entry.insert(State::Pending(Some((key, pod)).into_iter().collect()));
+                None
+            }
+        }
     }
 }
 
@@ -43,14 +64,36 @@ impl Index {
                 let ips = kubelet_ips(node)
                     .with_context(|| format!("failed to load kubelet IPs for {}", entry.key()))?;
                 debug!(?ips, "Adding");
-                entry.insert(ips);
-                // TODO check pods waiting on this node's registry.
+                entry.insert(State::Known(ips));
+                Ok(())
             }
 
-            HashEntry::Occupied(_) => trace!("Already existed"),
-        }
+            HashEntry::Occupied(mut entry) => {
+                // If the node is already configured, ignore the update.
+                if let State::Known(_) = entry.get() {
+                    trace!("Already existed");
+                    return Ok(());
+                }
 
-        Ok(())
+                // Otherwise, the update is replacing a set of pending pods. Update the state to the
+                // known set of IPs and then apply all of the pending pods.
+                let ips = kubelet_ips(node)
+                    .with_context(|| format!("failed to load kubelet IPs for {}", entry.key()))?;
+                debug!(?ips, "Adding");
+                let pods = match std::mem::replace(entry.get_mut(), State::Known(ips)) {
+                    State::Pending(pods) => pods,
+                    State::Known(_) => unreachable!("the node state must have been pending"),
+                };
+
+                let mut result = Ok(());
+                for (_, pod) in pods.into_iter() {
+                    if let Err(e) = self.apply_pod(pod) {
+                        result = Err(e);
+                    }
+                }
+                result
+            }
+        }
     }
 
     #[instrument(skip(self))]

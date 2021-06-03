@@ -31,6 +31,8 @@ pub struct Index {
     nodes: NodeIndex,
 
     default_allows: DefaultAllows,
+
+    lookups: lookup::Writer,
 }
 
 /// Selects servers for an authorization.
@@ -44,6 +46,7 @@ enum ServerSelector {
 
 impl Index {
     pub(crate) fn new(
+        lookups: lookup::Writer,
         cluster_nets: Vec<ipnet::IpNet>,
         default_allow: DefaultAllow,
         detect_timeout: time::Duration,
@@ -60,6 +63,7 @@ impl Index {
         let namespaces = NamespaceIndex::new(default_allow);
 
         Self {
+            lookups,
             namespaces,
             default_allows,
             nodes: NodeIndex::default(),
@@ -78,7 +82,6 @@ impl Index {
         mut self,
         resources: k8s::ResourceWatches,
         ready_tx: watch::Sender<bool>,
-        mut lookups: lookup::Writer,
     ) -> Error {
         let k8s::ResourceWatches {
             mut nodes_rx,
@@ -98,9 +101,9 @@ impl Index {
                 },
 
                 up = pods_rx.recv() => match up {
-                    k8s::Event::Applied(pod) => self.apply_pod(pod, &mut lookups).context("applying a pod"),
-                    k8s::Event::Deleted(pod) => self.delete_pod(pod, &mut lookups).context("deleting a pod"),
-                    k8s::Event::Restarted(pods) => self.reset_pods(pods, &mut lookups).context("resetting pods"),
+                    k8s::Event::Applied(pod) => self.apply_pod(pod).context("applying a pod"),
+                    k8s::Event::Deleted(pod) => self.delete_pod(pod).context("deleting a pod"),
+                    k8s::Event::Restarted(pods) => self.reset_pods(pods).context("resetting pods"),
                 },
 
                 up = servers_rx.recv() => match up {

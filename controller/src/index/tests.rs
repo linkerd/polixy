@@ -15,12 +15,13 @@ async fn incrementally_configure_server() {
         (ips.next().unwrap(), ips.next().unwrap())
     };
     let detect_timeout = time::Duration::from_secs(1);
+    let (lookup_tx, lookup_rx) = crate::lookup::pair();
     let mut idx = Index::new(
+        lookup_tx,
         vec![cluster_net],
         DefaultAllow::ClusterUnauthenticated,
         detect_timeout,
     );
-    let (mut lookup_tx, lookup_rx) = crate::lookup::pair();
 
     idx.apply_node(mk_node("node-0", pod_net)).unwrap();
 
@@ -31,7 +32,7 @@ async fn incrementally_configure_server() {
         pod_ip,
         Some(("container-0", vec![2222, 9999])),
     );
-    idx.apply_pod(pod.clone(), &mut lookup_tx).unwrap();
+    idx.apply_pod(pod.clone()).unwrap();
 
     let default_config = InboundServerConfig {
         authorizations: mk_default_allow(DefaultAllow::ClusterUnauthenticated, cluster_net),
@@ -133,7 +134,7 @@ async fn incrementally_configure_server() {
     assert_eq!(*port2222.rx.borrow().borrow(), default_config);
 
     // Delete the pod and check that the watch recognizes that the watch has been closed.
-    idx.delete_pod(pod, &mut lookup_tx).unwrap();
+    idx.delete_pod(pod).unwrap();
     assert!(matches!(
         time::timeout(time::Duration::from_secs(1), port2222.rx.changed()).await,
         Ok(Err(_))
@@ -150,12 +151,13 @@ async fn server_update_deselects_pod() {
         (ips.next().unwrap(), ips.next().unwrap())
     };
     let detect_timeout = time::Duration::from_secs(1);
+    let (lookup_tx, lookup_rx) = crate::lookup::pair();
     let mut idx = Index::new(
+        lookup_tx,
         vec![cluster_net],
         DefaultAllow::ClusterUnauthenticated,
         detect_timeout,
     );
-    let (mut lookup_tx, lookup_rx) = crate::lookup::pair();
 
     idx.apply_node(mk_node("node-0", pod_net)).unwrap();
     let p = mk_pod(
@@ -165,7 +167,7 @@ async fn server_update_deselects_pod() {
         pod_ip,
         Some(("container-0", vec![2222])),
     );
-    idx.apply_pod(p, &mut lookup_tx).unwrap();
+    idx.apply_pod(p).unwrap();
 
     let srv = {
         let mut srv = mk_server("ns-0", "srv-0", Port::Number(2222), None, None);
@@ -222,8 +224,8 @@ async fn default_allow_global() {
         DefaultAllow::ClusterAuthenticated,
         DefaultAllow::ClusterUnauthenticated,
     ] {
-        let mut idx = Index::new(vec![cluster_net], *default, detect_timeout);
-        let (mut lookup_tx, lookup_rx) = crate::lookup::pair();
+        let (lookup_tx, lookup_rx) = crate::lookup::pair();
+        let mut idx = Index::new(lookup_tx, vec![cluster_net], *default, detect_timeout);
 
         idx.apply_node(mk_node("node-0", pod_net)).unwrap();
 
@@ -234,7 +236,7 @@ async fn default_allow_global() {
             pod_ip,
             Some(("container-0", vec![2222])),
         );
-        idx.apply_pod(p, &mut lookup_tx).unwrap();
+        idx.apply_pod(p).unwrap();
 
         let config = InboundServerConfig {
             authorizations: mk_default_allow(*default, cluster_net),
@@ -272,7 +274,9 @@ async fn default_allow_annotated() {
         DefaultAllow::ClusterAuthenticated,
         DefaultAllow::ClusterUnauthenticated,
     ] {
+        let (lookup_tx, lookup_rx) = crate::lookup::pair();
         let mut idx = Index::new(
+            lookup_tx,
             vec![cluster_net],
             match *default {
                 DefaultAllow::Deny => DefaultAllow::AllUnauthenticated,
@@ -280,7 +284,6 @@ async fn default_allow_annotated() {
             },
             detect_timeout,
         );
-        let (mut lookup_tx, lookup_rx) = crate::lookup::pair();
 
         idx.apply_node(mk_node("node-0", pod_net)).unwrap();
 
@@ -293,7 +296,7 @@ async fn default_allow_annotated() {
         );
         p.annotations_mut()
             .insert(DefaultAllow::ANNOTATION.into(), default.to_string());
-        idx.apply_pod(p, &mut lookup_tx).unwrap();
+        idx.apply_pod(p).unwrap();
 
         let config = InboundServerConfig {
             authorizations: mk_default_allow(*default, cluster_net),
@@ -320,12 +323,13 @@ async fn default_allow_annotated_invalid() {
     };
     let detect_timeout = time::Duration::from_secs(1);
 
+    let (lookup_tx, lookup_rx) = crate::lookup::pair();
     let mut idx = Index::new(
+        lookup_tx,
         vec![cluster_net],
         DefaultAllow::AllUnauthenticated,
         detect_timeout,
     );
-    let (mut lookup_tx, lookup_rx) = crate::lookup::pair();
 
     idx.apply_node(mk_node("node-0", pod_net)).unwrap();
 
@@ -338,7 +342,7 @@ async fn default_allow_annotated_invalid() {
     );
     p.annotations_mut()
         .insert(DefaultAllow::ANNOTATION.into(), "bogus".into());
-    idx.apply_pod(p, &mut lookup_tx).unwrap();
+    idx.apply_pod(p).unwrap();
 
     // Lookup port 2222 -> default config.
     let port2222 = lookup_rx.lookup("ns-0", "pod-0", 2222).unwrap();
@@ -369,8 +373,13 @@ async fn pod_before_node() {
     };
     let detect_timeout = time::Duration::from_secs(1);
 
-    let mut idx = Index::new(vec![cluster_net], DefaultAllow::Deny, detect_timeout);
-    let (mut lookup_tx, _lookup_rx) = crate::lookup::pair();
+    let (lookup_tx, _lookup_rx) = crate::lookup::pair();
+    let mut idx = Index::new(
+        lookup_tx,
+        vec![cluster_net],
+        DefaultAllow::Deny,
+        detect_timeout,
+    );
 
     let p = mk_pod(
         "ns-0",
@@ -379,7 +388,7 @@ async fn pod_before_node() {
         pod_ip,
         Some(("container-0", vec![2222, 9999])),
     );
-    let _panics = idx.apply_pod(p, &mut lookup_tx);
+    let _panics = idx.apply_pod(p);
 }
 
 fn mk_node(name: impl Into<String>, pod_net: IpNet) -> k8s::Node {

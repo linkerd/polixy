@@ -360,10 +360,7 @@ async fn default_allow_annotated_invalid() {
 }
 
 /// Tests observing a pod before its node has been observed.
-///
-/// TODO this shouldn't panic.
 #[tokio::test]
-#[should_panic]
 async fn pod_before_node() {
     let cluster_net = IpNet::from_str("192.0.2.0/24").unwrap();
     let pod_net = IpNet::from_str("192.0.2.2/28").unwrap();
@@ -373,7 +370,7 @@ async fn pod_before_node() {
     };
     let detect_timeout = time::Duration::from_secs(1);
 
-    let (lookup_tx, _lookup_rx) = crate::lookup::pair();
+    let (lookup_tx, lookup_rx) = crate::lookup::pair();
     let mut idx = Index::new(
         lookup_tx,
         vec![cluster_net],
@@ -381,14 +378,21 @@ async fn pod_before_node() {
         detect_timeout,
     );
 
+    // When the pod is created, the node isn't yet known. The pod should be queued to be processed
+    // when the node is added below and lookups should act as if the pod is unknown.
     let p = mk_pod(
         "ns-0",
         "pod-0",
         "node-0",
         pod_ip,
-        Some(("container-0", vec![2222, 9999])),
+        Some(("container-0", vec![2222])),
     );
-    let _panics = idx.apply_pod(p);
+    idx.apply_pod(p).unwrap();
+    assert!(lookup_rx.lookup("ns-0", "pod-0", 2222).is_none());
+
+    // Once the node is created, the pod should be indexed and available via lookup.
+    idx.apply_node(mk_node("node-0", pod_net)).unwrap();
+    assert!(lookup_rx.lookup("ns-0", "pod-0", 2222).is_some());
 }
 
 fn mk_node(name: impl Into<String>, pod_net: IpNet) -> k8s::Node {

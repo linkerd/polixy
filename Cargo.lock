@@ -253,6 +253,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fea41bba32d969b513997752735605054bc0dfa92b4c56bf1189f2e174be7a10"
 
 [[package]]
+name = "drain"
+version = "0.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bace0faf279ba51822e2f4518eb311636d0e3198adbf7f55f496dc6ac96ac558"
+dependencies = [
+ "futures",
+ "tokio",
+]
+
+[[package]]
 name = "dtoa"
 version = "0.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -750,15 +760,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7fb9b38af92608140b86b693604b9ffcc5824240a484d1ecd4795bacb2fe88f3"
 
 [[package]]
-name = "linkerd-drain"
-version = "0.1.0"
-source = "git+https://github.com/linkerd/linkerd2-proxy?branch=main#9abd27ddaf9531df5ba1f5e68b552dfafe045f3d"
-dependencies = [
- "futures",
- "tokio",
-]
-
-[[package]]
 name = "linkerd2-proxy-api"
 version = "0.1.18"
 source = "git+https://github.com/linkerd/linkerd2-proxy-api?branch=ver/network#71ffa897f52ddbd7334692677bf48896b1c39cda"
@@ -1083,13 +1084,13 @@ dependencies = [
  "async-trait",
  "bytes",
  "dashmap",
+ "drain",
  "futures",
  "hyper",
  "ipnet",
  "k8s-openapi",
  "kube",
  "kube-runtime",
- "linkerd-drain",
  "parking_lot",
  "polixy-grpc",
  "schemars",

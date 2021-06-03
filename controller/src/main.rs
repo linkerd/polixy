@@ -40,7 +40,7 @@ async fn main() -> Result<()> {
         default_allow,
     } = Args::from_args();
 
-    let (drain_tx, drain_rx) = linkerd_drain::channel();
+    let (drain_tx, drain_rx) = drain::channel();
 
     let client = kube::Client::try_default()
         .await
@@ -85,7 +85,7 @@ async fn main() -> Result<()> {
 async fn grpc(
     addr: SocketAddr,
     handle: polixy_controller::lookup::Reader,
-    drain: linkerd_drain::Watch,
+    drain: drain::Watch,
     identity_domain: String,
 ) -> Result<()> {
     let server = polixy_controller::grpc::Server::new(handle, drain.clone(), identity_domain);
@@ -104,7 +104,7 @@ async fn grpc(
     Ok(())
 }
 
-async fn shutdown(drain: linkerd_drain::Signal) {
+async fn shutdown(drain: drain::Signal) {
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
             debug!("Received ctrl-c");

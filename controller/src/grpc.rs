@@ -10,14 +10,14 @@ use tracing::trace;
 #[derive(Clone, Debug)]
 pub struct Server {
     lookup: lookup::Reader,
-    drain: linkerd_drain::Watch,
+    drain: drain::Watch,
     identity_domain: Arc<str>,
 }
 
 impl Server {
     pub fn new(
         lookup: lookup::Reader,
-        drain: linkerd_drain::Watch,
+        drain: drain::Watch,
         identity_domain: impl Into<Arc<str>>,
     ) -> Self {
         Self {
@@ -130,7 +130,7 @@ fn response_stream(
     pod_ips: PodIps,
     kubelet_ips: KubeletIps,
     domain: Arc<str>,
-    drain: linkerd_drain::Watch,
+    drain: drain::Watch,
     mut port_rx: ServerRxRx,
 ) -> BoxWatchStream {
     let kubelet = kubelet_authz(kubelet_ips);

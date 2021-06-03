@@ -136,8 +136,10 @@ modes:
 4. Allow mesh-authenticated from within the cluster
 5. Deny
 
-This default setting should be configurable when installing Linkerd, and it probably should be
-configurable per-namespace as well.
+This default setting should be configurable at the control-plane-level, or per-workload via the
+`polixy.linkerd.io/default-allow` annotation. The proxy injector should copy these annotations from
+namespaces onto each workload so the controller only needs to track workload annotations for
+discovery.
 
 ## Proposal
 
@@ -361,6 +363,40 @@ can define its access policies.
 * How do policies interact with admin servers?
 * Do we want to stick with a [controller written in Rust](./src)? Or would it be better to
   re-implement this with `client-go`?
+
+## Implementation
+
+### Control-plane
+
+#### Injector
+
+* Set `LINKERD2_PROXY_INBOUND_CONTEXT` env with a namespace and pod name (similarly to
+  `LINKERD2_PROXY_DESTINATION_CONTEXT`).
+* Set `LINKERD2_PROXY_INBOUND_PORTS` env with a comma-separated list of all ports documented on the
+  pod, including proxy ports.
+* Set `LINKERD2_PROXY_INBOUND_IPS` env to a comma-separated lits of all podIPs.
+* Set the `inbound.linkerd.io/default-allow` annotation when it is not set. Either from the
+  namespace or the cluster-wide default.
+* Set `LINKERD2_PROXY_INBOUND_DEFAULT_ALLOW` env with the same value.
+
+### Proxy
+
+1. Modify proxy initialization to load per-connection policies. This should initially encapsulate
+   the opaque-ports configuration.
+2. Use the `INBOUND_IPS` setting to restrict which target ips are permitted on inbound connections.
+   * Stop rewriting the inbound target ip address to 127.0.0.1.
+3. Modify controller clients to be cached like outbound clients. A proxy may or may not be configured
+   configured independently from the inbound controller--especially the identity controller, which
+   needs to be able to discover inbound policy locally before a destination pod is available. The
+   controller should be a `NewService` that accepts a target that specifies the target addr/tls.
+
+### Controller
+
+* Extract `linkerd-drain` into a distinct, versioned [crate](https://crates.io/crates/drain)  so it
+  can be used by the controller without git dependencies.
+* Add indexer metrics.
+* Support a mode where watches are namespace-scoped instead of cluster-scoped. So that the identity
+  controller's instance need not cache the whole cluster's information.
 
 ## Future work
 

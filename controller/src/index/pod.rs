@@ -1,13 +1,10 @@
 use super::{DefaultAllow, Index, Namespace, NodeIndex, SrvIndex};
 use crate::{
     k8s::{self, polixy, ResourceExt},
-    lookup, KubeletIps, PodIps, ServerRx, ServerRxTx,
+    lookup, KubeletIps, ServerRx, ServerRxTx,
 };
-use anyhow::{anyhow, bail, Result};
-use std::{
-    collections::{hash_map::Entry as HashEntry, HashMap, HashSet},
-    net::IpAddr,
-};
+use anyhow::{anyhow, Result};
+use std::collections::{hash_map::Entry as HashEntry, HashMap, HashSet};
 use tokio::sync::watch;
 use tracing::{debug, instrument, trace, warn};
 
@@ -170,11 +167,6 @@ impl PodIndex {
                 };
 
                 let spec = pod.spec.ok_or_else(|| anyhow!("pod missing spec"))?;
-                let status = pod.status.ok_or_else(|| anyhow!("pod missing status"))?;
-
-                // Similarly, lookup the pod's IPs so we can return it with port lookups so servers
-                // can ignore connections targeting other endpoints.
-                let pod_ips = Self::mk_pod_ips(status)?;
 
                 // Check the pod for a default-allow annotation. If it's set, use it; otherwise use
                 // the default policy from the namespace or cluster. We retain this value (and not
@@ -191,7 +183,7 @@ impl PodIndex {
                 // - `ServerTx`s to be linkerd against the server index; and
                 // - lookup receivers to be returned to API clients.
                 let (ports, pod_lookups) =
-                    Self::extract_ports(spec, default_allow_rx.clone(), pod_ips, kubelet);
+                    Self::extract_ports(spec, default_allow_rx.clone(), kubelet);
 
                 // Start tracking the pod's metadata so it can be linked against servers as they are
                 // created. Immediately link the pod against the server index.
@@ -238,7 +230,6 @@ impl PodIndex {
     fn extract_ports(
         spec: k8s::PodSpec,
         server_rx: ServerRx,
-        pod_ips: PodIps,
         kubelet: KubeletIps,
     ) -> (PodPorts, HashMap<u16, lookup::PodPort>) {
         let mut ports = PodPorts::default();
@@ -269,7 +260,6 @@ impl PodIndex {
                         port,
                         lookup::PodPort {
                             rx,
-                            pod_ips: pod_ips.clone(),
                             kubelet_ips: kubelet.clone(),
                         },
                     );
@@ -278,28 +268,6 @@ impl PodIndex {
         }
 
         (ports, lookups)
-    }
-
-    /// Extract the pod's IPs or throws an error.
-    fn mk_pod_ips(status: k8s::PodStatus) -> Result<PodIps> {
-        let ips = if status.pod_ips.is_empty() {
-            status
-                .pod_ip
-                .iter()
-                .map(|ip| ip.parse::<IpAddr>().map_err(Into::into))
-                .collect::<Result<Vec<IpAddr>>>()?
-        } else {
-            status
-                .pod_ips
-                .iter()
-                .flat_map(|ip| ip.ip.as_ref())
-                .map(|ip| ip.parse().map_err(Into::into))
-                .collect::<Result<Vec<IpAddr>>>()?
-        };
-        if ips.is_empty() {
-            bail!("pod missing IP addresses");
-        };
-        Ok(PodIps(ips.into()))
     }
 
     pub(super) fn link_servers(&mut self, servers: &SrvIndex) {

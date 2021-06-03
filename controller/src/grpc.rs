@@ -1,6 +1,6 @@
 use crate::{
     lookup, ClientAuthn, ClientAuthz, ClientNetwork, Identity, InboundServerConfig, KubeletIps,
-    PodIps, ProxyProtocol, ServerRxRx, ServiceAccountRef,
+    ProxyProtocol, ServerRxRx, ServiceAccountRef,
 };
 use futures::prelude::*;
 use polixy_grpc as proto;
@@ -82,16 +82,11 @@ impl proto::polixy_server::Polixy for Server {
         req: tonic::Request<proto::InboundPort>,
     ) -> Result<tonic::Response<proto::InboundServer>, tonic::Status> {
         let proto::InboundPort { workload, port } = req.into_inner();
-        let lookup::PodPort {
-            pod_ips,
-            kubelet_ips,
-            rx,
-        } = self.lookup(workload, port)?;
+        let lookup::PodPort { kubelet_ips, rx } = self.lookup(workload, port)?;
 
         let kubelet = kubelet_authz(kubelet_ips);
 
         let server = to_server(
-            &pod_ips,
             &kubelet,
             rx.borrow().borrow().clone(),
             self.identity_domain.as_ref(),
@@ -106,14 +101,9 @@ impl proto::polixy_server::Polixy for Server {
         req: tonic::Request<proto::InboundPort>,
     ) -> Result<tonic::Response<BoxWatchStream>, tonic::Status> {
         let proto::InboundPort { workload, port } = req.into_inner();
-        let lookup::PodPort {
-            pod_ips,
-            kubelet_ips,
-            rx,
-        } = self.lookup(workload, port)?;
+        let lookup::PodPort { kubelet_ips, rx } = self.lookup(workload, port)?;
 
         Ok(tonic::Response::new(response_stream(
-            pod_ips,
             kubelet_ips,
             self.identity_domain.clone(),
             self.drain.clone(),
@@ -127,7 +117,6 @@ type BoxWatchStream = std::pin::Pin<
 >;
 
 fn response_stream(
-    pod_ips: PodIps,
     kubelet_ips: KubeletIps,
     domain: Arc<str>,
     drain: drain::Watch,
@@ -149,7 +138,7 @@ fn response_stream(
             // the k8s API).
             if prior.as_ref() != Some(&server) {
                 prior = Some(server.clone());
-                yield to_server(&pod_ips, &kubelet, server, domain.as_ref());
+                yield to_server(&kubelet, server, domain.as_ref());
             }
 
             tokio::select! {
@@ -183,7 +172,6 @@ fn response_stream(
 }
 
 fn to_server(
-    pod_ips: &PodIps,
     kubelet_authz: &proto::Authz,
     srv: InboundServerConfig,
     identity_domain: &str,
@@ -224,7 +212,6 @@ fn to_server(
 
     proto::InboundServer {
         protocol: Some(protocol),
-        server_ips: pod_ips.iter().copied().map(Into::into).collect(),
         authorizations: Some(kubelet_authz.clone())
             .into_iter()
             .chain(server_authzs)

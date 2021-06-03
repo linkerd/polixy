@@ -74,9 +74,6 @@ pub struct ServiceAccountRef {
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct PodIps(Arc<[IpAddr]>);
-
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct KubeletIps(Arc<[IpAddr]>);
 
 pub fn index(
@@ -113,14 +110,6 @@ impl fmt::Display for Identity {
                 Ok(())
             }
         }
-    }
-}
-
-// === impl PodIps ===
-
-impl PodIps {
-    pub fn iter(&self) -> std::slice::Iter<'_, IpAddr> {
-        self.0.iter()
     }
 }
 

@@ -24,20 +24,16 @@ message InboundServer {
   // port.
   ProxyProtocol protocol = 1;
 
-  // Indicates the IP addresses on which the proxy may receive connections.
-  // Connections targetting other IP addresses will be dropped.
-  repeated io.linkerd.proxy.net.IPAddress server_ips = 2;
-
   // Configures a proxy to allow connections from the specified clients.
   //
   // If unset, no connections are permitted.
-  repeated Authz authorizations = 3;
+  repeated Authz authorizations = 2;
 
   // Descriptive labels to be added to metrics, etc.
   //
   // A control plane SHOULD return the same keys in all policies. That is, we do
   // NOT want to return arbitrary pod labels in this field.
-  map<string, string> labels = 4;
+  map<string, string> labels = 3;
 }
 
 message ProxyProtocol {

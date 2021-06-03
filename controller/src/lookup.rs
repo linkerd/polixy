@@ -1,4 +1,4 @@
-use crate::{KubeletIps, PodIps, ServerRxRx};
+use crate::{KubeletIps, ServerRxRx};
 use anyhow::{anyhow, Result};
 use dashmap::{mapref::entry::Entry, DashMap};
 use std::{collections::HashMap, sync::Arc};
@@ -18,7 +18,6 @@ type ByPort = Box<HashMap<u16, PodPort>>;
 #[derive(Clone, Debug)]
 pub struct PodPort {
     pub kubelet_ips: KubeletIps,
-    pub pod_ips: PodIps,
     pub rx: ServerRxRx,
 }
 

@@ -146,12 +146,20 @@ impl Index {
     #[instrument(skip(self, nodes))]
     pub fn reset_nodes(&mut self, nodes: Vec<k8s::Node>) -> Result<()> {
         // Avoid rebuilding data for nodes that have not changed.
-        let mut prior = self.nodes.index.keys().cloned().collect::<HashSet<_>>();
+        let mut prior = self
+            .nodes
+            .index
+            .iter()
+            .filter_map(|(name, state)| match state {
+                State::Known(_) => Some(name.clone()),
+                State::Pending(_) => None,
+            })
+            .collect::<HashSet<_>>();
 
         let mut result = Ok(());
         for node in nodes.into_iter() {
             let name = node.name();
-            if !prior.remove(&name) {
+            if prior.remove(&name) {
                 trace!(%name, "Already existed");
             } else if let Err(error) = self.apply_node(node) {
                 warn!(%name, %error, "Failed to apply node");

@@ -227,7 +227,7 @@ async fn default_allow_global() {
         let (lookup_tx, lookup_rx) = crate::lookup::pair();
         let mut idx = Index::new(lookup_tx, vec![cluster_net], *default, detect_timeout);
 
-        idx.apply_node(mk_node("node-0", pod_net)).unwrap();
+        idx.reset_nodes(vec![mk_node("node-0", pod_net)]).unwrap();
 
         let p = mk_pod(
             "ns-0",
@@ -236,7 +236,7 @@ async fn default_allow_global() {
             pod_ip,
             Some(("container-0", vec![2222])),
         );
-        idx.apply_pod(p).unwrap();
+        idx.reset_pods(vec![p]).unwrap();
 
         let config = InboundServerConfig {
             authorizations: mk_default_allow(*default, cluster_net),
@@ -246,7 +246,9 @@ async fn default_allow_global() {
         };
 
         // Lookup port 2222 -> default config.
-        let port2222 = lookup_rx.lookup("ns-0", "pod-0", 2222).unwrap();
+        let port2222 = lookup_rx
+            .lookup("ns-0", "pod-0", 2222)
+            .expect("pod must exist in lookups");
         assert_eq!(port2222.pod_ips, PodIps(Arc::new([pod_ip])));
         assert_eq!(port2222.kubelet_ips, KubeletIps(Arc::new([kubelet_ip])));
         assert_eq!(*port2222.rx.borrow().borrow(), config);
@@ -285,7 +287,7 @@ async fn default_allow_annotated() {
             detect_timeout,
         );
 
-        idx.apply_node(mk_node("node-0", pod_net)).unwrap();
+        idx.reset_nodes(vec![mk_node("node-0", pod_net)]).unwrap();
 
         let mut p = mk_pod(
             "ns-0",
@@ -296,7 +298,7 @@ async fn default_allow_annotated() {
         );
         p.annotations_mut()
             .insert(DefaultAllow::ANNOTATION.into(), default.to_string());
-        idx.apply_pod(p).unwrap();
+        idx.reset_pods(vec![p]).unwrap();
 
         let config = InboundServerConfig {
             authorizations: mk_default_allow(*default, cluster_net),
@@ -305,7 +307,9 @@ async fn default_allow_annotated() {
             },
         };
 
-        let port2222 = lookup_rx.lookup("ns-0", "pod-0", 2222).unwrap();
+        let port2222 = lookup_rx
+            .lookup("ns-0", "pod-0", 2222)
+            .expect("pod must exist in lookups");
         assert_eq!(port2222.pod_ips, PodIps(Arc::new([pod_ip])));
         assert_eq!(port2222.kubelet_ips, KubeletIps(Arc::new([kubelet_ip])));
         assert_eq!(*port2222.rx.borrow().borrow(), config);
@@ -331,7 +335,7 @@ async fn default_allow_annotated_invalid() {
         detect_timeout,
     );
 
-    idx.apply_node(mk_node("node-0", pod_net)).unwrap();
+    idx.reset_nodes(vec![mk_node("node-0", pod_net)]).unwrap();
 
     let mut p = mk_pod(
         "ns-0",
@@ -342,10 +346,12 @@ async fn default_allow_annotated_invalid() {
     );
     p.annotations_mut()
         .insert(DefaultAllow::ANNOTATION.into(), "bogus".into());
-    idx.apply_pod(p).unwrap();
+    idx.reset_pods(vec![p]).unwrap();
 
     // Lookup port 2222 -> default config.
-    let port2222 = lookup_rx.lookup("ns-0", "pod-0", 2222).unwrap();
+    let port2222 = lookup_rx
+        .lookup("ns-0", "pod-0", 2222)
+        .expect("pod must exist in lookups");
     assert_eq!(port2222.pod_ips, PodIps(Arc::new([pod_ip])));
     assert_eq!(port2222.kubelet_ips, KubeletIps(Arc::new([kubelet_ip])));
     assert_eq!(
@@ -357,42 +363,6 @@ async fn default_allow_annotated_invalid() {
             },
         }
     );
-}
-
-/// Tests observing a pod before its node has been observed.
-#[tokio::test]
-async fn pod_before_node() {
-    let cluster_net = IpNet::from_str("192.0.2.0/24").unwrap();
-    let pod_net = IpNet::from_str("192.0.2.2/28").unwrap();
-    let (_kubelet_ip, pod_ip) = {
-        let mut ips = pod_net.hosts();
-        (ips.next().unwrap(), ips.next().unwrap())
-    };
-    let detect_timeout = time::Duration::from_secs(1);
-
-    let (lookup_tx, lookup_rx) = crate::lookup::pair();
-    let mut idx = Index::new(
-        lookup_tx,
-        vec![cluster_net],
-        DefaultAllow::Deny,
-        detect_timeout,
-    );
-
-    // When the pod is created, the node isn't yet known. The pod should be queued to be processed
-    // when the node is added below and lookups should act as if the pod is unknown.
-    let p = mk_pod(
-        "ns-0",
-        "pod-0",
-        "node-0",
-        pod_ip,
-        Some(("container-0", vec![2222])),
-    );
-    idx.apply_pod(p).unwrap();
-    assert!(lookup_rx.lookup("ns-0", "pod-0", 2222).is_none());
-
-    // Once the node is created, the pod should be indexed and available via lookup.
-    idx.apply_node(mk_node("node-0", pod_net)).unwrap();
-    assert!(lookup_rx.lookup("ns-0", "pod-0", 2222).is_some());
 }
 
 /// Tests observing a pod before its node has been observed amid resets.
@@ -423,7 +393,7 @@ async fn pod_before_node_reset() {
         pod_ip,
         Some(("container-0", vec![2222])),
     );
-    idx.apply_pod(p).unwrap();
+    idx.reset_pods(vec![p]).unwrap();
     assert!(lookup_rx.lookup("ns-0", "pod-0", 2222).is_none());
 
     // Then we reset with a new pod which will be pending on the same node.
@@ -440,8 +410,54 @@ async fn pod_before_node_reset() {
     idx.reset_nodes(vec![mk_node("node-0", pod_net)]).unwrap();
 
     // Once the node is created, the first pod should not be discoverable but the second pod should be.
+    assert!(
+        lookup_rx.lookup("ns-0", "pod-0", 2222).is_none(),
+        "first pod must not exist"
+    );
+    lookup_rx
+        .lookup("ns-0", "pod-1", 3333)
+        .expect("second pod must exist");
+}
+
+/// Tests observing a pod before its node has been observed amid resets.
+#[tokio::test]
+async fn pod_before_node_remove() {
+    let cluster_net = IpNet::from_str("192.0.2.0/24").unwrap();
+    let pod_net = IpNet::from_str("192.0.2.2/28").unwrap();
+    let (_kubelet_ip, pod_ip) = {
+        let mut ips = pod_net.hosts();
+        (ips.next().unwrap(), ips.next().unwrap())
+    };
+    let detect_timeout = time::Duration::from_secs(1);
+
+    let (lookup_tx, lookup_rx) = crate::lookup::pair();
+    let mut idx = Index::new(
+        lookup_tx,
+        vec![cluster_net],
+        DefaultAllow::Deny,
+        detect_timeout,
+    );
+
+    // First we create a pod for which the node has not yet been observed so that it's marked as
+    // pending.
+    let pod = mk_pod(
+        "ns-0",
+        "pod-0",
+        "node-0",
+        pod_ip,
+        Some(("container-0", vec![2222])),
+    );
+    idx.reset_pods(vec![pod.clone()]).unwrap();
     assert!(lookup_rx.lookup("ns-0", "pod-0", 2222).is_none());
-    assert!(lookup_rx.lookup("ns-0", "pod-1", 3333).is_some());
+
+    // Then we delete that pod without updating the nodes.
+    idx.delete_pod(pod).unwrap();
+
+    // Then we reset the nodes so that the node is added.
+    idx.reset_nodes(vec![mk_node("node-0", pod_net)]).unwrap();
+
+    // Once the node is created, the pod must not be discoverable.
+    assert!(lookup_rx.lookup("ns-0", "pod-0", 2222).is_none());
 }
 
 // === Helpers ===

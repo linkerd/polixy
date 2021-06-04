@@ -726,11 +726,12 @@ checksum = "7fb9b38af92608140b86b693604b9ffcc5824240a484d1ecd4795bacb2fe88f3"
 [[package]]
 name = "linkerd2-proxy-api"
 version = "0.1.18"
-source = "git+https://github.com/linkerd/linkerd2-proxy-api?branch=ver/inbound#834617eef333ab94bae639fe1d45a5c07e4b129a"
+source = "git+https://github.com/linkerd/linkerd2-proxy-api?branch=ver/inbound#c780521037f4e983b6b9032ecfbca6ed7f032711"
 dependencies = [
  "ipnet",
  "prost",
  "prost-types",
+ "thiserror",
  "tonic",
  "tonic-build",
 ]

@@ -36,9 +36,6 @@ skip = [
     { name = "pin-project" },
     { name = "pin-project-internal" },
     { name = "strsim" },
-
-    # https://github.com/freestrings/jsonpath/issues/68
-    { name = "env_logger" },
 ]
 
 [sources]

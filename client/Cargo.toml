@@ -7,16 +7,15 @@ license = "Apache-2.0"
 publish = false
 
 [features]
-rustfmt = ["polixy-grpc/rustfmt"]
+rustfmt = ["linkerd2-proxy-api/rustfmt"]
 
 [dependencies]
 anyhow = "1"
 bytes = "1"
 futures = "0.3"
 hyper = { version = "0.14", features = ["client", "http1", "runtime"] }
-#indexmap = "1"
 ipnet = "2"
-polixy-grpc = { path = "../grpc", features = ["client"] }
+linkerd2-proxy-api = { git = "https://github.com/linkerd/linkerd2-proxy-api", branch = "ver/inbound", features = ["inbound", "client"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.8"

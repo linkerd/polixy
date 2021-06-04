@@ -77,7 +77,7 @@ async fn start_watch(
     port: u16,
 ) -> Result<(Inbound, impl Stream<Item = Result<Inbound>>)> {
     loop {
-        match client.watch_inbound_port(workload.clone(), port).await {
+        match client.watch_port(workload.clone(), port).await {
             Ok(mut updates) => match updates.try_next().await {
                 Ok(Some(inbound)) => return Ok((inbound, updates)),
                 Ok(None) => {}

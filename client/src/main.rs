@@ -58,7 +58,7 @@ async fn main() -> Result<()> {
             port,
         } => {
             let workload = format!("{}:{}", namespace, pod);
-            let mut updates = client.watch_inbound_port(workload, port).await?;
+            let mut updates = client.watch_port(workload, port).await?;
             while let Some(res) = updates.next().await {
                 match res {
                     Ok(config) => println!("{:#?}", config),
@@ -75,7 +75,7 @@ async fn main() -> Result<()> {
             port,
         } => {
             let workload = format!("{}:{}", namespace, pod);
-            let server = client.get_inbound_port(workload, port).await?;
+            let server = client.get_port(workload, port).await?;
             println!("{:#?}", server);
             Ok(())
         }

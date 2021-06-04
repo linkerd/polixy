@@ -3,7 +3,10 @@ use crate::{
     ProxyProtocol, ServerRxRx, ServiceAccountRef,
 };
 use futures::prelude::*;
-use polixy_grpc as proto;
+use linkerd2_proxy_api::inbound::{
+    self as proto,
+    inbound_server_discovery_server::{InboundServerDiscovery, InboundServerDiscoveryServer},
+};
 use std::sync::Arc;
 use tracing::trace;
 
@@ -33,7 +36,7 @@ impl Server {
         shutdown: impl std::future::Future<Output = ()>,
     ) -> Result<(), tonic::transport::Error> {
         tonic::transport::Server::builder()
-            .add_service(proto::polixy_server::PolixyServer::new(self))
+            .add_service(InboundServerDiscoveryServer::new(self))
             .serve_with_shutdown(addr, shutdown)
             .await
     }
@@ -76,12 +79,12 @@ impl Server {
 }
 
 #[async_trait::async_trait]
-impl proto::polixy_server::Polixy for Server {
-    async fn get_inbound_port(
+impl InboundServerDiscovery for Server {
+    async fn get_port(
         &self,
-        req: tonic::Request<proto::InboundPort>,
-    ) -> Result<tonic::Response<proto::InboundServer>, tonic::Status> {
-        let proto::InboundPort { workload, port } = req.into_inner();
+        req: tonic::Request<proto::PortSpec>,
+    ) -> Result<tonic::Response<proto::Server>, tonic::Status> {
+        let proto::PortSpec { workload, port } = req.into_inner();
         let lookup::PodPort { kubelet_ips, rx } = self.lookup(workload, port)?;
 
         let kubelet = kubelet_authz(kubelet_ips);
@@ -94,13 +97,13 @@ impl proto::polixy_server::Polixy for Server {
         Ok(tonic::Response::new(server))
     }
 
-    type WatchInboundPortStream = BoxWatchStream;
+    type WatchPortStream = BoxWatchStream;
 
-    async fn watch_inbound_port(
+    async fn watch_port(
         &self,
-        req: tonic::Request<proto::InboundPort>,
+        req: tonic::Request<proto::PortSpec>,
     ) -> Result<tonic::Response<BoxWatchStream>, tonic::Status> {
-        let proto::InboundPort { workload, port } = req.into_inner();
+        let proto::PortSpec { workload, port } = req.into_inner();
         let lookup::PodPort { kubelet_ips, rx } = self.lookup(workload, port)?;
 
         Ok(tonic::Response::new(response_stream(
@@ -112,9 +115,8 @@ impl proto::polixy_server::Polixy for Server {
     }
 }
 
-type BoxWatchStream = std::pin::Pin<
-    Box<dyn Stream<Item = Result<proto::InboundServer, tonic::Status>> + Send + Sync>,
->;
+type BoxWatchStream =
+    std::pin::Pin<Box<dyn Stream<Item = Result<proto::Server, tonic::Status>> + Send + Sync>>;
 
 fn response_stream(
     kubelet_ips: KubeletIps,
@@ -175,7 +177,7 @@ fn to_server(
     kubelet_authz: &proto::Authz,
     srv: InboundServerConfig,
     identity_domain: &str,
-) -> proto::InboundServer {
+) -> proto::Server {
     // Convert the protocol object into a protobuf response.
     let protocol = proto::ProxyProtocol {
         kind: match srv.protocol {
@@ -210,7 +212,7 @@ fn to_server(
     trace!(?kubelet_authz);
     trace!(?server_authzs);
 
-    proto::InboundServer {
+    proto::Server {
         protocol: Some(protocol),
         authorizations: Some(kubelet_authz.clone())
             .into_iter()
@@ -329,7 +331,7 @@ fn to_authz(
                 let suffixes = identities
                     .iter()
                     .filter_map(|i| match i {
-                        Identity::Suffix(s) => Some(proto::Suffix {
+                        Identity::Suffix(s) => Some(proto::IdentitySuffix {
                             parts: s.iter().cloned().collect(),
                         }),
                         _ => None,

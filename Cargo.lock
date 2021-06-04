@@ -762,10 +762,8 @@ checksum = "7fb9b38af92608140b86b693604b9ffcc5824240a484d1ecd4795bacb2fe88f3"
 [[package]]
 name = "linkerd2-proxy-api"
 version = "0.1.18"
-source = "git+https://github.com/linkerd/linkerd2-proxy-api?branch=ver/network#71ffa897f52ddbd7334692677bf48896b1c39cda"
+source = "git+https://github.com/linkerd/linkerd2-proxy-api?branch=ver/inbound#834617eef333ab94bae639fe1d45a5c07e4b129a"
 dependencies = [
- "h2",
- "http",
  "ipnet",
  "prost",
  "prost-types",
@@ -1063,7 +1061,7 @@ dependencies = [
  "futures",
  "hyper",
  "ipnet",
- "polixy-grpc",
+ "linkerd2-proxy-api",
  "quickcheck",
  "serde",
  "serde_json",
@@ -1091,8 +1089,8 @@ dependencies = [
  "k8s-openapi",
  "kube",
  "kube-runtime",
+ "linkerd2-proxy-api",
  "parking_lot",
- "polixy-grpc",
  "schemars",
  "serde",
  "serde_json",
@@ -1103,17 +1101,6 @@ dependencies = [
  "tonic",
  "tracing",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "polixy-grpc"
-version = "0.1.0"
-dependencies = [
- "linkerd2-proxy-api",
- "prost",
- "prost-types",
- "tonic",
- "tonic-build",
 ]
 
 [[package]]

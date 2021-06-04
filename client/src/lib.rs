@@ -5,7 +5,9 @@ pub use self::watch_ports::{watch_ports, PortWatch};
 use anyhow::{anyhow, bail, Context, Error, Result};
 use futures::prelude::*;
 use ipnet::IpNet;
-use polixy_grpc::{self as proto, polixy_client::PolixyClient};
+use linkerd2_proxy_api::inbound::{
+    self as proto, inbound_server_discovery_client::InboundServerDiscoveryClient,
+};
 use std::{
     collections::{HashMap, HashSet},
     convert::TryInto,
@@ -16,7 +18,7 @@ use tracing::{instrument, trace};
 
 #[derive(Clone, Debug)]
 pub struct Client {
-    client: PolixyClient<tonic::transport::Channel>,
+    client: InboundServerDiscoveryClient<tonic::transport::Channel>,
 }
 
 #[derive(Clone, Debug)]
@@ -72,34 +74,34 @@ impl Client {
         D: std::convert::TryInto<tonic::transport::Endpoint>,
         D::Error: Into<Box<dyn std::error::Error + Send + Sync + 'static>>,
     {
-        let client = PolixyClient::connect(dst).await?;
+        let client = InboundServerDiscoveryClient::connect(dst).await?;
         Ok(Client { client })
     }
 
     #[instrument(skip(self))]
-    pub async fn get_inbound_port(&mut self, workload: String, port: u16) -> Result<Inbound> {
-        let req = tonic::Request::new(proto::InboundPort {
+    pub async fn get_port(&mut self, workload: String, port: u16) -> Result<Inbound> {
+        let req = tonic::Request::new(proto::PortSpec {
             workload,
             port: port.into(),
         });
 
-        let proto = self.client.get_inbound_port(req).await?.into_inner();
+        let proto = self.client.get_port(req).await?.into_inner();
         trace!(?proto);
         proto.try_into()
     }
 
     #[instrument(skip(self))]
-    pub async fn watch_inbound_port(
+    pub async fn watch_port(
         &mut self,
         workload: String,
         port: u16,
     ) -> Result<impl Stream<Item = Result<Inbound>>> {
-        let req = tonic::Request::new(proto::InboundPort {
+        let req = tonic::Request::new(proto::PortSpec {
             workload,
             port: port.into(),
         });
 
-        let rsp = self.client.watch_inbound_port(req).await?;
+        let rsp = self.client.watch_port(req).await?;
 
         let updates = rsp.into_inner().map_err(Into::into).and_then(|proto| {
             trace!(?proto);
@@ -184,10 +186,10 @@ impl Inbound {
     }
 }
 
-impl std::convert::TryFrom<proto::InboundServer> for Inbound {
+impl std::convert::TryFrom<proto::Server> for Inbound {
     type Error = Error;
 
-    fn try_from(proto: proto::InboundServer) -> Result<Self> {
+    fn try_from(proto: proto::Server) -> Result<Self> {
         let protocol = match proto.protocol {
             Some(proto::ProxyProtocol { kind: Some(k) }) => match k {
                 proto::proxy_protocol::Kind::Detect(proto::proxy_protocol::Detect { timeout }) => {
@@ -256,7 +258,7 @@ impl std::convert::TryFrom<proto::InboundServer> for Inbound {
                                     .collect(),
                                 suffixes: suffixes
                                     .into_iter()
-                                    .map(|proto::Suffix { parts }| Suffix::from(parts))
+                                    .map(|proto::IdentitySuffix { parts }| Suffix::from(parts))
                                     .collect(),
                             },
                             None => bail!("no clients permitted"),

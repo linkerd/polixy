@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["client", "controller", "grpc"]
+members = ["client", "controller"]
 
 [patch.crates-io]
 k8s-openapi = { git = "https://github.com/Arnavion/k8s-openapi" }

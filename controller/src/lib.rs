@@ -1,3 +1,6 @@
+#![deny(warnings, rust_2018_idioms)]
+#![forbid(unsafe_code)]
+
 //! Linkerd Policy Controller
 //!
 //! The policy controller serves discovery requests from inbound proxies, indicating how the proxy

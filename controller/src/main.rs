@@ -1,3 +1,6 @@
+#![deny(warnings, rust_2018_idioms)]
+#![forbid(unsafe_code)]
+
 use anyhow::{Context, Result};
 use futures::{future, prelude::*};
 use polixy_controller::DefaultAllow;

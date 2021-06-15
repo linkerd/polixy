@@ -46,14 +46,12 @@ async fn incrementally_configure_server() {
 
     // The default policy applies for all exposed ports.
     let mut port2222 = lookup_rx.lookup("ns-0", "pod-0", 2222).unwrap();
-    assert_eq!(port2222.pod_ips, PodIps(Arc::new([pod_ip])));
     assert_eq!(port2222.kubelet_ips, KubeletIps(Arc::new([kubelet_ip])));
     assert_eq!(*port2222.rx.borrow().borrow(), default_config);
 
     // In fact, both port resolutions should point to the same data structures (rather than being
     // duplicated for each pod).
     let port9999 = lookup_rx.lookup("ns-0", "pod-0", 9999).unwrap();
-    assert!(Arc::ptr_eq(&port9999.pod_ips.0, &port2222.pod_ips.0));
     assert!(Arc::ptr_eq(
         &port9999.kubelet_ips.0,
         &port2222.kubelet_ips.0
@@ -178,7 +176,6 @@ async fn server_update_deselects_pod() {
 
     // The default policy applies for all exposed ports.
     let port2222 = lookup_rx.lookup("ns-0", "pod-0", 2222).unwrap();
-    assert_eq!(port2222.pod_ips, PodIps(Arc::new([pod_ip])));
     assert_eq!(port2222.kubelet_ips, KubeletIps(Arc::new([kubelet_ip])));
     assert_eq!(
         *port2222.rx.borrow().borrow(),
@@ -249,7 +246,6 @@ async fn default_allow_global() {
         let port2222 = lookup_rx
             .lookup("ns-0", "pod-0", 2222)
             .expect("pod must exist in lookups");
-        assert_eq!(port2222.pod_ips, PodIps(Arc::new([pod_ip])));
         assert_eq!(port2222.kubelet_ips, KubeletIps(Arc::new([kubelet_ip])));
         assert_eq!(*port2222.rx.borrow().borrow(), config);
     }
@@ -310,7 +306,6 @@ async fn default_allow_annotated() {
         let port2222 = lookup_rx
             .lookup("ns-0", "pod-0", 2222)
             .expect("pod must exist in lookups");
-        assert_eq!(port2222.pod_ips, PodIps(Arc::new([pod_ip])));
         assert_eq!(port2222.kubelet_ips, KubeletIps(Arc::new([kubelet_ip])));
         assert_eq!(*port2222.rx.borrow().borrow(), config);
     }
@@ -352,7 +347,6 @@ async fn default_allow_annotated_invalid() {
     let port2222 = lookup_rx
         .lookup("ns-0", "pod-0", 2222)
         .expect("pod must exist in lookups");
-    assert_eq!(port2222.pod_ips, PodIps(Arc::new([pod_ip])));
     assert_eq!(port2222.kubelet_ips, KubeletIps(Arc::new([kubelet_ip])));
     assert_eq!(
         *port2222.rx.borrow().borrow(),
@@ -597,8 +591,8 @@ fn mk_default_allow(da: DefaultAllow, cluster_net: IpNet) -> BTreeMap<String, Cl
         DefaultAllow::AllAuthenticated => Some((
             "_all_authed".into(),
             ClientAuthz {
-                authentication: authed.clone(),
-                networks: all_nets.clone(),
+                authentication: authed,
+                networks: all_nets,
             },
         )),
         DefaultAllow::AllUnauthenticated => Some((
@@ -612,7 +606,7 @@ fn mk_default_allow(da: DefaultAllow, cluster_net: IpNet) -> BTreeMap<String, Cl
             "_cluster_authed".into(),
             ClientAuthz {
                 authentication: authed,
-                networks: cluster_nets.clone(),
+                networks: cluster_nets,
             },
         )),
         DefaultAllow::ClusterUnauthenticated => Some((

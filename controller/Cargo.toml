@@ -19,9 +19,9 @@ drain = "0.0.1"
 futures = "0.3"
 hyper = { version = "0.14", features = ["client", "http1", "runtime"] }
 ipnet = "2"
-k8s-openapi = { version = "0.11.0", default-features = false, features = ["v1_20"] }
-kube = { version = "0.55.0", default-features = false, features = ["derive", "native-tls"] }
-kube-runtime = { version = "0.55.0", default-features = false, features = ["native-tls"] }
+k8s-openapi = { version = "0.12.0", default-features = false, features = ["v1_20"] }
+kube = { version = "0.56.0", default-features = false, features = ["client", "derive", "native-tls"] }
+kube-runtime = { version = "0.56.0", default-features = false }
 linkerd2-proxy-api = { git = "https://github.com/linkerd/linkerd2-proxy-api", branch = "ver/inbound", features = ["inbound", "server"] }
 parking_lot = "0.11"
 schemars = "0.8"

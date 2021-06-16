@@ -3,6 +3,5 @@ resolver = "2"
 members = ["client", "controller"]
 
 [patch.crates-io]
-k8s-openapi = { git = "https://github.com/Arnavion/k8s-openapi" }
-kube = { git = "https://github.com/olix0r/kube-rs", branch = "ver/api-bump" }
-kube-runtime = { git = "https://github.com/olix0r/kube-rs", branch = "ver/api-bump" }
+kube = { git = "https://github.com/clux/kube-rs", branch = "master" }
+kube-runtime = { git = "https://github.com/clux/kube-rs", branch = "master" }

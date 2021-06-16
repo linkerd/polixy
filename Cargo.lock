@@ -553,17 +553,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
 
 [[package]]
-name = "idna"
-version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "418a0a6fab821475f634efe3ccc45c013f742efe03d853e8d3355d5cb850ecf8"
-dependencies = [
- "matches",
- "unicode-bidi",
- "unicode-normalization",
-]
-
-[[package]]
 name = "indexmap"
 version = "1.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -616,8 +605,9 @@ dependencies = [
 
 [[package]]
 name = "k8s-openapi"
-version = "0.11.0"
-source = "git+https://github.com/Arnavion/k8s-openapi#a44c1c19656600de086e977031d8674035bed6d0"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fbff78f6da26dde0d74188966d23fc763431d730d0f766ecf7699209f8fc243c"
 dependencies = [
  "base64",
  "bytes",
@@ -629,8 +619,8 @@ dependencies = [
 
 [[package]]
 name = "kube"
-version = "0.55.0"
-source = "git+https://github.com/olix0r/kube-rs?branch=ver/api-bump#f52cec31a765e646229f71e66d2f9b2e716721b4"
+version = "0.56.0"
+source = "git+https://github.com/clux/kube-rs?branch=master#ac1fd388d8d435e04fb277b1ab61fb0b15c28703"
 dependencies = [
  "base64",
  "bytes",
@@ -639,6 +629,7 @@ dependencies = [
  "either",
  "futures",
  "http",
+ "http-body",
  "hyper",
  "hyper-timeout",
  "hyper-tls",
@@ -652,33 +643,32 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
- "static_assertions",
  "thiserror",
  "tokio",
  "tokio-native-tls",
  "tokio-util",
  "tower",
+ "tower-http",
  "tracing",
- "url",
 ]
 
 [[package]]
 name = "kube-core"
-version = "0.55.0"
-source = "git+https://github.com/olix0r/kube-rs?branch=ver/api-bump#f52cec31a765e646229f71e66d2f9b2e716721b4"
+version = "0.56.0"
+source = "git+https://github.com/clux/kube-rs?branch=master#ac1fd388d8d435e04fb277b1ab61fb0b15c28703"
 dependencies = [
+ "form_urlencoded",
  "http",
  "k8s-openapi",
  "serde",
  "serde_json",
  "thiserror",
- "url",
 ]
 
 [[package]]
 name = "kube-derive"
-version = "0.55.0"
-source = "git+https://github.com/olix0r/kube-rs?branch=ver/api-bump#f52cec31a765e646229f71e66d2f9b2e716721b4"
+version = "0.56.0"
+source = "git+https://github.com/clux/kube-rs?branch=master#ac1fd388d8d435e04fb277b1ab61fb0b15c28703"
 dependencies = [
  "darling",
  "proc-macro2",
@@ -689,8 +679,8 @@ dependencies = [
 
 [[package]]
 name = "kube-runtime"
-version = "0.55.0"
-source = "git+https://github.com/olix0r/kube-rs?branch=ver/api-bump#f52cec31a765e646229f71e66d2f9b2e716721b4"
+version = "0.56.0"
+source = "git+https://github.com/clux/kube-rs?branch=master#ac1fd388d8d435e04fb277b1ab61fb0b15c28703"
 dependencies = [
  "dashmap",
  "derivative",
@@ -1482,12 +1472,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "static_assertions"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
-
-[[package]]
 name = "strsim"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1596,21 +1580,6 @@ dependencies = [
  "wasi",
  "winapi",
 ]
-
-[[package]]
-name = "tinyvec"
-version = "1.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b5220f05bb7de7f3f53c7c065e1199b3172696fe2db9f9c4d8ad9b4ee74c342"
-dependencies = [
- "tinyvec_macros",
-]
-
-[[package]]
-name = "tinyvec_macros"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cda74da7e1a664f795bb1f8a87ec406fb89a02522cf6e50620d016add6dbbf5c"
 
 [[package]]
 name = "tokio"
@@ -1752,6 +1721,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "tower-http"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c58e177fa381489c0eb101ed27fb4233ba5cbe548226f439dd22853f9383bc26"
+dependencies = [
+ "bytes",
+ "futures-core",
+ "futures-util",
+ "http",
+ "http-body",
+ "pin-project 1.0.7",
+ "tower-layer",
+ "tower-service",
+ "tracing",
+]
+
+[[package]]
 name = "tower-layer"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1856,24 +1842,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "59547bce71d9c38b83d9c0e92b6066c4253371f15005def0c30d9657f50c7642"
 
 [[package]]
-name = "unicode-bidi"
-version = "0.3.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eeb8be209bb1c96b7c177c7420d26e04eccacb0eeae6b980e35fcb74678107e0"
-dependencies = [
- "matches",
-]
-
-[[package]]
-name = "unicode-normalization"
-version = "0.1.19"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d54590932941a9e9266f0832deed84ebe1bf2e4c9e4a3554d393d18f5e854bf9"
-dependencies = [
- "tinyvec",
-]
-
-[[package]]
 name = "unicode-segmentation"
 version = "1.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1890,18 +1858,6 @@ name = "unicode-xid"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ccb82d61f80a663efe1f787a51b16b5a51e3314d6ac365b08639f52387b33f3"
-
-[[package]]
-name = "url"
-version = "2.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a507c383b2d33b5fc35d1861e77e6b383d158b2da5e14fe51b83dfedf6fd578c"
-dependencies = [
- "form_urlencoded",
- "idna",
- "matches",
- "percent-encoding",
-]
 
 [[package]]
 name = "vcpkg"

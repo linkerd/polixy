@@ -28,17 +28,22 @@ pub struct ResourceWatches {
 
 // === impl ResourceWatches ===
 
+impl ResourceWatches {
+    const DEFAULT_TIMEOUT_SECS: u32 = 5 * 60;
+}
+
 impl From<kube::Client> for ResourceWatches {
     fn from(client: kube::Client) -> Self {
+        let params = ListParams::default().timeout(Self::DEFAULT_TIMEOUT_SECS);
         Self {
-            nodes_rx: watcher(Api::all(client.clone()), ListParams::default()).into(),
+            nodes_rx: watcher(Api::all(client.clone()), params.clone()).into(),
             pods_rx: watcher(
                 Api::all(client.clone()),
-                ListParams::default().labels("linkerd.io/control-plane-ns"),
+                params.clone().labels("linkerd.io/control-plane-ns"),
             )
             .into(),
-            servers_rx: watcher(Api::all(client.clone()), ListParams::default()).into(),
-            authorizations_rx: watcher(Api::all(client), ListParams::default()).into(),
+            servers_rx: watcher(Api::all(client.clone()), params.clone()).into(),
+            authorizations_rx: watcher(Api::all(client), params).into(),
         }
     }
 }

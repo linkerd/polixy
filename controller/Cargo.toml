@@ -15,7 +15,7 @@ async-stream = "0.3"
 async-trait = "0.1"
 bytes = "1"
 dashmap = "4"
-drain = "0.0.1"
+drain = "0.1.0"
 futures = "0.3"
 hyper = { version = "0.14", features = ["client", "http1", "runtime"] }
 ipnet = "2"

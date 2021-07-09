@@ -122,10 +122,9 @@ impl std::iter::FromIterator<(String, String)> for Labels {
 
 impl std::iter::FromIterator<(&'static str, &'static str)> for Labels {
     fn from_iter<T: IntoIterator<Item = (&'static str, &'static str)>>(iter: T) -> Self {
-        Self::from_iter(
-            iter.into_iter()
-                .map(|(k, v)| (k.to_string(), v.to_string())),
-        )
+        iter.into_iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 }
 

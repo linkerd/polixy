@@ -68,7 +68,7 @@ async fn watch_port(mut client: Client, workload: String, port: u16) -> Result<P
         }
     });
 
-    return Ok(PortWatch { rx, task });
+    Ok(PortWatch { rx, task })
 }
 
 async fn start_watch(

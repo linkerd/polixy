@@ -269,7 +269,7 @@ fn to_authz(
         networks
             .iter()
             .map(|ClientNetwork { net, except }| proto::Network {
-                net: Some(net.clone().into()),
+                net: Some((*net).into()),
                 except: except.iter().cloned().map(Into::into).collect(),
             })
             .collect()

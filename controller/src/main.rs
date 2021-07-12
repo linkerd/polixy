@@ -57,12 +57,13 @@ async fn main() -> Result<()> {
         client,
         ready_tx,
         cluster_networks,
+        identity_domain,
         default_allow,
         DETECT_TIMEOUT,
     );
     let index_task = tokio::spawn(index_task);
 
-    let grpc = tokio::spawn(grpc(grpc_addr, handle, drain_rx, identity_domain));
+    let grpc = tokio::spawn(grpc(grpc_addr, handle, drain_rx));
 
     tokio::select! {
        _ = shutdown(drain_tx) => Ok(()),
@@ -84,14 +85,13 @@ async fn main() -> Result<()> {
     }
 }
 
-#[instrument(skip(handle, drain, identity_domain))]
+#[instrument(skip(handle, drain))]
 async fn grpc(
     addr: SocketAddr,
     handle: polixy_controller::lookup::Reader,
     drain: drain::Watch,
-    identity_domain: String,
 ) -> Result<()> {
-    let server = polixy_controller::grpc::Server::new(handle, drain.clone(), identity_domain);
+    let server = polixy_controller::grpc::Server::new(handle, drain.clone());
     let (close_tx, close_rx) = tokio::sync::oneshot::channel();
     tokio::pin! {
         let srv = server.serve(addr, close_rx.map(|_| {}));

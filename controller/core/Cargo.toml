@@ -1,0 +1,10 @@
+[package]
+name = "polixy-controller-core"
+version = "0.1.0"
+edition = "2018"
+
+[dependencies]
+async-stream = "0.3"
+futures = { version = "0.3", default-features = false, features = ["std"] }
+ipnet = "2"
+tokio = { version = "1", features = ["sync"] }

@@ -1,7 +1,10 @@
 use super::*;
 use crate::{k8s::polixy::server::Port, *};
 use ipnet::{IpNet, Ipv4Net, Ipv6Net};
-use std::{str::FromStr, sync::Arc};
+use polixy_controller_core::{
+    ClientAuthentication, ClientAuthorization, ClientIdentityMatch, ClientNetwork, ProxyProtocol,
+};
+use std::{collections::BTreeMap, str::FromStr, sync::Arc};
 use tokio::time;
 
 /// Creates a pod, then a server, then an authorization--then deletes these resources in the reverse
@@ -19,6 +22,7 @@ async fn incrementally_configure_server() {
     let mut idx = Index::new(
         lookup_tx,
         vec![cluster_net],
+        "cluster.example.com".into(),
         DefaultAllow::ClusterUnauthenticated,
         detect_timeout,
     );
@@ -34,9 +38,9 @@ async fn incrementally_configure_server() {
     );
     idx.apply_pod(pod.clone()).unwrap();
 
-    let default_config = InboundServerConfig {
+    let default_config = InboundServer {
         authorizations: mk_default_allow(DefaultAllow::ClusterUnauthenticated, cluster_net),
-        protocol: crate::ProxyProtocol::Detect {
+        protocol: ProxyProtocol::Detect {
             timeout: detect_timeout,
         },
     };
@@ -68,9 +72,9 @@ async fn incrementally_configure_server() {
 
     // Check that the watch has been updated to reflect the above change and that this change _only_
     // applies to the correct port.
-    let basic_config = InboundServerConfig {
+    let basic_config = InboundServer {
         authorizations: Default::default(),
-        protocol: crate::ProxyProtocol::Http1,
+        protocol: ProxyProtocol::Http1,
     };
     assert_eq!(*port2222.rx.borrow().borrow(), basic_config);
     assert_eq!(*port9999.rx.borrow().borrow(), default_config);
@@ -92,22 +96,13 @@ async fn incrementally_configure_server() {
     // Check that the watch now has authorized traffic as described above.
     assert_eq!(
         *port2222.rx.borrow().borrow(),
-        InboundServerConfig {
+        InboundServer {
             protocol: ProxyProtocol::Http1,
             authorizations: Some((
                 "authz-0".into(),
-                ClientAuthz {
-                    authentication: ClientAuthn::TlsUnauthenticated,
-                    networks: Arc::new([
-                        ClientNetwork {
-                            net: Ipv4Net::default().into(),
-                            except: vec![],
-                        },
-                        ClientNetwork {
-                            net: Ipv6Net::default().into(),
-                            except: vec![],
-                        },
-                    ])
+                ClientAuthorization {
+                    authentication: ClientAuthentication::TlsUnauthenticated,
+                    networks: vec![Ipv4Net::default().into(), Ipv6Net::default().into(),]
                 }
             ))
             .into_iter()
@@ -153,6 +148,7 @@ async fn server_update_deselects_pod() {
     let mut idx = Index::new(
         lookup_tx,
         vec![cluster_net],
+        "cluster.example.com".into(),
         DefaultAllow::ClusterUnauthenticated,
         detect_timeout,
     );
@@ -179,9 +175,9 @@ async fn server_update_deselects_pod() {
     assert_eq!(port2222.kubelet_ips, KubeletIps(Arc::new([kubelet_ip])));
     assert_eq!(
         *port2222.rx.borrow().borrow(),
-        InboundServerConfig {
+        InboundServer {
             authorizations: Default::default(),
-            protocol: crate::ProxyProtocol::Http2,
+            protocol: ProxyProtocol::Http2,
         }
     );
 
@@ -192,9 +188,9 @@ async fn server_update_deselects_pod() {
     });
     assert_eq!(
         *port2222.rx.borrow().borrow(),
-        InboundServerConfig {
+        InboundServer {
             authorizations: mk_default_allow(DefaultAllow::ClusterUnauthenticated, cluster_net),
-            protocol: crate::ProxyProtocol::Detect {
+            protocol: ProxyProtocol::Detect {
                 timeout: detect_timeout,
             },
         }
@@ -222,7 +218,13 @@ async fn default_allow_global() {
         DefaultAllow::ClusterUnauthenticated,
     ] {
         let (lookup_tx, lookup_rx) = crate::lookup::pair();
-        let mut idx = Index::new(lookup_tx, vec![cluster_net], *default, detect_timeout);
+        let mut idx = Index::new(
+            lookup_tx,
+            vec![cluster_net],
+            "cluster.example.com".into(),
+            *default,
+            detect_timeout,
+        );
 
         idx.reset_nodes(vec![mk_node("node-0", pod_net)]).unwrap();
 
@@ -235,9 +237,9 @@ async fn default_allow_global() {
         );
         idx.reset_pods(vec![p]).unwrap();
 
-        let config = InboundServerConfig {
+        let config = InboundServer {
             authorizations: mk_default_allow(*default, cluster_net),
-            protocol: crate::ProxyProtocol::Detect {
+            protocol: ProxyProtocol::Detect {
                 timeout: detect_timeout,
             },
         };
@@ -276,6 +278,7 @@ async fn default_allow_annotated() {
         let mut idx = Index::new(
             lookup_tx,
             vec![cluster_net],
+            "cluster.example.com".into(),
             match *default {
                 DefaultAllow::Deny => DefaultAllow::AllUnauthenticated,
                 _ => DefaultAllow::Deny,
@@ -296,9 +299,9 @@ async fn default_allow_annotated() {
             .insert(DefaultAllow::ANNOTATION.into(), default.to_string());
         idx.reset_pods(vec![p]).unwrap();
 
-        let config = InboundServerConfig {
+        let config = InboundServer {
             authorizations: mk_default_allow(*default, cluster_net),
-            protocol: crate::ProxyProtocol::Detect {
+            protocol: ProxyProtocol::Detect {
                 timeout: detect_timeout,
             },
         };
@@ -326,6 +329,7 @@ async fn default_allow_annotated_invalid() {
     let mut idx = Index::new(
         lookup_tx,
         vec![cluster_net],
+        "cluster.example.com".into(),
         DefaultAllow::AllUnauthenticated,
         detect_timeout,
     );
@@ -350,9 +354,9 @@ async fn default_allow_annotated_invalid() {
     assert_eq!(port2222.kubelet_ips, KubeletIps(Arc::new([kubelet_ip])));
     assert_eq!(
         *port2222.rx.borrow().borrow(),
-        InboundServerConfig {
+        InboundServer {
             authorizations: mk_default_allow(DefaultAllow::AllUnauthenticated, cluster_net),
-            protocol: crate::ProxyProtocol::Detect {
+            protocol: ProxyProtocol::Detect {
                 timeout: detect_timeout,
             },
         }
@@ -374,6 +378,7 @@ async fn pod_before_node_reset() {
     let mut idx = Index::new(
         lookup_tx,
         vec![cluster_net],
+        "cluster.example.com".into(),
         DefaultAllow::Deny,
         detect_timeout,
     );
@@ -428,6 +433,7 @@ async fn pod_before_node_remove() {
     let mut idx = Index::new(
         lookup_tx,
         vec![cluster_net],
+        "cluster.example.com".into(),
         DefaultAllow::Deny,
         detect_timeout,
     );
@@ -564,55 +570,40 @@ fn mk_authz(
     }
 }
 
-fn mk_default_allow(da: DefaultAllow, cluster_net: IpNet) -> BTreeMap<String, ClientAuthz> {
-    let all_nets = Arc::new([
-        ClientNetwork {
-            net: Ipv4Net::default().into(),
-            except: vec![],
-        },
-        ClientNetwork {
-            net: Ipv6Net::default().into(),
-            except: vec![],
-        },
-    ]);
+fn mk_default_allow(da: DefaultAllow, cluster_net: IpNet) -> BTreeMap<String, ClientAuthorization> {
+    let all_nets = vec![Ipv4Net::default().into(), Ipv6Net::default().into()];
 
-    let cluster_nets = Arc::new([ClientNetwork {
-        net: cluster_net,
-        except: vec![],
-    }]);
+    let cluster_nets = vec![ClientNetwork::from(cluster_net)];
 
-    let authed = ClientAuthn::TlsAuthenticated {
-        identities: vec![Identity::Suffix(vec![].into())],
-        service_accounts: vec![],
-    };
+    let authed = ClientAuthentication::TlsAuthenticated(vec![ClientIdentityMatch::Suffix(vec![])]);
 
     match da {
         DefaultAllow::Deny => None,
         DefaultAllow::AllAuthenticated => Some((
             "_all_authed".into(),
-            ClientAuthz {
+            ClientAuthorization {
                 authentication: authed,
                 networks: all_nets,
             },
         )),
         DefaultAllow::AllUnauthenticated => Some((
             "_all_unauthed".into(),
-            ClientAuthz {
-                authentication: ClientAuthn::Unauthenticated,
+            ClientAuthorization {
+                authentication: ClientAuthentication::Unauthenticated,
                 networks: all_nets,
             },
         )),
         DefaultAllow::ClusterAuthenticated => Some((
             "_cluster_authed".into(),
-            ClientAuthz {
+            ClientAuthorization {
                 authentication: authed,
                 networks: cluster_nets,
             },
         )),
         DefaultAllow::ClusterUnauthenticated => Some((
             "_cluster_unauthed".into(),
-            ClientAuthz {
-                authentication: ClientAuthn::Unauthenticated,
+            ClientAuthorization {
+                authentication: ClientAuthentication::Unauthenticated,
                 networks: cluster_nets,
             },
         )),

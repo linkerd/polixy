@@ -16,7 +16,7 @@ use self::{
 };
 use crate::{
     k8s::{self, ResourceExt},
-    lookup, ClientAuthz,
+    lookup,
 };
 use anyhow::{Context, Error};
 use std::sync::Arc;
@@ -29,6 +29,8 @@ pub struct Index {
 
     /// Cached Node IPs.
     nodes: NodeIndex,
+
+    identity_domain: String,
 
     default_allows: DefaultAllows,
 
@@ -48,6 +50,7 @@ impl Index {
     pub(crate) fn new(
         lookups: lookup::Writer,
         cluster_nets: Vec<ipnet::IpNet>,
+        identity_domain: String,
         default_allow: DefaultAllow,
         detect_timeout: time::Duration,
     ) -> Self {
@@ -65,6 +68,7 @@ impl Index {
         Self {
             lookups,
             namespaces,
+            identity_domain,
             default_allows,
             nodes: NodeIndex::default(),
         }

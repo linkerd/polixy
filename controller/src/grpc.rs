@@ -1,33 +1,24 @@
-use crate::{
-    lookup, ClientAuthn, ClientAuthz, ClientNetwork, Identity, InboundServerConfig, KubeletIps,
-    ProxyProtocol, ServerRxRx, ServiceAccountRef,
-};
+use crate::{lookup, KubeletIps, ServerRxRx};
 use futures::prelude::*;
 use linkerd2_proxy_api::inbound::{
     self as proto,
     inbound_server_discovery_server::{InboundServerDiscovery, InboundServerDiscoveryServer},
 };
-use std::sync::Arc;
+use polixy_controller_core::{
+    ClientAuthentication, ClientAuthorization, ClientIdentityMatch, ClientNetwork, InboundServer,
+    ProxyProtocol,
+};
 use tracing::trace;
 
 #[derive(Clone, Debug)]
 pub struct Server {
     lookup: lookup::Reader,
     drain: drain::Watch,
-    identity_domain: Arc<str>,
 }
 
 impl Server {
-    pub fn new(
-        lookup: lookup::Reader,
-        drain: drain::Watch,
-        identity_domain: impl Into<Arc<str>>,
-    ) -> Self {
-        Self {
-            lookup,
-            drain,
-            identity_domain: identity_domain.into(),
-        }
+    pub fn new(lookup: lookup::Reader, drain: drain::Watch) -> Self {
+        Self { lookup, drain }
     }
 
     pub async fn serve(
@@ -89,11 +80,7 @@ impl InboundServerDiscovery for Server {
 
         let kubelet = kubelet_authz(kubelet_ips);
 
-        let server = to_server(
-            &kubelet,
-            rx.borrow().borrow().clone(),
-            self.identity_domain.as_ref(),
-        );
+        let server = to_server(&kubelet, rx.borrow().borrow().clone());
         Ok(tonic::Response::new(server))
     }
 
@@ -108,7 +95,6 @@ impl InboundServerDiscovery for Server {
 
         Ok(tonic::Response::new(response_stream(
             kubelet_ips,
-            self.identity_domain.clone(),
             self.drain.clone(),
             rx,
         )))
@@ -120,7 +106,6 @@ type BoxWatchStream =
 
 fn response_stream(
     kubelet_ips: KubeletIps,
-    domain: Arc<str>,
     drain: drain::Watch,
     mut port_rx: ServerRxRx,
 ) -> BoxWatchStream {
@@ -140,7 +125,7 @@ fn response_stream(
             // the k8s API).
             if prior.as_ref() != Some(&server) {
                 prior = Some(server.clone());
-                yield to_server(&kubelet, server, domain.as_ref());
+                yield to_server(&kubelet, server);
             }
 
             tokio::select! {
@@ -173,11 +158,7 @@ fn response_stream(
     })
 }
 
-fn to_server(
-    kubelet_authz: &proto::Authz,
-    srv: InboundServerConfig,
-    identity_domain: &str,
-) -> proto::Server {
+fn to_server(kubelet_authz: &proto::Authz, srv: InboundServer) -> proto::Server {
     // Convert the protocol object into a protobuf response.
     let protocol = proto::ProxyProtocol {
         kind: match srv.protocol {
@@ -205,10 +186,7 @@ fn to_server(
     };
     trace!(?protocol);
 
-    let server_authzs = srv
-        .authorizations
-        .into_iter()
-        .map(|(n, c)| to_authz(n, c, identity_domain));
+    let server_authzs = srv.authorizations.into_iter().map(|(n, c)| to_authz(n, c));
     trace!(?kubelet_authz);
     trace!(?server_authzs);
 
@@ -247,11 +225,10 @@ fn kubelet_authz(ips: KubeletIps) -> proto::Authz {
 
 fn to_authz(
     name: impl ToString,
-    ClientAuthz {
+    ClientAuthorization {
         networks,
         authentication,
-    }: ClientAuthz,
-    identity_domain: &str,
+    }: ClientAuthorization,
 ) -> proto::Authz {
     let networks = if networks.is_empty() {
         // TODO use cluster networks (from config).
@@ -276,7 +253,7 @@ fn to_authz(
     };
 
     match authentication {
-        ClientAuthn::Unauthenticated => {
+        ClientAuthentication::Unauthenticated => {
             let labels = Some(("authn".to_string(), "false".to_string()))
                 .into_iter()
                 .chain(Some(("tls".to_string(), "false".to_string())))
@@ -294,7 +271,7 @@ fn to_authz(
             }
         }
 
-        ClientAuthn::TlsUnauthenticated => {
+        ClientAuthentication::TlsUnauthenticated => {
             let labels = Some(("authn".to_string(), "false".to_string()))
                 .into_iter()
                 .chain(Some(("tls".to_string(), "true".to_string())))
@@ -317,10 +294,7 @@ fn to_authz(
 
         // Authenticated connections must have TLS and apply to all
         // networks.
-        ClientAuthn::TlsAuthenticated {
-            service_accounts,
-            identities,
-        } => {
+        ClientAuthentication::TlsAuthenticated(identities) => {
             let labels = Some(("authn".to_string(), "true".to_string()))
                 .into_iter()
                 .chain(Some(("tls".to_string(), "true".to_string())))
@@ -331,9 +305,9 @@ fn to_authz(
                 let suffixes = identities
                     .iter()
                     .filter_map(|i| match i {
-                        Identity::Suffix(s) => Some(proto::IdentitySuffix {
-                            parts: s.iter().cloned().collect(),
-                        }),
+                        ClientIdentityMatch::Suffix(s) => {
+                            Some(proto::IdentitySuffix { parts: s.to_vec() })
+                        }
                         _ => None,
                     })
                     .collect();
@@ -341,16 +315,11 @@ fn to_authz(
                 let identities = identities
                     .iter()
                     .filter_map(|i| match i {
-                        Identity::Name(n) => Some(proto::Identity {
+                        ClientIdentityMatch::Name(n) => Some(proto::Identity {
                             name: n.to_string(),
                         }),
                         _ => None,
                     })
-                    .chain(
-                        service_accounts
-                            .into_iter()
-                            .map(|sa| to_identity(sa, identity_domain)),
-                    )
                     .collect();
 
                 proto::Authn {
@@ -371,11 +340,5 @@ fn to_authz(
                 authentication: Some(authn),
             }
         }
-    }
-}
-
-fn to_identity(ServiceAccountRef { ns, name }: ServiceAccountRef, domain: &str) -> proto::Identity {
-    proto::Identity {
-        name: format!("{}.{}.serviceaccount.identity.linkerd.{}", ns, name, domain),
     }
 }

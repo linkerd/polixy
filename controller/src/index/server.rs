@@ -1,9 +1,10 @@
-use super::{authz::AuthzIndex, ClientAuthz, Index, Namespace, ServerSelector};
+use super::{authz::AuthzIndex, Index, Namespace, ServerSelector};
 use crate::{
     k8s::{self, polixy, ResourceExt},
-    InboundServerConfig, ProxyProtocol, ServerRx, ServerTx,
+    ServerRx, ServerTx,
 };
 use anyhow::{anyhow, bail, Result};
+use polixy_controller_core::{ClientAuthorization, InboundServer, ProxyProtocol};
 use std::{
     collections::{hash_map::Entry as HashEntry, BTreeMap, HashMap, HashSet},
     sync::Arc,
@@ -19,7 +20,7 @@ pub(super) struct SrvIndex {
 #[derive(Debug)]
 struct Server {
     meta: ServerMeta,
-    authorizations: BTreeMap<String, ClientAuthz>,
+    authorizations: BTreeMap<String, ClientAuthorization>,
     rx: ServerRx,
     tx: ServerTx,
 }
@@ -35,7 +36,7 @@ pub struct ServerMeta {
 // === impl SrvIndex ===
 
 impl SrvIndex {
-    pub fn add_authz(&mut self, name: &str, selector: &ServerSelector, authz: ClientAuthz) {
+    pub fn add_authz(&mut self, name: &str, selector: &ServerSelector, authz: ClientAuthorization) {
         for (srv_name, srv) in self.index.iter_mut() {
             let matches = match selector {
                 ServerSelector::Name(ref n) => n == srv_name,
@@ -92,7 +93,7 @@ impl SrvIndex {
                     protocol: protocol.clone(),
                 };
                 debug!(authzs = ?authzs.keys());
-                let (tx, rx) = watch::channel(InboundServerConfig {
+                let (tx, rx) = watch::channel(InboundServer {
                     protocol,
                     authorizations: authzs.clone(),
                 });
@@ -166,7 +167,7 @@ impl SrvIndex {
 // === impl Server ===
 
 impl Server {
-    fn add_authz(&mut self, name: impl Into<String>, authz: ClientAuthz) {
+    fn add_authz(&mut self, name: impl Into<String>, authz: ClientAuthorization) {
         debug!("Adding authorization to server");
         self.authorizations.insert(name.into(), authz);
         let mut config = self.rx.borrow().clone();

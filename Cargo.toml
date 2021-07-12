@@ -1,3 +1,7 @@
 [workspace]
 resolver = "2"
-members = ["client", "controller"]
+members = [
+    "client",
+    "controller",
+    "controller/core"
+]

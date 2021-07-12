@@ -1,8 +1,9 @@
-use crate::{
-    k8s, ClientAuthn, ClientAuthz, ClientNetwork, Identity, InboundServerConfig, ProxyProtocol,
-    ServerRx,
-};
+use crate::{k8s, ServerRx};
 use anyhow::{anyhow, Error, Result};
+use polixy_controller_core::{
+    ClientAuthentication, ClientAuthorization, ClientIdentityMatch, ClientNetwork, InboundServer,
+    ProxyProtocol,
+};
 use tokio::{sync::watch, time};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -75,10 +76,8 @@ impl DefaultAllows {
     /// the receivers continue to be live. The background task completes once all receivers are
     /// dropped.
     pub fn spawn(cluster_nets: Vec<ipnet::IpNet>, detect_timeout: time::Duration) -> Self {
-        let any_authenticated = ClientAuthn::TlsAuthenticated {
-            identities: vec![Identity::Suffix(vec![].into())],
-            service_accounts: vec![],
-        };
+        let any_authenticated =
+            ClientAuthentication::TlsAuthenticated(vec![ClientIdentityMatch::Suffix(vec![])]);
 
         let all_nets = [
             ipnet::IpNet::V4(Default::default()),
@@ -96,7 +95,7 @@ impl DefaultAllows {
             "_all_unauthed",
             detect_timeout,
             all_nets.iter().cloned(),
-            ClientAuthn::Unauthenticated,
+            ClientAuthentication::Unauthenticated,
         ));
 
         let (cluster_authed_tx, cluster_authed_rx) = watch::channel(mk_detect_config(
@@ -110,10 +109,10 @@ impl DefaultAllows {
             "_cluster_unauthed",
             detect_timeout,
             cluster_nets.into_iter(),
-            ClientAuthn::Unauthenticated,
+            ClientAuthentication::Unauthenticated,
         ));
 
-        let (deny_tx, deny_rx) = watch::channel(InboundServerConfig {
+        let (deny_tx, deny_rx) = watch::channel(InboundServer {
             protocol: ProxyProtocol::Detect {
                 timeout: detect_timeout,
             },
@@ -155,8 +154,8 @@ fn mk_detect_config(
     name: &'static str,
     timeout: time::Duration,
     nets: impl IntoIterator<Item = ipnet::IpNet>,
-    authentication: ClientAuthn,
-) -> InboundServerConfig {
+    authentication: ClientAuthentication,
+) -> InboundServer {
     let networks = nets
         .into_iter()
         .map(|net| ClientNetwork {
@@ -164,12 +163,12 @@ fn mk_detect_config(
             except: vec![],
         })
         .collect::<Vec<_>>();
-    let authz = ClientAuthz {
-        networks: networks.into(),
+    let authz = ClientAuthorization {
+        networks,
         authentication,
     };
 
-    InboundServerConfig {
+    InboundServer {
         protocol: ProxyProtocol::Detect { timeout },
         authorizations: Some((name.to_string(), authz)).into_iter().collect(),
     }

@@ -15,60 +15,19 @@ pub mod lookup;
 
 pub use self::index::DefaultAllow;
 use ipnet::IpNet;
-use std::{collections::BTreeMap, fmt, net::IpAddr, sync::Arc};
+use polixy_controller_core::InboundServer;
+use std::{net::IpAddr, sync::Arc};
 use tokio::{sync::watch, time};
 
 /// Watches a server's configuration for server/authorization changes.
-type ServerRx = watch::Receiver<InboundServerConfig>;
-type ServerTx = watch::Sender<InboundServerConfig>;
+type ServerRx = watch::Receiver<InboundServer>;
+
+/// Publishes updates for a server's configuration for server/authorization changes.
+type ServerTx = watch::Sender<InboundServer>;
 
 /// Watches a pod port's for a new `ServerRx`.
 pub type ServerRxRx = watch::Receiver<ServerRx>;
 type ServerRxTx = watch::Sender<ServerRx>;
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct InboundServerConfig {
-    pub protocol: ProxyProtocol,
-    pub authorizations: BTreeMap<String, ClientAuthz>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ProxyProtocol {
-    Detect { timeout: time::Duration },
-    Http1,
-    Http2,
-    Grpc,
-    Opaque,
-    Tls,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ClientAuthz {
-    pub networks: Arc<[ClientNetwork]>,
-    pub authentication: ClientAuthn,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ClientNetwork {
-    pub net: IpNet,
-    pub except: Vec<IpNet>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ClientAuthn {
-    Unauthenticated,
-    TlsUnauthenticated,
-    TlsAuthenticated {
-        service_accounts: Vec<ServiceAccountRef>,
-        identities: Vec<Identity>,
-    },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum Identity {
-    Name(Arc<str>),
-    Suffix(Arc<[String]>),
-}
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ServiceAccountRef {
@@ -83,6 +42,7 @@ pub fn index(
     watches: impl Into<k8s::ResourceWatches>,
     ready: watch::Sender<bool>,
     cluster_networks: Vec<ipnet::IpNet>,
+    identity_domain: String,
     default_mode: DefaultAllow,
     detect_timeout: time::Duration,
 ) -> (
@@ -93,27 +53,16 @@ pub fn index(
 
     // Watches Nodes, Pods, Servers, and Authorizations to update the lookup map
     // with an entry for each linkerd-injected pod.
-    let idx = index::Index::new(writer, cluster_networks, default_mode, detect_timeout);
+    let idx = index::Index::new(
+        writer,
+        cluster_networks,
+        identity_domain,
+        default_mode,
+        detect_timeout,
+    );
     let task = idx.index(watches.into(), ready);
 
     (reader, task)
-}
-
-// === impl Identity ===
-
-impl fmt::Display for Identity {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Name(name) => name.fmt(f),
-            Self::Suffix(suffix) => {
-                write!(f, "*")?;
-                for part in suffix.iter() {
-                    write!(f, ".{}", part)?;
-                }
-                Ok(())
-            }
-        }
-    }
 }
 
 // === impl KubeletIps ===

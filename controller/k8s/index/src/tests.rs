@@ -1,8 +1,8 @@
 use super::*;
 use futures::prelude::*;
 use polixy_controller_core::{
-    ClientAuthentication, ClientAuthorization, ClientIdentityMatch, InboundServerRx, IpNet,
-    Ipv4Net, Ipv6Net, NetworkMatch, ProxyProtocol,
+    ClientAuthentication, ClientAuthorization, IdentityMatch, InboundServerRx, IpNet, Ipv4Net,
+    Ipv6Net, NetworkMatch, ProxyProtocol,
 };
 use polixy_controller_k8s_api::polixy::server::Port;
 use std::{collections::BTreeMap, net::IpAddr, str::FromStr};
@@ -584,7 +584,7 @@ fn mk_default_allow(
 
     let cluster_nets = vec![NetworkMatch::from(cluster_net)];
 
-    let authed = ClientAuthentication::TlsAuthenticated(vec![ClientIdentityMatch::Suffix(vec![])]);
+    let authed = ClientAuthentication::TlsAuthenticated(vec![IdentityMatch::Suffix(vec![])]);
 
     match da {
         DefaultAllow::Deny => None,

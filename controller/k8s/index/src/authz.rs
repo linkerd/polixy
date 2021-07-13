@@ -1,7 +1,7 @@
 use super::{Index, ServerSelector, SrvIndex};
 use anyhow::{anyhow, bail, Result};
 use polixy_controller_core::{
-    ClientAuthentication, ClientAuthorization, ClientIdentityMatch, IpNet, NetworkMatch,
+    ClientAuthentication, ClientAuthorization, IdentityMatch, IpNet, NetworkMatch,
 };
 use polixy_controller_k8s_api::{
     self as k8s,
@@ -226,18 +226,18 @@ fn mk_mtls_authn(
     for id in mtls.identities.into_iter() {
         if id == "*" {
             debug!(suffix = %id, "Authenticated");
-            identities.push(ClientIdentityMatch::Suffix(vec![]));
+            identities.push(IdentityMatch::Suffix(vec![]));
         } else if id.starts_with("*.") {
             debug!(suffix = %id, "Authenticated");
             let mut parts = id.split('.');
             let star = parts.next();
             debug_assert_eq!(star, Some("*"));
-            identities.push(ClientIdentityMatch::Suffix(
+            identities.push(IdentityMatch::Suffix(
                 parts.map(|p| p.to_string()).collect::<Vec<_>>(),
             ));
         } else {
             debug!(%id, "Authenticated");
-            identities.push(ClientIdentityMatch::Name(id));
+            identities.push(IdentityMatch::Name(id));
         }
     }
 
@@ -248,7 +248,7 @@ fn mk_mtls_authn(
             .unwrap_or_else(|| metadata.namespace.clone().unwrap());
         debug!(ns = %ns, serviceaccount = %name, "Authenticated");
         let n = format!("{}.{}.serviceaccount.identity.linkerd.{}", name, ns, domain);
-        identities.push(ClientIdentityMatch::Name(n));
+        identities.push(IdentityMatch::Name(n));
     }
 
     if identities.is_empty() {

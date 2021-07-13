@@ -1,8 +1,8 @@
 use crate::ServerRx;
 use anyhow::{anyhow, Error, Result};
 use polixy_controller_core::{
-    ClientAuthentication, ClientAuthorization, ClientIdentityMatch, InboundServer, IpNet,
-    NetworkMatch, ProxyProtocol,
+    ClientAuthentication, ClientAuthorization, IdentityMatch, InboundServer, IpNet, NetworkMatch,
+    ProxyProtocol,
 };
 use polixy_controller_k8s_api as k8s;
 use tokio::{sync::watch, time};
@@ -78,7 +78,7 @@ impl DefaultAllows {
     /// dropped.
     pub fn spawn(cluster_nets: Vec<IpNet>, detect_timeout: time::Duration) -> Self {
         let any_authenticated =
-            ClientAuthentication::TlsAuthenticated(vec![ClientIdentityMatch::Suffix(vec![])]);
+            ClientAuthentication::TlsAuthenticated(vec![IdentityMatch::Suffix(vec![])]);
 
         let all_nets = [IpNet::V4(Default::default()), IpNet::V6(Default::default())];
 

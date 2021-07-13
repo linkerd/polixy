@@ -1,9 +1,10 @@
 #![deny(warnings, rust_2018_idioms)]
 #![forbid(unsafe_code)]
 
+mod identity_match;
 mod network_match;
 
-pub use self::network_match::NetworkMatch;
+pub use self::{identity_match::IdentityMatch, network_match::NetworkMatch};
 use anyhow::Result;
 use futures::prelude::*;
 pub use ipnet::{IpNet, Ipv4Net, Ipv6Net};
@@ -73,32 +74,5 @@ pub enum ClientAuthentication {
     TlsUnauthenticated,
 
     /// Indicates that clients must use mutually-authenticated TLS.
-    TlsAuthenticated(Vec<ClientIdentityMatch>),
-}
-
-/// Matches a client's mesh identity.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum ClientIdentityMatch {
-    /// An exact match.
-    Name(String),
-
-    /// A suffix match..
-    Suffix(Vec<String>),
-}
-
-// === impl ClientIdentityMatch ===
-
-impl std::fmt::Display for ClientIdentityMatch {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Name(name) => name.fmt(f),
-            Self::Suffix(suffix) => {
-                write!(f, "*")?;
-                for part in suffix.iter() {
-                    write!(f, ".{}", part)?;
-                }
-                Ok(())
-            }
-        }
-    }
+    TlsAuthenticated(Vec<IdentityMatch>),
 }

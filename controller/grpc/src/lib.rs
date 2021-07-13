@@ -7,8 +7,8 @@ use linkerd2_proxy_api::inbound::{
     inbound_server_discovery_server::{InboundServerDiscovery, InboundServerDiscoveryServer},
 };
 use polixy_controller_core::{
-    ClientAuthentication, ClientAuthorization, ClientIdentityMatch, DiscoverInboundServer,
-    InboundServer, InboundServerRx, IpNet, NetworkMatch, ProxyProtocol,
+    ClientAuthentication, ClientAuthorization, DiscoverInboundServer, IdentityMatch, InboundServer,
+    InboundServerRx, IpNet, NetworkMatch, ProxyProtocol,
 };
 use tracing::trace;
 
@@ -268,7 +268,7 @@ fn to_authz(
                 let suffixes = identities
                     .iter()
                     .filter_map(|i| match i {
-                        ClientIdentityMatch::Suffix(s) => {
+                        IdentityMatch::Suffix(s) => {
                             Some(proto::IdentitySuffix { parts: s.to_vec() })
                         }
                         _ => None,
@@ -278,7 +278,7 @@ fn to_authz(
                 let identities = identities
                     .iter()
                     .filter_map(|i| match i {
-                        ClientIdentityMatch::Name(n) => Some(proto::Identity {
+                        IdentityMatch::Name(n) => Some(proto::Identity {
                             name: n.to_string(),
                         }),
                         _ => None,

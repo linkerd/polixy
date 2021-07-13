@@ -3,8 +3,8 @@
 
 use anyhow::{Context, Result};
 use futures::{future, prelude::*};
+use polixy_controller::k8s::DefaultAllow;
 use polixy_controller_core::IpNet;
-use polixy_controller_k8s_index::DefaultAllow;
 use std::net::SocketAddr;
 use structopt::StructOpt;
 use tokio::{sync::watch, time};
@@ -54,7 +54,7 @@ async fn main() -> Result<()> {
     let admin = tokio::spawn(polixy_controller::admin::serve(admin_addr, ready_rx));
 
     const DETECT_TIMEOUT: time::Duration = time::Duration::from_secs(10);
-    let (handle, index_task) = polixy_controller_k8s_index::index(
+    let (handle, index_task) = polixy_controller::k8s::index(
         client,
         ready_tx,
         cluster_networks,

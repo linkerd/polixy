@@ -4,4 +4,4 @@
 pub mod admin;
 
 pub use polixy_controller_grpc as grpc;
-pub use polixy_controller_grpc as k8s;
+pub use polixy_controller_k8s_index as k8s;

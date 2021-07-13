@@ -1,11 +1,15 @@
 #![deny(warnings, rust_2018_idioms)]
 #![forbid(unsafe_code)]
 
+mod network_match;
+
+pub use self::network_match::NetworkMatch;
 use anyhow::Result;
 use futures::prelude::*;
 pub use ipnet::{IpNet, Ipv4Net, Ipv6Net};
-use std::{collections::BTreeMap, net::IpAddr, pin::Pin, time::Duration};
+use std::{collections::BTreeMap, pin::Pin, time::Duration};
 
+/// Models inbound server configuration discovery.
 #[async_trait::async_trait]
 pub trait DiscoverInboundServer<T> {
     type Rx: InboundServerRx;
@@ -13,53 +17,73 @@ pub trait DiscoverInboundServer<T> {
     async fn discover_inbound_server(&self, target: T) -> Result<Option<Self::Rx>>;
 }
 
+/// A discovered server configuration may be queried or streamed.
 pub trait InboundServerRx {
+    /// Query server configuration.
     fn get(&self) -> InboundServer;
 
+    /// Stream server configuration updates.
     fn into_stream(self) -> InboundServerRxStream;
 }
 
 pub type InboundServerRxStream = Pin<Box<dyn Stream<Item = InboundServer> + Send + Sync + 'static>>;
 
+/// Inbound server configuration.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InboundServer {
     pub protocol: ProxyProtocol,
     pub authorizations: BTreeMap<String, ClientAuthorization>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ClientAuthentication {
-    Unauthenticated,
-    TlsUnauthenticated,
-    TlsAuthenticated(Vec<ClientIdentityMatch>),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ClientAuthorization {
-    pub networks: Vec<ClientNetwork>,
-    pub authentication: ClientAuthentication,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum ClientIdentityMatch {
-    Name(String),
-    Suffix(Vec<String>),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ClientNetwork {
-    pub net: IpNet,
-    pub except: Vec<IpNet>,
-}
-
+/// Describes how a proxy should handle inbound connections.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProxyProtocol {
-    Detect { timeout: Duration },
+    /// Indicates that the protocol should be discovered dynamically.
+    Detect {
+        timeout: Duration,
+    },
+
     Http1,
     Http2,
     Grpc,
+
+    /// Indicates that connections should be handled opaquely.
     Opaque,
+
+    /// Indicates that connections should be handled as application-terminated TLS.
     Tls,
+}
+
+/// Describes a class of authorized clients.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClientAuthorization {
+    /// Limits which source networks this authorization applies to.
+    pub networks: Vec<NetworkMatch>,
+
+    /// Describes the client's authentication requirements.
+    pub authentication: ClientAuthentication,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ClientAuthentication {
+    /// Indicates that clients need not be authenticated.
+    Unauthenticated,
+
+    /// Indicates that clients must use TLS bu need not provide a client identity.
+    TlsUnauthenticated,
+
+    /// Indicates that clients must use mutually-authenticated TLS.
+    TlsAuthenticated(Vec<ClientIdentityMatch>),
+}
+
+/// Matches a client's mesh identity.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ClientIdentityMatch {
+    /// An exact match.
+    Name(String),
+
+    /// A suffix match..
+    Suffix(Vec<String>),
 }
 
 // === impl ClientIdentityMatch ===
@@ -76,34 +100,5 @@ impl std::fmt::Display for ClientIdentityMatch {
                 Ok(())
             }
         }
-    }
-}
-
-// === impl ClientNetwork ===
-
-impl From<IpNet> for ClientNetwork {
-    fn from(net: IpNet) -> Self {
-        Self {
-            net,
-            except: vec![],
-        }
-    }
-}
-
-impl From<IpAddr> for ClientNetwork {
-    fn from(net: IpAddr) -> Self {
-        IpNet::from(net).into()
-    }
-}
-
-impl From<Ipv4Net> for ClientNetwork {
-    fn from(net: Ipv4Net) -> Self {
-        IpNet::from(net).into()
-    }
-}
-
-impl From<Ipv6Net> for ClientNetwork {
-    fn from(net: Ipv6Net) -> Self {
-        IpNet::from(net).into()
     }
 }

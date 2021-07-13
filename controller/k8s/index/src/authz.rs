@@ -1,7 +1,7 @@
 use super::{Index, ServerSelector, SrvIndex};
 use anyhow::{anyhow, bail, Result};
 use polixy_controller_core::{
-    ClientAuthentication, ClientAuthorization, ClientIdentityMatch, ClientNetwork, IpNet,
+    ClientAuthentication, ClientAuthorization, ClientIdentityMatch, IpNet, NetworkMatch,
 };
 use polixy_controller_k8s_api::{
     self as k8s,
@@ -182,9 +182,9 @@ fn mk_authz(srv: polixy::authz::ServerAuthorization, domain: &str) -> Result<Aut
                     .into_iter()
                     .map(|cidr| cidr.parse().map_err(Into::into))
                     .collect::<Result<Vec<IpNet>>>()?;
-                Ok(ClientNetwork { net, except })
+                Ok(NetworkMatch { net, except })
             })
-            .collect::<Result<Vec<ClientNetwork>>>()?
+            .collect::<Result<Vec<NetworkMatch>>>()?
     } else {
         // TODO this should only be cluster-local IPs.
         vec![

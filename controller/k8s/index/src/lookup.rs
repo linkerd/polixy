@@ -2,8 +2,8 @@ use crate::{node::KubeletIps, ServerRxRx};
 use anyhow::{anyhow, Result};
 use dashmap::{mapref::entry::Entry, DashMap};
 use polixy_controller_core::{
-    ClientAuthentication, ClientAuthorization, ClientNetwork, DiscoverInboundServer, InboundServer,
-    InboundServerRx, InboundServerRxStream,
+    ClientAuthentication, ClientAuthorization, DiscoverInboundServer, InboundServer,
+    InboundServerRx, InboundServerRxStream, NetworkMatch,
 };
 use std::{collections::HashMap, net::IpAddr, sync::Arc};
 
@@ -115,7 +115,7 @@ impl Rx {
 
 #[inline]
 fn mk_server(kubelet: &[IpAddr], mut inner: InboundServer) -> InboundServer {
-    let networks = kubelet.iter().copied().map(ClientNetwork::from).collect();
+    let networks = kubelet.iter().copied().map(NetworkMatch::from).collect();
     let authz = ClientAuthorization {
         networks,
         authentication: ClientAuthentication::Unauthenticated,

@@ -7,8 +7,8 @@ use linkerd2_proxy_api::inbound::{
     inbound_server_discovery_server::{InboundServerDiscovery, InboundServerDiscoveryServer},
 };
 use polixy_controller_core::{
-    ClientAuthentication, ClientAuthorization, ClientIdentityMatch, ClientNetwork,
-    DiscoverInboundServer, InboundServer, InboundServerRx, IpNet, ProxyProtocol,
+    ClientAuthentication, ClientAuthorization, ClientIdentityMatch, DiscoverInboundServer,
+    InboundServer, InboundServerRx, IpNet, NetworkMatch, ProxyProtocol,
 };
 use tracing::trace;
 
@@ -208,7 +208,7 @@ fn to_authz(
     } else {
         networks
             .iter()
-            .map(|ClientNetwork { net, except }| proto::Network {
+            .map(|NetworkMatch { net, except }| proto::Network {
                 net: Some((*net).into()),
                 except: except.iter().cloned().map(Into::into).collect(),
             })

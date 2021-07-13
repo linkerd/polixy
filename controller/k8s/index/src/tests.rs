@@ -1,8 +1,8 @@
 use super::*;
 use futures::prelude::*;
 use polixy_controller_core::{
-    ClientAuthentication, ClientAuthorization, ClientIdentityMatch, ClientNetwork, InboundServerRx,
-    IpNet, Ipv4Net, Ipv6Net, ProxyProtocol,
+    ClientAuthentication, ClientAuthorization, ClientIdentityMatch, InboundServerRx, IpNet,
+    Ipv4Net, Ipv6Net, NetworkMatch, ProxyProtocol,
 };
 use polixy_controller_k8s_api::polixy::server::Port;
 use std::{collections::BTreeMap, net::IpAddr, str::FromStr};
@@ -582,7 +582,7 @@ fn mk_default_allow(
 ) -> BTreeMap<String, ClientAuthorization> {
     let all_nets = vec![Ipv4Net::default().into(), Ipv6Net::default().into()];
 
-    let cluster_nets = vec![ClientNetwork::from(cluster_net)];
+    let cluster_nets = vec![NetworkMatch::from(cluster_net)];
 
     let authed = ClientAuthentication::TlsAuthenticated(vec![ClientIdentityMatch::Suffix(vec![])]);
 
@@ -626,7 +626,7 @@ fn healthcheck_authz(ip: IpAddr) -> (String, ClientAuthorization) {
     (
         "_health_check".into(),
         ClientAuthorization {
-            networks: vec![ClientNetwork::from(IpNet::from(ip))],
+            networks: vec![NetworkMatch::from(IpNet::from(ip))],
             authentication: ClientAuthentication::Unauthenticated,
         },
     )

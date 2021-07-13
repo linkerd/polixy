@@ -1,8 +1,8 @@
 use crate::ServerRx;
 use anyhow::{anyhow, Error, Result};
 use polixy_controller_core::{
-    ClientAuthentication, ClientAuthorization, ClientIdentityMatch, ClientNetwork, InboundServer,
-    IpNet, ProxyProtocol,
+    ClientAuthentication, ClientAuthorization, ClientIdentityMatch, InboundServer, IpNet,
+    NetworkMatch, ProxyProtocol,
 };
 use polixy_controller_k8s_api as k8s;
 use tokio::{sync::watch, time};
@@ -156,7 +156,7 @@ fn mk_detect_config(
 ) -> InboundServer {
     let networks = nets
         .into_iter()
-        .map(|net| ClientNetwork {
+        .map(|net| NetworkMatch {
             net,
             except: vec![],
         })

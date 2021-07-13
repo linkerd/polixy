@@ -6,7 +6,7 @@ use crate::{
     KubeletIps,
 };
 use anyhow::{anyhow, Context, Result};
-use ipnet::IpNet;
+use polixy_controller_core::IpNet;
 use std::{
     collections::{hash_map::Entry as HashEntry, HashMap, HashSet},
     net::IpAddr,

@@ -11,7 +11,7 @@ rustfmt = ["linkerd2-proxy-api/rustfmt"]
 [dependencies]
 async-stream = "0.3"
 async-trait = "0.1"
-drain = "0.0.1"
+drain = "0.1"
 futures = "0.3"
 linkerd2-proxy-api = { git = "https://github.com/linkerd/linkerd2-proxy-api", branch = "ver/inbound", features = ["inbound", "server"] }
 polixy-controller-core = { path = "../core" }

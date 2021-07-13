@@ -4,5 +4,6 @@ members = [
     "client",
     "controller",
     "controller/core",
-    "controller/grpc"
+    "controller/grpc",
+    "controller/k8s"
 ]

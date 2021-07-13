@@ -3,7 +3,8 @@
 
 use anyhow::{Context, Result};
 use futures::{future, prelude::*};
-use polixy_controller::DefaultAllow;
+use polixy_controller_core::IpNet;
+use polixy_controller_k8s::DefaultAllow;
 use std::net::SocketAddr;
 use structopt::StructOpt;
 use tokio::{sync::watch, time};
@@ -25,7 +26,7 @@ struct Args {
     ///
     /// The default reflects k3d's default node network.
     #[structopt(long, default_value = "10.42.0.0/16")]
-    cluster_networks: Vec<ipnet::IpNet>,
+    cluster_networks: Vec<IpNet>,
 
     #[structopt(long, default_value = "all-unauthenticated")]
     default_allow: DefaultAllow,
@@ -53,7 +54,7 @@ async fn main() -> Result<()> {
     let admin = tokio::spawn(polixy_controller::admin::serve(admin_addr, ready_rx));
 
     const DETECT_TIMEOUT: time::Duration = time::Duration::from_secs(10);
-    let (handle, index_task) = polixy_controller::index(
+    let (handle, index_task) = polixy_controller_k8s::index(
         client,
         ready_tx,
         cluster_networks,
@@ -88,7 +89,7 @@ async fn main() -> Result<()> {
 #[instrument(skip(handle, drain))]
 async fn grpc(
     addr: SocketAddr,
-    handle: polixy_controller::lookup::Reader,
+    handle: polixy_controller_k8s::lookup::Reader,
     drain: drain::Watch,
 ) -> Result<()> {
     let server = polixy_controller_grpc::Server::new(handle, drain.clone());

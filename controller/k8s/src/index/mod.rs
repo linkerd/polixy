@@ -19,6 +19,7 @@ use crate::{
     lookup,
 };
 use anyhow::{Context, Error};
+use polixy_controller_core::IpNet;
 use std::sync::Arc;
 use tokio::{sync::watch, time};
 use tracing::{debug, instrument, warn};
@@ -49,7 +50,7 @@ enum ServerSelector {
 impl Index {
     pub(crate) fn new(
         lookups: lookup::Writer,
-        cluster_nets: Vec<ipnet::IpNet>,
+        cluster_nets: Vec<IpNet>,
         identity_domain: String,
         default_allow: DefaultAllow,
         detect_timeout: time::Duration,

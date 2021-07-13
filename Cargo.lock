@@ -1054,27 +1054,15 @@ name = "polixy-controller"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-stream",
- "async-trait",
- "bytes",
- "dashmap",
  "drain",
  "futures",
  "hyper",
- "ipnet",
- "k8s-openapi",
  "kube",
- "kube-runtime",
- "parking_lot",
  "polixy-controller-core",
  "polixy-controller-grpc",
- "schemars",
- "serde",
- "serde_json",
- "serde_yaml",
+ "polixy-controller-k8s",
  "structopt",
  "tokio",
- "tokio-stream",
  "tracing",
  "tracing-subscriber",
 ]
@@ -1087,7 +1075,6 @@ dependencies = [
  "async-trait",
  "futures",
  "ipnet",
- "tokio",
 ]
 
 [[package]]
@@ -1102,6 +1089,28 @@ dependencies = [
  "polixy-controller-core",
  "tokio",
  "tonic",
+ "tracing",
+]
+
+[[package]]
+name = "polixy-controller-k8s"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-stream",
+ "async-trait",
+ "bytes",
+ "dashmap",
+ "futures",
+ "k8s-openapi",
+ "kube",
+ "kube-runtime",
+ "polixy-controller-core",
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tokio",
  "tracing",
 ]
 
@@ -1688,7 +1697,6 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
  "tokio",
- "tokio-util",
 ]
 
 [[package]]

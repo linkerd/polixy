@@ -5,9 +5,8 @@ use crate::k8s::{
     ResourceExt,
 };
 use anyhow::{anyhow, bail, Result};
-use ipnet::IpNet;
 use polixy_controller_core::{
-    ClientAuthentication, ClientAuthorization, ClientIdentityMatch, ClientNetwork,
+    ClientAuthentication, ClientAuthorization, ClientIdentityMatch, ClientNetwork, IpNet,
 };
 use std::collections::{hash_map::Entry as HashEntry, HashMap, HashSet};
 use tracing::{debug, instrument, trace};
@@ -189,8 +188,8 @@ fn mk_authz(srv: polixy::authz::ServerAuthorization, domain: &str) -> Result<Aut
     } else {
         // TODO this should only be cluster-local IPs.
         vec![
-            ipnet::IpNet::V4(Default::default()).into(),
-            ipnet::IpNet::V6(Default::default()).into(),
+            IpNet::V4(Default::default()).into(),
+            IpNet::V6(Default::default()).into(),
         ]
     };
 

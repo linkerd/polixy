@@ -2,7 +2,7 @@ use crate::{k8s, ServerRx};
 use anyhow::{anyhow, Error, Result};
 use polixy_controller_core::{
     ClientAuthentication, ClientAuthorization, ClientIdentityMatch, ClientNetwork, InboundServer,
-    ProxyProtocol,
+    IpNet, ProxyProtocol,
 };
 use tokio::{sync::watch, time};
 
@@ -75,14 +75,11 @@ impl DefaultAllows {
     /// These receivers are never updated. The senders are spawned onto a background task so that
     /// the receivers continue to be live. The background task completes once all receivers are
     /// dropped.
-    pub fn spawn(cluster_nets: Vec<ipnet::IpNet>, detect_timeout: time::Duration) -> Self {
+    pub fn spawn(cluster_nets: Vec<IpNet>, detect_timeout: time::Duration) -> Self {
         let any_authenticated =
             ClientAuthentication::TlsAuthenticated(vec![ClientIdentityMatch::Suffix(vec![])]);
 
-        let all_nets = [
-            ipnet::IpNet::V4(Default::default()),
-            ipnet::IpNet::V6(Default::default()),
-        ];
+        let all_nets = [IpNet::V4(Default::default()), IpNet::V6(Default::default())];
 
         let (all_authed_tx, all_authed_rx) = watch::channel(mk_detect_config(
             "_all_authed",
@@ -153,7 +150,7 @@ impl DefaultAllows {
 fn mk_detect_config(
     name: &'static str,
     timeout: time::Duration,
-    nets: impl IntoIterator<Item = ipnet::IpNet>,
+    nets: impl IntoIterator<Item = IpNet>,
     authentication: ClientAuthentication,
 ) -> InboundServer {
     let networks = nets

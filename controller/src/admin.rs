@@ -1,4 +1,3 @@
-use bytes::Bytes;
 use futures::future;
 use hyper::{Body, Request, Response};
 use std::net::SocketAddr;
@@ -34,13 +33,13 @@ fn handle_ready(ready: &watch::Receiver<bool>, req: Request<Body>) -> Response<B
                 Response::builder()
                     .status(hyper::StatusCode::OK)
                     .header(hyper::header::CONTENT_TYPE, "text/plain")
-                    .body(Bytes::from_static(b"ready\n").into())
+                    .body("ready\n".into())
                     .unwrap()
             } else {
                 Response::builder()
                     .status(hyper::StatusCode::INTERNAL_SERVER_ERROR)
                     .header(hyper::header::CONTENT_TYPE, "text/plain")
-                    .body(Bytes::from_static(b"not ready\n").into())
+                    .body("not ready\n".into())
                     .unwrap()
             }
         }

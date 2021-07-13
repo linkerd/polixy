@@ -8,9 +8,9 @@
 #![forbid(unsafe_code)]
 
 mod index;
-pub mod lookup;
+mod lookup;
 
-pub use self::index::DefaultAllow;
+pub use self::{index::DefaultAllow, lookup::Reader};
 use polixy_controller_core::{InboundServer, IpNet};
 use polixy_controller_k8s_api as k8s;
 use tokio::{sync::watch, time};

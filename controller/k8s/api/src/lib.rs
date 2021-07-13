@@ -1,3 +1,6 @@
+#![deny(warnings, rust_2018_idioms)]
+#![forbid(unsafe_code)]
+
 pub mod labels;
 pub mod polixy;
 mod watch;

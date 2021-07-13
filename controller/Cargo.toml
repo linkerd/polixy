@@ -14,7 +14,7 @@ hyper = { version = "0.14", features = ["http1", "http2", "runtime", "server"] }
 kube = { version = "0.58.1", default-features = false, features = ["client", "derive", "native-tls"] }
 polixy-controller-core = { path = "./core" }
 polixy-controller-grpc = { path = "./grpc" }
-polixy-controller-k8s = { path = "./k8s" }
+polixy-controller-k8s-index = { path = "./k8s/index" }
 structopt = "0.3"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "parking_lot", "signal", "sync"] }
 tracing = "0.1"

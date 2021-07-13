@@ -13,21 +13,12 @@ use std::{collections::BTreeMap, pin::Pin, time::Duration};
 /// Models inbound server configuration discovery.
 #[async_trait::async_trait]
 pub trait DiscoverInboundServer<T> {
-    type Rx: InboundServerRx;
+    async fn get_inbound_server(&self, target: T) -> Result<Option<InboundServer>>;
 
-    async fn discover_inbound_server(&self, target: T) -> Result<Option<Self::Rx>>;
+    async fn watch_inbound_server(&self, target: T) -> Result<Option<InboundServerStream>>;
 }
 
-/// A discovered server configuration may be queried or streamed.
-pub trait InboundServerRx {
-    /// Query server configuration.
-    fn get(&self) -> InboundServer;
-
-    /// Stream server configuration updates.
-    fn into_stream(self) -> InboundServerRxStream;
-}
-
-pub type InboundServerRxStream = Pin<Box<dyn Stream<Item = InboundServer> + Send + Sync + 'static>>;
+pub type InboundServerStream = Pin<Box<dyn Stream<Item = InboundServer> + Send + Sync + 'static>>;
 
 /// Inbound server configuration.
 #[derive(Clone, Debug, PartialEq, Eq)]

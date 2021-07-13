@@ -8,7 +8,7 @@ use linkerd2_proxy_api::inbound::{
 };
 use polixy_controller_core::{
     ClientAuthentication, ClientAuthorization, DiscoverInboundServer, IdentityMatch, InboundServer,
-    InboundServerRx, IpNet, NetworkMatch, ProxyProtocol,
+    InboundServerStream, IpNet, NetworkMatch, ProxyProtocol,
 };
 use tracing::trace;
 
@@ -21,7 +21,6 @@ pub struct Server<T> {
 impl<T> Server<T>
 where
     T: DiscoverInboundServer<(String, String, u16)> + Send + Sync + 'static,
-    T::Rx: Send + Sync + 'static,
 {
     pub fn new(discover: T, drain: drain::Watch) -> Self {
         Self { discover, drain }
@@ -38,7 +37,10 @@ where
             .await
     }
 
-    async fn lookup(&self, workload: String, port: u32) -> Result<T::Rx, tonic::Status> {
+    fn check_target(
+        &self,
+        proto::PortSpec { workload, port }: proto::PortSpec,
+    ) -> Result<(String, String, u16), tonic::Status> {
         // Parse a workload name in the form namespace:name.
         let (ns, name) = match workload.split_once(':') {
             None => {
@@ -67,18 +69,7 @@ where
             port as u16
         };
 
-        // Lookup the configuration for an inbound port. If the pod hasn't (yet)
-        // been indexed, return a Not Found error.
-        self.discover
-            .discover_inbound_server((ns.to_string(), name.to_string(), port))
-            .await
-            .map_err(|e| tonic::Status::internal(format!("lookup failed: {}", e)))?
-            .ok_or_else(|| {
-                tonic::Status::not_found(format!(
-                    "unknown pod ns={} name={} port={}",
-                    ns, name, port
-                ))
-            })
+        Ok((ns.to_string(), name.to_string(), port))
     }
 }
 
@@ -86,16 +77,23 @@ where
 impl<T> InboundServerDiscovery for Server<T>
 where
     T: DiscoverInboundServer<(String, String, u16)> + Send + Sync + 'static,
-    T::Rx: Send + Sync + 'static,
 {
     async fn get_port(
         &self,
         req: tonic::Request<proto::PortSpec>,
     ) -> Result<tonic::Response<proto::Server>, tonic::Status> {
-        let proto::PortSpec { workload, port } = req.into_inner();
-        let rx = self.lookup(workload, port).await?;
-        let server = to_server(&rx.get());
-        Ok(tonic::Response::new(server))
+        let target = self.check_target(req.into_inner())?;
+
+        // Lookup the configuration for an inbound port. If the pod hasn't (yet)
+        // been indexed, return a Not Found error.
+        let s = self
+            .discover
+            .get_inbound_server(target)
+            .await
+            .map_err(|e| tonic::Status::internal(format!("lookup failed: {}", e)))?
+            .ok_or_else(|| tonic::Status::not_found("unknown server"))?;
+
+        Ok(tonic::Response::new(to_server(&s)))
     }
 
     type WatchPortStream = BoxWatchStream;
@@ -104,9 +102,14 @@ where
         &self,
         req: tonic::Request<proto::PortSpec>,
     ) -> Result<tonic::Response<BoxWatchStream>, tonic::Status> {
-        let proto::PortSpec { workload, port } = req.into_inner();
-        let rx = self.lookup(workload, port).await?;
+        let target = self.check_target(req.into_inner())?;
         let drain = self.drain.clone();
+        let rx = self
+            .discover
+            .watch_inbound_server(target)
+            .await
+            .map_err(|e| tonic::Status::internal(format!("lookup failed: {}", e)))?
+            .ok_or_else(|| tonic::Status::not_found("unknown server"))?;
         Ok(tonic::Response::new(response_stream(drain, rx)))
     }
 }
@@ -114,20 +117,16 @@ where
 type BoxWatchStream =
     std::pin::Pin<Box<dyn Stream<Item = Result<proto::Server, tonic::Status>> + Send + Sync>>;
 
-fn response_stream<T>(drain: drain::Watch, rx: T) -> BoxWatchStream
-where
-    T: InboundServerRx + Send + Sync + 'static,
-{
+fn response_stream(drain: drain::Watch, mut rx: InboundServerStream) -> BoxWatchStream {
     Box::pin(async_stream::try_stream! {
         tokio::pin! {
             let shutdown = drain.signaled();
         }
 
-        let mut servers = rx.into_stream();
         loop {
             tokio::select! {
                 // When the port is updated with a new server, update the server watch.
-                res = servers.next() => match res {
+                res = rx.next() => match res {
                     Some(s) => {
                         yield to_server(&s);
                     }

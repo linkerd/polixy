@@ -3,7 +3,7 @@ use anyhow::{anyhow, Result};
 use dashmap::{mapref::entry::Entry, DashMap};
 use polixy_controller_core::{
     ClientAuthentication, ClientAuthorization, DiscoverInboundServer, InboundServer,
-    InboundServerRx, InboundServerRxStream, NetworkMatch,
+    InboundServerStream, NetworkMatch,
 };
 use std::{collections::HashMap, net::IpAddr, sync::Arc};
 
@@ -30,26 +30,6 @@ pub(crate) fn pair() -> (Writer, Reader) {
 pub struct Rx {
     kubelet: KubeletIps,
     rx: ServerRxRx,
-}
-
-// === impl Reader ===
-
-impl Reader {
-    pub(crate) fn lookup(&self, ns: &str, pod: &str, port: u16) -> Option<Rx> {
-        self.0.get(ns)?.get(pod)?.get(&port).cloned()
-    }
-}
-
-#[async_trait::async_trait]
-impl DiscoverInboundServer<(String, String, u16)> for Reader {
-    type Rx = Rx;
-
-    async fn discover_inbound_server(
-        &self,
-        (ns, pod, port): (String, String, u16),
-    ) -> Result<Option<Rx>> {
-        Ok(self.lookup(&*ns, &*pod, port))
-    }
 }
 
 // === impl Writer ===
@@ -105,6 +85,32 @@ impl Writer {
     }
 }
 
+// === impl Reader ===
+
+impl Reader {
+    #[inline]
+    pub(crate) fn lookup(&self, ns: &str, pod: &str, port: u16) -> Option<Rx> {
+        self.0.get(ns)?.get(pod)?.get(&port).cloned()
+    }
+}
+
+#[async_trait::async_trait]
+impl DiscoverInboundServer<(String, String, u16)> for Reader {
+    async fn get_inbound_server(
+        &self,
+        (ns, pod, port): (String, String, u16),
+    ) -> Result<Option<InboundServer>> {
+        Ok(self.lookup(&*ns, &*pod, port).map(|rx| rx.get()))
+    }
+
+    async fn watch_inbound_server(
+        &self,
+        (ns, pod, port): (String, String, u16),
+    ) -> Result<Option<InboundServerStream>> {
+        Ok(self.lookup(&*ns, &*pod, port).map(|rx| rx.into_stream()))
+    }
+}
+
 // === impl Rx ===
 
 impl Rx {
@@ -125,12 +131,12 @@ fn mk_server(kubelet: &[IpAddr], mut inner: InboundServer) -> InboundServer {
     inner
 }
 
-impl InboundServerRx for Rx {
-    fn get(&self) -> InboundServer {
+impl Rx {
+    pub(crate) fn get(&self) -> InboundServer {
         mk_server(&*self.kubelet, (*(*self.rx.borrow()).borrow()).clone())
     }
 
-    fn into_stream(self) -> InboundServerRxStream {
+    pub(crate) fn into_stream(self) -> InboundServerStream {
         let kubelet = self.kubelet;
         let mut outer = self.rx;
         let mut inner = (*outer.borrow_and_update()).clone();

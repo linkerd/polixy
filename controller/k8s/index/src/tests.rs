@@ -1,8 +1,8 @@
 use super::*;
 use futures::prelude::*;
 use polixy_controller_core::{
-    ClientAuthentication, ClientAuthorization, IdentityMatch, InboundServerRx, IpNet, Ipv4Net,
-    Ipv6Net, NetworkMatch, ProxyProtocol,
+    ClientAuthentication, ClientAuthorization, IdentityMatch, IpNet, Ipv4Net, Ipv6Net,
+    NetworkMatch, ProxyProtocol,
 };
 use polixy_controller_k8s_api::polixy::server::Port;
 use std::{collections::BTreeMap, net::IpAddr, str::FromStr};

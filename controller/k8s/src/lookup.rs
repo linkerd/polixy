@@ -1,4 +1,4 @@
-use crate::KubeletIps;
+use crate::{index::KubeletIps, ServerRxRx};
 use anyhow::{anyhow, Result};
 use dashmap::{mapref::entry::Entry, DashMap};
 use polixy_controller_core::{
@@ -6,7 +6,6 @@ use polixy_controller_core::{
     InboundServerRx, InboundServerRxStream,
 };
 use std::{collections::HashMap, net::IpAddr, sync::Arc};
-use tokio::sync::watch;
 
 #[derive(Debug, Default)]
 pub(crate) struct Writer(ByNs);
@@ -30,7 +29,7 @@ pub(crate) fn pair() -> (Writer, Reader) {
 #[derive(Clone, Debug)]
 pub struct Rx {
     kubelet: KubeletIps,
-    rx: watch::Receiver<watch::Receiver<InboundServer>>,
+    rx: ServerRxRx,
 }
 
 // === impl Reader ===
@@ -109,10 +108,7 @@ impl Writer {
 // === impl Rx ===
 
 impl Rx {
-    pub(crate) fn new(
-        kubelet: KubeletIps,
-        rx: watch::Receiver<watch::Receiver<InboundServer>>,
-    ) -> Self {
+    pub(crate) fn new(kubelet: KubeletIps, rx: ServerRxRx) -> Self {
         Self { kubelet, rx }
     }
 }

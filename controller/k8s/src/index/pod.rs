@@ -1,7 +1,7 @@
-use super::{DefaultAllow, Index, Namespace, NodeIndex, SrvIndex};
+use super::{DefaultAllow, Index, KubeletIps, Namespace, NodeIndex, SrvIndex};
 use crate::{
     k8s::{self, polixy, ResourceExt},
-    lookup, KubeletIps, ServerRx, ServerRxTx,
+    lookup, ServerRx, ServerRxTx,
 };
 use anyhow::{anyhow, Result};
 use std::collections::{hash_map::Entry as HashEntry, HashMap, HashSet};

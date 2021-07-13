@@ -1,15 +1,13 @@
 //! Node->Kubelet IP
 
 use super::Index;
-use crate::{
-    k8s::{self, ResourceExt},
-    KubeletIps,
-};
+use crate::k8s::{self, ResourceExt};
 use anyhow::{anyhow, Context, Result};
 use polixy_controller_core::IpNet;
 use std::{
     collections::{hash_map::Entry as HashEntry, HashMap, HashSet},
     net::IpAddr,
+    sync::Arc,
 };
 use tracing::{debug, instrument, trace, warn};
 
@@ -23,6 +21,9 @@ enum State {
     Pending(HashMap<String, HashMap<String, k8s::Pod>>),
     Known(KubeletIps),
 }
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub(crate) struct KubeletIps(Arc<[IpAddr]>);
 
 // === impl NodeIndex ===
 
@@ -96,7 +97,7 @@ impl Index {
     pub fn apply_node(&mut self, node: k8s::Node) -> Result<()> {
         match self.nodes.index.entry(node.name()) {
             HashEntry::Vacant(entry) => {
-                let ips = kubelet_ips(node)
+                let ips = KubeletIps::try_from_node(node)
                     .with_context(|| format!("failed to load kubelet IPs for {}", entry.key()))?;
                 debug!(?ips, "Adding");
                 entry.insert(State::Known(ips));
@@ -112,7 +113,7 @@ impl Index {
 
                 // Otherwise, the update is replacing a set of pending pods. Update the state to the
                 // known set of IPs and then apply all of the pending pods.
-                let ips = kubelet_ips(node)
+                let ips = KubeletIps::try_from_node(node)
                     .with_context(|| format!("failed to load kubelet IPs for {}", entry.key()))?;
                 debug!(?ips, "Adding");
                 let pods = match std::mem::replace(entry.get_mut(), State::Known(ips)) {
@@ -180,29 +181,41 @@ impl Index {
     }
 }
 
-fn cidr_to_kubelet_ip(cidr: String) -> Result<IpAddr> {
-    cidr.parse::<IpNet>()
-        .with_context(|| format!("invalid CIDR {}", cidr))?
-        .hosts()
-        .next()
-        .ok_or_else(|| anyhow!("pod CIDR network is empty"))
+// === impl KubeletIps ===
+
+impl std::ops::Deref for KubeletIps {
+    type Target = [IpAddr];
+
+    fn deref(&self) -> &[IpAddr] {
+        &*self.0
+    }
 }
 
-fn kubelet_ips(node: k8s::Node) -> Result<KubeletIps> {
-    let spec = node.spec.ok_or_else(|| anyhow!("node missing spec"))?;
+impl KubeletIps {
+    fn try_from_cidr(cidr: String) -> Result<IpAddr> {
+        cidr.parse::<IpNet>()
+            .with_context(|| format!("invalid CIDR {}", cidr))?
+            .hosts()
+            .next()
+            .ok_or_else(|| anyhow!("pod CIDR network is empty"))
+    }
 
-    let addrs = if spec.pod_cidrs.is_empty() {
-        let cidr = spec
-            .pod_cidr
-            .ok_or_else(|| anyhow!("node missing pod_cidr"))?;
-        let ip = cidr_to_kubelet_ip(cidr)?;
-        vec![ip]
-    } else {
-        spec.pod_cidrs
-            .into_iter()
-            .map(cidr_to_kubelet_ip)
-            .collect::<Result<Vec<_>>>()?
-    };
+    fn try_from_node(node: k8s::Node) -> Result<Self> {
+        let spec = node.spec.ok_or_else(|| anyhow!("node missing spec"))?;
 
-    Ok(KubeletIps(addrs.into()))
+        let addrs = if spec.pod_cidrs.is_empty() {
+            let cidr = spec
+                .pod_cidr
+                .ok_or_else(|| anyhow!("node missing pod_cidr"))?;
+            let ip = Self::try_from_cidr(cidr)?;
+            vec![ip]
+        } else {
+            spec.pod_cidrs
+                .into_iter()
+                .map(Self::try_from_cidr)
+                .collect::<Result<Vec<_>>>()?
+        };
+
+        Ok(Self(addrs.into()))
+    }
 }

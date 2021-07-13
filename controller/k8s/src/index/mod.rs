@@ -8,6 +8,7 @@ mod server;
 mod tests;
 
 pub use self::default_allow::DefaultAllow;
+pub(crate) use self::node::KubeletIps;
 use self::{
     default_allow::DefaultAllows,
     namespace::{Namespace, NamespaceIndex},

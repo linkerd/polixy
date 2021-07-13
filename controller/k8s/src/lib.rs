@@ -13,7 +13,6 @@ pub mod lookup;
 
 pub use self::index::DefaultAllow;
 use polixy_controller_core::{InboundServer, IpNet};
-use std::{net::IpAddr, sync::Arc};
 use tokio::{sync::watch, time};
 
 /// Watches a server's configuration for server/authorization changes.
@@ -22,17 +21,10 @@ type ServerRx = watch::Receiver<InboundServer>;
 /// Publishes updates for a server's configuration for server/authorization changes.
 type ServerTx = watch::Sender<InboundServer>;
 
+type ServerRxRx = watch::Receiver<ServerRx>;
+
 /// Watches a pod port's for a new `ServerRx`.
 type ServerRxTx = watch::Sender<ServerRx>;
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct ServiceAccountRef {
-    ns: String,
-    name: String,
-}
-
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
-struct KubeletIps(Arc<[IpAddr]>);
 
 pub fn index(
     watches: impl Into<k8s::ResourceWatches>,
@@ -59,14 +51,4 @@ pub fn index(
     let task = idx.index(watches.into(), ready);
 
     (reader, task)
-}
-
-// === impl KubeletIps ===
-
-impl std::ops::Deref for KubeletIps {
-    type Target = [IpAddr];
-
-    fn deref(&self) -> &[IpAddr] {
-        &*self.0
-    }
 }

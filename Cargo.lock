@@ -1096,7 +1096,6 @@ dependencies = [
 name = "polixy-controller-k8s-api"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "futures",
  "k8s-openapi",
  "kube",
@@ -1118,15 +1117,8 @@ dependencies = [
  "async-trait",
  "dashmap",
  "futures",
- "k8s-openapi",
- "kube",
- "kube-runtime",
  "polixy-controller-core",
  "polixy-controller-k8s-api",
- "schemars",
- "serde",
- "serde_json",
- "serde_yaml",
  "tokio",
  "tracing",
 ]

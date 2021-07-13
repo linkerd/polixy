@@ -9,15 +9,12 @@ pub use self::{
     labels::Labels,
     watch::{Event, Watch},
 };
-pub use k8s_openapi::{
-    api::{
-        self,
-        core::v1::{Namespace, Node, NodeSpec, Pod, PodSpec, PodStatus},
-    },
-    apimachinery::pkg::apis::meta::v1::ObjectMeta,
+pub use k8s_openapi::api::{
+    self,
+    core::v1::{Namespace, Node, NodeSpec, Pod, PodSpec, PodStatus},
 };
-pub use kube::api::ResourceExt;
 use kube::api::{Api, ListParams};
+pub use kube::api::{ObjectMeta, ResourceExt};
 use kube_runtime::watcher;
 
 /// Resource watches.

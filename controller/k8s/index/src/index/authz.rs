@@ -213,7 +213,7 @@ fn mk_authz(srv: polixy::authz::ServerAuthorization, domain: &str) -> Result<Aut
 }
 
 fn mk_mtls_authn(
-    metadata: &kube::api::ObjectMeta,
+    metadata: &k8s::ObjectMeta,
     mtls: MeshTls,
     domain: &str,
 ) -> Result<ClientAuthentication> {

@@ -1,4 +1,4 @@
-use super::{Index, ServerSelector, SrvIndex};
+use crate::{Index, ServerSelector, SrvIndex};
 use anyhow::{anyhow, bail, Result};
 use polixy_controller_core::{
     ClientAuthentication, ClientAuthorization, IdentityMatch, IpNet, NetworkMatch,
@@ -12,7 +12,7 @@ use std::collections::{hash_map::Entry as HashEntry, HashMap, HashSet};
 use tracing::{debug, instrument, trace};
 
 #[derive(Debug, Default)]
-pub struct AuthzIndex {
+pub(crate) struct AuthzIndex {
     index: HashMap<String, Authz>,
 }
 
@@ -96,7 +96,7 @@ impl Index {
             name = ?authz.metadata.name,
         )
     )]
-    pub(super) fn apply_authz(&mut self, authz: polixy::ServerAuthorization) -> Result<()> {
+    pub(crate) fn apply_authz(&mut self, authz: polixy::ServerAuthorization) -> Result<()> {
         let ns = self
             .namespaces
             .get_or_default(authz.namespace().expect("namespace required"));
@@ -112,7 +112,7 @@ impl Index {
             name = ?authz.metadata.name,
         )
     )]
-    pub(super) fn delete_authz(&mut self, authz: polixy::ServerAuthorization) {
+    pub(crate) fn delete_authz(&mut self, authz: polixy::ServerAuthorization) {
         if let Some(ns) = self
             .namespaces
             .index
@@ -125,7 +125,7 @@ impl Index {
     }
 
     #[instrument(skip(self, authzs))]
-    pub(super) fn reset_authzs(&mut self, authzs: Vec<polixy::ServerAuthorization>) -> Result<()> {
+    pub(crate) fn reset_authzs(&mut self, authzs: Vec<polixy::ServerAuthorization>) -> Result<()> {
         let mut prior = self
             .namespaces
             .index

@@ -1,6 +1,6 @@
 //! Node->Kubelet IP
 
-use super::Index;
+use crate::Index;
 use anyhow::{anyhow, Context, Result};
 use polixy_controller_core::IpNet;
 use polixy_controller_k8s_api::{self as k8s, ResourceExt};
@@ -12,7 +12,7 @@ use std::{
 use tracing::{debug, instrument, trace, warn};
 
 #[derive(Debug, Default)]
-pub(super) struct NodeIndex {
+pub(crate) struct NodeIndex {
     index: HashMap<String, State>,
 }
 

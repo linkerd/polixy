@@ -1,5 +1,7 @@
-use super::{node::KubeletIps, DefaultAllow, Index, Namespace, NodeIndex, SrvIndex};
-use crate::{lookup, ServerRx, ServerRxTx};
+use crate::{
+    lookup, node::KubeletIps, DefaultAllow, Index, Namespace, NodeIndex, ServerRx, ServerRxTx,
+    SrvIndex,
+};
 use anyhow::{anyhow, Result};
 use polixy_controller_k8s_api::{self as k8s, polixy, ResourceExt};
 use std::collections::{hash_map::Entry as HashEntry, HashMap, HashSet};
@@ -7,7 +9,7 @@ use tokio::sync::watch;
 use tracing::{debug, instrument, trace, warn};
 
 #[derive(Debug, Default)]
-pub(super) struct PodIndex {
+pub(crate) struct PodIndex {
     index: HashMap<String, Pod>,
 }
 
@@ -41,7 +43,7 @@ impl Index {
             name = ?pod.metadata.name,
         )
     )]
-    pub(super) fn apply_pod(&mut self, pod: k8s::Pod) -> Result<()> {
+    pub(crate) fn apply_pod(&mut self, pod: k8s::Pod) -> Result<()> {
         let Namespace {
             default_allow,
             ref mut pods,
@@ -72,7 +74,7 @@ impl Index {
             name = ?pod.metadata.name,
         )
     )]
-    pub(super) fn delete_pod(&mut self, pod: k8s::Pod) -> Result<()> {
+    pub(crate) fn delete_pod(&mut self, pod: k8s::Pod) -> Result<()> {
         let ns_name = pod.namespace().expect("namespace must be set");
         let pod_name = pod.name();
         self.rm_pod(ns_name.as_str(), pod_name.as_str())
@@ -102,7 +104,7 @@ impl Index {
     }
 
     #[instrument(skip(self, pods))]
-    pub(super) fn reset_pods(&mut self, pods: Vec<k8s::Pod>) -> Result<()> {
+    pub(crate) fn reset_pods(&mut self, pods: Vec<k8s::Pod>) -> Result<()> {
         self.nodes.clear_pending_pods();
 
         let mut prior_pods = self
@@ -262,13 +264,13 @@ impl PodIndex {
         (ports, lookups)
     }
 
-    pub(super) fn link_servers(&mut self, servers: &SrvIndex) {
+    pub(crate) fn link_servers(&mut self, servers: &SrvIndex) {
         for pod in self.index.values_mut() {
             pod.link_servers(&servers)
         }
     }
 
-    pub(super) fn reset_server(&mut self, name: &str) {
+    pub(crate) fn reset_server(&mut self, name: &str) {
         for (pod_name, pod) in self.index.iter_mut() {
             let rx = pod.default_allow_rx.clone();
             for (p, port) in pod.ports.by_port.iter_mut() {

@@ -1,5 +1,4 @@
-use super::{authz::AuthzIndex, Index, Namespace, ServerSelector};
-use crate::{ServerRx, ServerTx};
+use crate::{authz::AuthzIndex, Index, Namespace, ServerRx, ServerSelector, ServerTx};
 use anyhow::{anyhow, bail, Result};
 use polixy_controller_core::{ClientAuthorization, InboundServer, ProxyProtocol};
 use polixy_controller_k8s_api::{self as k8s, polixy, ResourceExt};
@@ -11,7 +10,7 @@ use tokio::{sync::watch, time};
 use tracing::{debug, instrument, trace};
 
 #[derive(Debug, Default)]
-pub(super) struct SrvIndex {
+pub(crate) struct SrvIndex {
     index: HashMap<String, Server>,
 }
 
@@ -24,7 +23,7 @@ struct Server {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ServerMeta {
+struct ServerMeta {
     labels: k8s::Labels,
     port: polixy::server::Port,
     pod_selector: Arc<k8s::labels::Selector>,
@@ -194,7 +193,7 @@ impl Index {
             name = ?srv.metadata.name,
         )
     )]
-    pub(super) fn apply_server(&mut self, srv: polixy::Server) {
+    pub(crate) fn apply_server(&mut self, srv: polixy::Server) {
         let ns_name = srv.namespace().expect("namespace must be set");
         let Namespace {
             ref mut pods,
@@ -217,7 +216,7 @@ impl Index {
             name = ?srv.metadata.name,
         )
     )]
-    pub(super) fn delete_server(&mut self, srv: polixy::Server) -> Result<()> {
+    pub(crate) fn delete_server(&mut self, srv: polixy::Server) -> Result<()> {
         let ns_name = srv.namespace().expect("servers must be namespaced");
         self.rm_server(ns_name.as_str(), srv.name().as_str())
     }
@@ -240,7 +239,7 @@ impl Index {
     }
 
     #[instrument(skip(self, srvs))]
-    pub(super) fn reset_servers(&mut self, srvs: Vec<polixy::Server>) -> Result<()> {
+    pub(crate) fn reset_servers(&mut self, srvs: Vec<polixy::Server>) -> Result<()> {
         let mut prior_servers = self
             .namespaces
             .index

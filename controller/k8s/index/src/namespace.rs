@@ -1,8 +1,8 @@
-use super::{authz::AuthzIndex, pod::PodIndex, server::SrvIndex, DefaultAllow};
+use crate::{authz::AuthzIndex, pod::PodIndex, server::SrvIndex, DefaultAllow};
 use std::collections::HashMap;
 
 #[derive(Debug)]
-pub(super) struct NamespaceIndex {
+pub(crate) struct NamespaceIndex {
     pub index: HashMap<String, Namespace>,
 
     // The global default-allow policy.
@@ -10,7 +10,7 @@ pub(super) struct NamespaceIndex {
 }
 
 #[derive(Debug)]
-pub(super) struct Namespace {
+pub(crate) struct Namespace {
     /// Holds the global default-allow policy, which may be overridden per-workload.
     pub default_allow: DefaultAllow,
 

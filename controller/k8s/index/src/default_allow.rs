@@ -18,7 +18,7 @@ pub enum DefaultAllow {
 
 /// Default server configs to use when no server matches.
 #[derive(Clone, Debug)]
-pub(super) struct DefaultAllows {
+pub(crate) struct DefaultAllows {
     all_authed_rx: ServerRx,
     all_unauthed_rx: ServerRx,
     cluster_authed_rx: ServerRx,

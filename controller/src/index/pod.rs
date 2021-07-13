@@ -231,7 +231,7 @@ impl PodIndex {
         spec: k8s::PodSpec,
         server_rx: ServerRx,
         kubelet: KubeletIps,
-    ) -> (PodPorts, HashMap<u16, lookup::PodPort>) {
+    ) -> (PodPorts, HashMap<u16, lookup::Rx>) {
         let mut ports = PodPorts::default();
         let mut lookups = HashMap::new();
 
@@ -256,13 +256,7 @@ impl PodIndex {
                     }
 
                     ports.by_port.insert(port, pod_port);
-                    lookups.insert(
-                        port,
-                        lookup::PodPort {
-                            rx,
-                            kubelet_ips: kubelet.clone(),
-                        },
-                    );
+                    lookups.insert(port, lookup::Rx::new(kubelet.clone(), rx));
                 }
             }
         }

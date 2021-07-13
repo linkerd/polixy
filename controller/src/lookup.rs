@@ -1,7 +1,12 @@
-use crate::{KubeletIps, ServerRxRx};
+use crate::KubeletIps;
 use anyhow::{anyhow, Result};
 use dashmap::{mapref::entry::Entry, DashMap};
-use std::{collections::HashMap, sync::Arc};
+use polixy_controller_core::{
+    ClientAuthentication, ClientAuthorization, ClientNetwork, DiscoverInboundServer, InboundServer,
+    InboundServerRx, InboundServerRxStream,
+};
+use std::{collections::HashMap, net::IpAddr, sync::Arc};
+use tokio::sync::watch;
 
 #[derive(Debug, Default)]
 pub(crate) struct Writer(ByNs);
@@ -13,13 +18,7 @@ type ByNs = Arc<DashMap<String, ByPod>>;
 type ByPod = DashMap<String, ByPort>;
 
 // Boxed to enforce immutability.
-type ByPort = Box<HashMap<u16, PodPort>>;
-
-#[derive(Clone, Debug)]
-pub struct PodPort {
-    pub kubelet_ips: KubeletIps,
-    pub rx: ServerRxRx,
-}
+type ByPort = Box<HashMap<u16, Rx>>;
 
 pub(crate) fn pair() -> (Writer, Reader) {
     let by_ns = ByNs::default();
@@ -28,11 +27,36 @@ pub(crate) fn pair() -> (Writer, Reader) {
     (w, r)
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PodPort {
+    pub ns: String,
+    pub pod: String,
+    pub port: u16,
+}
+
+#[derive(Clone, Debug)]
+pub struct Rx {
+    kubelet: KubeletIps,
+    rx: watch::Receiver<watch::Receiver<InboundServer>>,
+}
+
 // === impl Reader ===
 
 impl Reader {
-    pub fn lookup(&self, ns: &str, name: &str, port: u16) -> Option<PodPort> {
-        self.0.get(ns)?.get(name)?.get(&port).cloned()
+    pub(crate) fn lookup(&self, ns: &str, pod: &str, port: u16) -> Option<Rx> {
+        self.0.get(ns)?.get(pod)?.get(&port).cloned()
+    }
+}
+
+#[async_trait::async_trait]
+impl DiscoverInboundServer<PodPort> for Reader {
+    type Rx = Rx;
+
+    async fn discover_inbound_server(
+        &self,
+        PodPort { ns, pod, port }: PodPort,
+    ) -> Result<Option<Rx>> {
+        Ok(self.lookup(&*ns, &*pod, port))
     }
 }
 
@@ -50,7 +74,7 @@ impl Writer {
         &mut self,
         ns: impl ToString,
         pod: impl ToString,
-        ports: impl IntoIterator<Item = (u16, PodPort)>,
+        ports: impl IntoIterator<Item = (u16, Rx)>,
     ) -> Result<()> {
         match self
             .0
@@ -86,5 +110,71 @@ impl Writer {
         }
 
         Ok(ports)
+    }
+}
+
+// === impl Rx ===
+
+impl Rx {
+    pub(crate) fn new(
+        kubelet: KubeletIps,
+        rx: watch::Receiver<watch::Receiver<InboundServer>>,
+    ) -> Self {
+        Self { kubelet, rx }
+    }
+}
+
+#[inline]
+fn mk_server(kubelet: &[IpAddr], mut inner: InboundServer) -> InboundServer {
+    let networks = kubelet.iter().copied().map(ClientNetwork::from).collect();
+    let authz = ClientAuthorization {
+        networks,
+        authentication: ClientAuthentication::Unauthenticated,
+    };
+
+    inner.authorizations.insert("_health_check".into(), authz);
+    inner
+}
+
+impl InboundServerRx for Rx {
+    fn get(&self) -> InboundServer {
+        mk_server(&*self.kubelet, (*(*self.rx.borrow()).borrow()).clone())
+    }
+
+    fn into_stream(self) -> InboundServerRxStream {
+        let kubelet = self.kubelet;
+        let mut outer = self.rx;
+        let mut inner = (*outer.borrow_and_update()).clone();
+        Box::pin(async_stream::stream! {
+            let mut server = (*inner.borrow_and_update()).clone();
+            yield mk_server(&*kubelet, server.clone());
+
+            loop {
+                tokio::select! {
+                    res = inner.changed() => match res {
+                        Ok(()) => {
+                            let s = (*inner.borrow()).clone();
+                            if s != server {
+                                yield mk_server(&*kubelet, s.clone());
+                                server = s;
+                            }
+                        }
+                        Err(_) => {},
+                    },
+
+                    res = outer.changed() => match res {
+                        Ok(()) => {
+                            inner = (*outer.borrow()).clone();
+                            let s = (*inner.borrow_and_update()).clone();
+                            if s != server {
+                                yield mk_server(&*kubelet, s.clone());
+                                server = s;
+                            }
+                        }
+                        Err(_) => return,
+                    },
+                }
+            }
+        })
     }
 }

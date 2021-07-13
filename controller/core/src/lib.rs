@@ -1,10 +1,25 @@
-use futures::Stream;
-use ipnet::{IpNet, Ipv4Net, Ipv6Net};
-use std::{collections::BTreeMap, time::Duration};
-use tokio::sync::watch;
+#![deny(warnings, rust_2018_idioms)]
+#![forbid(unsafe_code)]
 
-#[derive(Clone, Debug)]
-pub struct InboundServerRx(watch::Receiver<watch::Receiver<InboundServer>>);
+use anyhow::Result;
+use futures::prelude::*;
+use ipnet::{IpNet, Ipv4Net, Ipv6Net};
+use std::{collections::BTreeMap, net::IpAddr, pin::Pin, time::Duration};
+
+#[async_trait::async_trait]
+pub trait DiscoverInboundServer<T> {
+    type Rx: InboundServerRx;
+
+    async fn discover_inbound_server(&self, target: T) -> Result<Option<Self::Rx>>;
+}
+
+pub trait InboundServerRx {
+    fn get(&self) -> InboundServer;
+
+    fn into_stream(self) -> InboundServerRxStream;
+}
+
+pub type InboundServerRxStream = Pin<Box<dyn Stream<Item = InboundServer> + Send + Sync + 'static>>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InboundServer {
@@ -75,6 +90,12 @@ impl From<IpNet> for ClientNetwork {
     }
 }
 
+impl From<IpAddr> for ClientNetwork {
+    fn from(net: IpAddr) -> Self {
+        IpNet::from(net).into()
+    }
+}
+
 impl From<Ipv4Net> for ClientNetwork {
     fn from(net: Ipv4Net) -> Self {
         IpNet::from(net).into()
@@ -84,48 +105,5 @@ impl From<Ipv4Net> for ClientNetwork {
 impl From<Ipv6Net> for ClientNetwork {
     fn from(net: Ipv6Net) -> Self {
         IpNet::from(net).into()
-    }
-}
-
-// === impl InboundServerRx ===
-
-impl From<watch::Receiver<watch::Receiver<InboundServer>>> for InboundServerRx {
-    fn from(rx: watch::Receiver<watch::Receiver<InboundServer>>) -> Self {
-        Self(rx)
-    }
-}
-
-impl InboundServerRx {
-    pub fn into_stream(self) -> impl Stream<Item = InboundServer> + Send + Sync {
-        let mut watch_rx = self.0;
-        let mut server_rx = (*watch_rx.borrow()).clone();
-        let mut server = (*server_rx.borrow()).clone();
-
-        async_stream::stream! {
-            yield server.clone();
-
-            loop {
-                tokio::select! {
-                    res = watch_rx.changed() => {
-                        if res.is_err() {
-                            return;
-                        }
-                        server_rx = watch_rx.borrow().clone();
-                    }
-
-                    res = server_rx.changed() => {
-                        if res.is_err() {
-                            server_rx = watch_rx.borrow().clone();
-                        }
-                    }
-                }
-
-                let s = (*server_rx.borrow()).clone();
-                if s != server {
-                    server = s;
-                    yield server.clone();
-                }
-            }
-        }
     }
 }

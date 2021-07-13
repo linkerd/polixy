@@ -1,10 +1,12 @@
 use super::*;
 use crate::{k8s::polixy::server::Port, *};
+use futures::prelude::*;
 use ipnet::{IpNet, Ipv4Net, Ipv6Net};
 use polixy_controller_core::{
-    ClientAuthentication, ClientAuthorization, ClientIdentityMatch, ClientNetwork, ProxyProtocol,
+    ClientAuthentication, ClientAuthorization, ClientIdentityMatch, ClientNetwork, InboundServerRx,
+    ProxyProtocol,
 };
-use std::{collections::BTreeMap, str::FromStr, sync::Arc};
+use std::{collections::BTreeMap, str::FromStr};
 use tokio::time;
 
 /// Creates a pod, then a server, then an authorization--then deletes these resources in the reverse
@@ -39,7 +41,11 @@ async fn incrementally_configure_server() {
     idx.apply_pod(pod.clone()).unwrap();
 
     let default_config = InboundServer {
-        authorizations: mk_default_allow(DefaultAllow::ClusterUnauthenticated, cluster_net),
+        authorizations: mk_default_allow(
+            DefaultAllow::ClusterUnauthenticated,
+            cluster_net,
+            kubelet_ip,
+        ),
         protocol: ProxyProtocol::Detect {
             timeout: detect_timeout,
         },
@@ -49,18 +55,13 @@ async fn incrementally_configure_server() {
     assert!(lookup_rx.lookup("ns-0", "pod-0", 7000).is_none());
 
     // The default policy applies for all exposed ports.
-    let mut port2222 = lookup_rx.lookup("ns-0", "pod-0", 2222).unwrap();
-    assert_eq!(port2222.kubelet_ips, KubeletIps(Arc::new([kubelet_ip])));
-    assert_eq!(*port2222.rx.borrow().borrow(), default_config);
+    let port2222 = lookup_rx.lookup("ns-0", "pod-0", 2222).unwrap();
+    assert_eq!(port2222.get(), default_config);
 
     // In fact, both port resolutions should point to the same data structures (rather than being
     // duplicated for each pod).
     let port9999 = lookup_rx.lookup("ns-0", "pod-0", 9999).unwrap();
-    assert!(Arc::ptr_eq(
-        &port9999.kubelet_ips.0,
-        &port2222.kubelet_ips.0
-    ));
-    assert_eq!(*port9999.rx.borrow().borrow(), default_config);
+    assert_eq!(port9999.get(), default_config);
 
     // Update the server on port 2222 to have a configured protocol.
     let srv = {
@@ -73,11 +74,11 @@ async fn incrementally_configure_server() {
     // Check that the watch has been updated to reflect the above change and that this change _only_
     // applies to the correct port.
     let basic_config = InboundServer {
-        authorizations: Default::default(),
         protocol: ProxyProtocol::Http1,
+        authorizations: vec![healthcheck_authz(kubelet_ip)].into_iter().collect(),
     };
-    assert_eq!(*port2222.rx.borrow().borrow(), basic_config);
-    assert_eq!(*port9999.rx.borrow().borrow(), default_config);
+    assert_eq!(port2222.get(), basic_config);
+    assert_eq!(port9999.get(), default_config);
 
     // Add an authorization policy that selects the server by name.
     let authz = {
@@ -94,47 +95,48 @@ async fn incrementally_configure_server() {
     idx.apply_authz(authz.clone()).unwrap();
 
     // Check that the watch now has authorized traffic as described above.
+    let mut rx = port2222.into_stream();
     assert_eq!(
-        *port2222.rx.borrow().borrow(),
-        InboundServer {
+        time::timeout(time::Duration::from_secs(1), rx.next()).await,
+        Ok(Some(InboundServer {
             protocol: ProxyProtocol::Http1,
-            authorizations: Some((
-                "authz-0".into(),
-                ClientAuthorization {
-                    authentication: ClientAuthentication::TlsUnauthenticated,
-                    networks: vec![Ipv4Net::default().into(), Ipv6Net::default().into(),]
-                }
-            ))
+            authorizations: vec![
+                (
+                    "authz-0".into(),
+                    ClientAuthorization {
+                        authentication: ClientAuthentication::TlsUnauthenticated,
+                        networks: vec![Ipv4Net::default().into(), Ipv6Net::default().into(),]
+                    }
+                ),
+                healthcheck_authz(kubelet_ip),
+            ]
             .into_iter()
             .collect(),
-        }
+        }))
     );
 
     // Delete the authorization and check that the watch has reverted to its prior state.
     idx.delete_authz(authz);
-    assert!(matches!(
-        time::timeout(time::Duration::from_secs(1), port2222.rx.changed()).await,
-        Ok(Ok(()))
-    ));
-    assert_eq!(*port2222.rx.borrow().borrow(), basic_config);
+    assert_eq!(
+        time::timeout(time::Duration::from_secs(1), rx.next()).await,
+        Ok(Some(basic_config)),
+    );
 
     // Delete the server and check that the watch has reverted the default state.
     idx.delete_server(srv).unwrap();
-    assert!(matches!(
-        time::timeout(time::Duration::from_secs(1), port2222.rx.changed()).await,
-        Ok(Ok(()))
-    ));
-    assert_eq!(*port2222.rx.borrow().borrow(), default_config);
+    assert_eq!(
+        time::timeout(time::Duration::from_secs(1), rx.next()).await,
+        Ok(Some(default_config))
+    );
 
     // Delete the pod and check that the watch recognizes that the watch has been closed.
     idx.delete_pod(pod).unwrap();
-    assert!(matches!(
-        time::timeout(time::Duration::from_secs(1), port2222.rx.changed()).await,
-        Ok(Err(_))
-    ));
+    assert_eq!(
+        time::timeout(time::Duration::from_secs(1), rx.next()).await,
+        Ok(None)
+    );
 }
 
-// XXX this test currently fails due to a bug.
 #[tokio::test]
 async fn server_update_deselects_pod() {
     let cluster_net = IpNet::from_str("192.0.2.0/24").unwrap();
@@ -172,12 +174,11 @@ async fn server_update_deselects_pod() {
 
     // The default policy applies for all exposed ports.
     let port2222 = lookup_rx.lookup("ns-0", "pod-0", 2222).unwrap();
-    assert_eq!(port2222.kubelet_ips, KubeletIps(Arc::new([kubelet_ip])));
     assert_eq!(
-        *port2222.rx.borrow().borrow(),
+        port2222.get(),
         InboundServer {
-            authorizations: Default::default(),
             protocol: ProxyProtocol::Http2,
+            authorizations: vec![healthcheck_authz(kubelet_ip)].into_iter().collect(),
         }
     );
 
@@ -187,9 +188,13 @@ async fn server_update_deselects_pod() {
         srv
     });
     assert_eq!(
-        *port2222.rx.borrow().borrow(),
+        port2222.get(),
         InboundServer {
-            authorizations: mk_default_allow(DefaultAllow::ClusterUnauthenticated, cluster_net),
+            authorizations: mk_default_allow(
+                DefaultAllow::ClusterUnauthenticated,
+                cluster_net,
+                kubelet_ip
+            ),
             protocol: ProxyProtocol::Detect {
                 timeout: detect_timeout,
             },
@@ -238,7 +243,7 @@ async fn default_allow_global() {
         idx.reset_pods(vec![p]).unwrap();
 
         let config = InboundServer {
-            authorizations: mk_default_allow(*default, cluster_net),
+            authorizations: mk_default_allow(*default, cluster_net, kubelet_ip),
             protocol: ProxyProtocol::Detect {
                 timeout: detect_timeout,
             },
@@ -248,8 +253,7 @@ async fn default_allow_global() {
         let port2222 = lookup_rx
             .lookup("ns-0", "pod-0", 2222)
             .expect("pod must exist in lookups");
-        assert_eq!(port2222.kubelet_ips, KubeletIps(Arc::new([kubelet_ip])));
-        assert_eq!(*port2222.rx.borrow().borrow(), config);
+        assert_eq!(port2222.get(), config);
     }
 }
 
@@ -300,7 +304,7 @@ async fn default_allow_annotated() {
         idx.reset_pods(vec![p]).unwrap();
 
         let config = InboundServer {
-            authorizations: mk_default_allow(*default, cluster_net),
+            authorizations: mk_default_allow(*default, cluster_net, kubelet_ip),
             protocol: ProxyProtocol::Detect {
                 timeout: detect_timeout,
             },
@@ -309,8 +313,7 @@ async fn default_allow_annotated() {
         let port2222 = lookup_rx
             .lookup("ns-0", "pod-0", 2222)
             .expect("pod must exist in lookups");
-        assert_eq!(port2222.kubelet_ips, KubeletIps(Arc::new([kubelet_ip])));
-        assert_eq!(*port2222.rx.borrow().borrow(), config);
+        assert_eq!(port2222.get(), config);
     }
 }
 
@@ -351,11 +354,14 @@ async fn default_allow_annotated_invalid() {
     let port2222 = lookup_rx
         .lookup("ns-0", "pod-0", 2222)
         .expect("pod must exist in lookups");
-    assert_eq!(port2222.kubelet_ips, KubeletIps(Arc::new([kubelet_ip])));
     assert_eq!(
-        *port2222.rx.borrow().borrow(),
+        port2222.get(),
         InboundServer {
-            authorizations: mk_default_allow(DefaultAllow::AllUnauthenticated, cluster_net),
+            authorizations: mk_default_allow(
+                DefaultAllow::AllUnauthenticated,
+                cluster_net,
+                kubelet_ip
+            ),
             protocol: ProxyProtocol::Detect {
                 timeout: detect_timeout,
             },
@@ -570,7 +576,11 @@ fn mk_authz(
     }
 }
 
-fn mk_default_allow(da: DefaultAllow, cluster_net: IpNet) -> BTreeMap<String, ClientAuthorization> {
+fn mk_default_allow(
+    da: DefaultAllow,
+    cluster_net: IpNet,
+    kubelet_ip: IpAddr,
+) -> BTreeMap<String, ClientAuthorization> {
     let all_nets = vec![Ipv4Net::default().into(), Ipv6Net::default().into()];
 
     let cluster_nets = vec![ClientNetwork::from(cluster_net)];
@@ -609,5 +619,16 @@ fn mk_default_allow(da: DefaultAllow, cluster_net: IpNet) -> BTreeMap<String, Cl
         )),
     }
     .into_iter()
+    .chain(Some(healthcheck_authz(kubelet_ip)))
     .collect()
+}
+
+fn healthcheck_authz(ip: IpAddr) -> (String, ClientAuthorization) {
+    (
+        "_health_check".into(),
+        ClientAuthorization {
+            networks: vec![ClientNetwork::from(IpNet::from(ip))],
+            authentication: ClientAuthentication::Unauthenticated,
+        },
+    )
 }

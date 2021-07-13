@@ -14,7 +14,6 @@ mod k8s;
 pub mod lookup;
 
 pub use self::index::DefaultAllow;
-use ipnet::IpNet;
 use polixy_controller_core::InboundServer;
 use std::{net::IpAddr, sync::Arc};
 use tokio::{sync::watch, time};
@@ -36,7 +35,7 @@ pub struct ServiceAccountRef {
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct KubeletIps(Arc<[IpAddr]>);
+struct KubeletIps(Arc<[IpAddr]>);
 
 pub fn index(
     watches: impl Into<k8s::ResourceWatches>,
@@ -67,8 +66,10 @@ pub fn index(
 
 // === impl KubeletIps ===
 
-impl KubeletIps {
-    pub fn to_nets(&self) -> Vec<IpNet> {
-        self.0.iter().copied().map(IpNet::from).collect()
+impl std::ops::Deref for KubeletIps {
+    type Target = [IpAddr];
+
+    fn deref(&self) -> &[IpAddr] {
+        &*self.0
     }
 }

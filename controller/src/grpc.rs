@@ -1,24 +1,28 @@
-use crate::{lookup, KubeletIps, ServerRxRx};
+use crate::lookup::PodPort;
 use futures::prelude::*;
 use linkerd2_proxy_api::inbound::{
     self as proto,
     inbound_server_discovery_server::{InboundServerDiscovery, InboundServerDiscoveryServer},
 };
 use polixy_controller_core::{
-    ClientAuthentication, ClientAuthorization, ClientIdentityMatch, ClientNetwork, InboundServer,
-    ProxyProtocol,
+    ClientAuthentication, ClientAuthorization, ClientIdentityMatch, ClientNetwork,
+    DiscoverInboundServer, InboundServer, InboundServerRx, ProxyProtocol,
 };
 use tracing::trace;
 
 #[derive(Clone, Debug)]
-pub struct Server {
-    lookup: lookup::Reader,
+pub struct Server<T> {
+    discover: T,
     drain: drain::Watch,
 }
 
-impl Server {
-    pub fn new(lookup: lookup::Reader, drain: drain::Watch) -> Self {
-        Self { lookup, drain }
+impl<T> Server<T>
+where
+    T: DiscoverInboundServer<PodPort> + Send + Sync + 'static,
+    T::Rx: Send + Sync + 'static,
+{
+    pub fn new(discover: T, drain: drain::Watch) -> Self {
+        Self { discover, drain }
     }
 
     pub async fn serve(
@@ -32,7 +36,7 @@ impl Server {
             .await
     }
 
-    fn lookup(&self, workload: String, port: u32) -> Result<lookup::PodPort, tonic::Status> {
+    async fn lookup(&self, workload: String, port: u32) -> Result<T::Rx, tonic::Status> {
         // Parse a workload name in the form namespace:name.
         let (ns, name) = match workload.split_once(':') {
             None => {
@@ -63,24 +67,36 @@ impl Server {
 
         // Lookup the configuration for an inbound port. If the pod hasn't (yet)
         // been indexed, return a Not Found error.
-        self.lookup.lookup(&ns, &name, port).ok_or_else(|| {
-            tonic::Status::not_found(format!("unknown pod ns={} name={} port={}", ns, name, port))
-        })
+        self.discover
+            .discover_inbound_server(PodPort {
+                ns: ns.to_string(),
+                pod: name.to_string(),
+                port,
+            })
+            .await
+            .map_err(|e| tonic::Status::internal(format!("lookup failed: {}", e)))?
+            .ok_or_else(|| {
+                tonic::Status::not_found(format!(
+                    "unknown pod ns={} name={} port={}",
+                    ns, name, port
+                ))
+            })
     }
 }
 
 #[async_trait::async_trait]
-impl InboundServerDiscovery for Server {
+impl<T> InboundServerDiscovery for Server<T>
+where
+    T: DiscoverInboundServer<PodPort> + Send + Sync + 'static,
+    T::Rx: Send + Sync + 'static,
+{
     async fn get_port(
         &self,
         req: tonic::Request<proto::PortSpec>,
     ) -> Result<tonic::Response<proto::Server>, tonic::Status> {
         let proto::PortSpec { workload, port } = req.into_inner();
-        let lookup::PodPort { kubelet_ips, rx } = self.lookup(workload, port)?;
-
-        let kubelet = kubelet_authz(kubelet_ips);
-
-        let server = to_server(&kubelet, rx.borrow().borrow().clone());
+        let rx = self.lookup(workload, port).await?;
+        let server = to_server(&rx.get());
         Ok(tonic::Response::new(server))
     }
 
@@ -91,62 +107,34 @@ impl InboundServerDiscovery for Server {
         req: tonic::Request<proto::PortSpec>,
     ) -> Result<tonic::Response<BoxWatchStream>, tonic::Status> {
         let proto::PortSpec { workload, port } = req.into_inner();
-        let lookup::PodPort { kubelet_ips, rx } = self.lookup(workload, port)?;
-
-        Ok(tonic::Response::new(response_stream(
-            kubelet_ips,
-            self.drain.clone(),
-            rx,
-        )))
+        let rx = self.lookup(workload, port).await?;
+        let drain = self.drain.clone();
+        Ok(tonic::Response::new(response_stream(drain, rx)))
     }
 }
 
 type BoxWatchStream =
     std::pin::Pin<Box<dyn Stream<Item = Result<proto::Server, tonic::Status>> + Send + Sync>>;
 
-fn response_stream(
-    kubelet_ips: KubeletIps,
-    drain: drain::Watch,
-    mut port_rx: ServerRxRx,
-) -> BoxWatchStream {
-    let kubelet = kubelet_authz(kubelet_ips);
-
+fn response_stream<T>(drain: drain::Watch, rx: T) -> BoxWatchStream
+where
+    T: InboundServerRx + Send + Sync + 'static,
+{
     Box::pin(async_stream::try_stream! {
         tokio::pin! {
             let shutdown = drain.signaled();
         }
 
-        let mut server_rx = port_rx.borrow().clone();
-        let mut prior = None;
+        let mut servers = rx.into_stream();
         loop {
-            let server = server_rx.borrow().clone();
-
-            // Deduplicate identical updates (i.e., especially after the controller reconnects to
-            // the k8s API).
-            if prior.as_ref() != Some(&server) {
-                prior = Some(server.clone());
-                yield to_server(&kubelet, server);
-            }
-
             tokio::select! {
                 // When the port is updated with a new server, update the server watch.
-                res = port_rx.changed() => {
-                    // If the port watch closed, end the stream.
-                    if res.is_err() {
-                        return;
+                res = servers.next() => match res {
+                    Some(s) => {
+                        yield to_server(&s);
                     }
-                    // Otherwise, update the server watch.
-                    server_rx = port_rx.borrow().clone();
-                }
-
-                // Wait for the current server watch to update.
-                res = server_rx.changed() => {
-                    // If the server was deleted (the server watch closes), get an updated server
-                    // watch.
-                    if res.is_err() {
-                        server_rx = port_rx.borrow().clone();
-                    }
-                }
+                    None => return,
+                },
 
                 // If the server starts shutting down, close the stream so that it doesn't hold the
                 // server open.
@@ -158,7 +146,7 @@ fn response_stream(
     })
 }
 
-fn to_server(kubelet_authz: &proto::Authz, srv: InboundServer) -> proto::Server {
+fn to_server(srv: &InboundServer) -> proto::Server {
     // Convert the protocol object into a protobuf response.
     let protocol = proto::ProxyProtocol {
         kind: match srv.protocol {
@@ -186,40 +174,17 @@ fn to_server(kubelet_authz: &proto::Authz, srv: InboundServer) -> proto::Server 
     };
     trace!(?protocol);
 
-    let server_authzs = srv.authorizations.into_iter().map(|(n, c)| to_authz(n, c));
-    trace!(?kubelet_authz);
-    trace!(?server_authzs);
+    let authorizations = srv
+        .authorizations
+        .iter()
+        .map(|(n, c)| to_authz(n, c))
+        .collect();
+    trace!(?authorizations);
 
     proto::Server {
         protocol: Some(protocol),
-        authorizations: Some(kubelet_authz.clone())
-            .into_iter()
-            .chain(server_authzs)
-            .collect(),
+        authorizations,
         ..Default::default()
-    }
-}
-
-fn kubelet_authz(ips: KubeletIps) -> proto::Authz {
-    // Traffic is always permitted from the pod's Kubelet IPs.
-    proto::Authz {
-        networks: ips
-            .to_nets()
-            .into_iter()
-            .map(|net| proto::Network {
-                net: Some(net.into()),
-                except: vec![],
-            })
-            .collect(),
-        authentication: Some(proto::Authn {
-            permit: Some(proto::authn::Permit::Unauthenticated(
-                proto::authn::PermitUnauthenticated {},
-            )),
-        }),
-        labels: Some(("authn".to_string(), "false".to_string()))
-            .into_iter()
-            .chain(Some(("name".to_string(), "_kubelet".to_string())))
-            .collect(),
     }
 }
 
@@ -228,7 +193,7 @@ fn to_authz(
     ClientAuthorization {
         networks,
         authentication,
-    }: ClientAuthorization,
+    }: &ClientAuthorization,
 ) -> proto::Authz {
     let networks = if networks.is_empty() {
         // TODO use cluster networks (from config).

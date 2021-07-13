@@ -1,4 +1,4 @@
-use super::{DefaultAllow, Index, KubeletIps, Namespace, NodeIndex, SrvIndex};
+use super::{node::KubeletIps, DefaultAllow, Index, Namespace, NodeIndex, SrvIndex};
 use crate::{lookup, ServerRx, ServerRxTx};
 use anyhow::{anyhow, Result};
 use polixy_controller_k8s_api::{self as k8s, polixy, ResourceExt};

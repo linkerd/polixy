@@ -1,4 +1,4 @@
-use crate::{index::KubeletIps, ServerRxRx};
+use crate::{node::KubeletIps, ServerRxRx};
 use anyhow::{anyhow, Result};
 use dashmap::{mapref::entry::Entry, DashMap};
 use polixy_controller_core::{

@@ -117,23 +117,21 @@ impl Rx {
     pub(crate) fn new(kubelet: KubeletIps, rx: ServerRxRx) -> Self {
         Self { kubelet, rx }
     }
-}
 
-#[inline]
-fn mk_server(kubelet: &[IpAddr], mut inner: InboundServer) -> InboundServer {
-    let networks = kubelet.iter().copied().map(NetworkMatch::from).collect();
-    let authz = ClientAuthorization {
-        networks,
-        authentication: ClientAuthentication::Unauthenticated,
-    };
+    #[inline]
+    fn mk_server(kubelet: &[IpAddr], mut inner: InboundServer) -> InboundServer {
+        let networks = kubelet.iter().copied().map(NetworkMatch::from).collect();
+        let authz = ClientAuthorization {
+            networks,
+            authentication: ClientAuthentication::Unauthenticated,
+        };
 
-    inner.authorizations.insert("_health_check".into(), authz);
-    inner
-}
+        inner.authorizations.insert("_health_check".into(), authz);
+        inner
+    }
 
-impl Rx {
     pub(crate) fn get(&self) -> InboundServer {
-        mk_server(&*self.kubelet, (*(*self.rx.borrow()).borrow()).clone())
+        Self::mk_server(&*self.kubelet, (*(*self.rx.borrow()).borrow()).clone())
     }
 
     pub(crate) fn into_stream(self) -> InboundServerStream {
@@ -142,7 +140,7 @@ impl Rx {
         let mut inner = (*outer.borrow_and_update()).clone();
         Box::pin(async_stream::stream! {
             let mut server = (*inner.borrow_and_update()).clone();
-            yield mk_server(&*kubelet, server.clone());
+            yield Self::mk_server(&*kubelet, server.clone());
 
             loop {
                 tokio::select! {
@@ -150,7 +148,7 @@ impl Rx {
                         Ok(()) => {
                             let s = (*inner.borrow()).clone();
                             if s != server {
-                                yield mk_server(&*kubelet, s.clone());
+                                yield Self::mk_server(&*kubelet, s.clone());
                                 server = s;
                             }
                         }
@@ -162,7 +160,7 @@ impl Rx {
                             inner = (*outer.borrow()).clone();
                             let s = (*inner.borrow_and_update()).clone();
                             if s != server {
-                                yield mk_server(&*kubelet, s.clone());
+                                yield Self::mk_server(&*kubelet, s.clone());
                                 server = s;
                             }
                         }

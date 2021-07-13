@@ -8,7 +8,6 @@
 //! Servers, and ServerAuthorizations).
 
 pub mod admin;
-pub mod grpc;
 mod index;
 mod k8s;
 pub mod lookup;

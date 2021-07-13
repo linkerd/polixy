@@ -27,13 +27,6 @@ pub(crate) fn pair() -> (Writer, Reader) {
     (w, r)
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PodPort {
-    pub ns: String,
-    pub pod: String,
-    pub port: u16,
-}
-
 #[derive(Clone, Debug)]
 pub struct Rx {
     kubelet: KubeletIps,
@@ -49,12 +42,12 @@ impl Reader {
 }
 
 #[async_trait::async_trait]
-impl DiscoverInboundServer<PodPort> for Reader {
+impl DiscoverInboundServer<(String, String, u16)> for Reader {
     type Rx = Rx;
 
     async fn discover_inbound_server(
         &self,
-        PodPort { ns, pod, port }: PodPort,
+        (ns, pod, port): (String, String, u16),
     ) -> Result<Option<Rx>> {
         Ok(self.lookup(&*ns, &*pod, port))
     }

@@ -91,7 +91,7 @@ async fn grpc(
     handle: polixy_controller::lookup::Reader,
     drain: drain::Watch,
 ) -> Result<()> {
-    let server = polixy_controller::grpc::Server::new(handle, drain.clone());
+    let server = polixy_controller_grpc::Server::new(handle, drain.clone());
     let (close_tx, close_rx) = tokio::sync::oneshot::channel();
     tokio::pin! {
         let srv = server.serve(addr, close_rx.map(|_| {}));

@@ -3,5 +3,6 @@ resolver = "2"
 members = [
     "client",
     "controller",
-    "controller/core"
+    "controller/core",
+    "controller/grpc"
 ]

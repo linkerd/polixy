@@ -3,7 +3,7 @@
 
 use anyhow::Result;
 use futures::prelude::*;
-use ipnet::{IpNet, Ipv4Net, Ipv6Net};
+pub use ipnet::{IpNet, Ipv4Net, Ipv6Net};
 use std::{collections::BTreeMap, net::IpAddr, pin::Pin, time::Duration};
 
 #[async_trait::async_trait]

@@ -1065,9 +1065,9 @@ dependencies = [
  "k8s-openapi",
  "kube",
  "kube-runtime",
- "linkerd2-proxy-api",
  "parking_lot",
  "polixy-controller-core",
+ "polixy-controller-grpc",
  "schemars",
  "serde",
  "serde_json",
@@ -1075,7 +1075,6 @@ dependencies = [
  "structopt",
  "tokio",
  "tokio-stream",
- "tonic",
  "tracing",
  "tracing-subscriber",
 ]
@@ -1089,6 +1088,21 @@ dependencies = [
  "futures",
  "ipnet",
  "tokio",
+]
+
+[[package]]
+name = "polixy-controller-grpc"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "async-trait",
+ "drain",
+ "futures",
+ "linkerd2-proxy-api",
+ "polixy-controller-core",
+ "tokio",
+ "tonic",
+ "tracing",
 ]
 
 [[package]]

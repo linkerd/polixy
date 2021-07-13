@@ -1,4 +1,6 @@
-use crate::lookup::PodPort;
+#![deny(warnings, rust_2018_idioms)]
+#![forbid(unsafe_code)]
+
 use futures::prelude::*;
 use linkerd2_proxy_api::inbound::{
     self as proto,
@@ -6,7 +8,7 @@ use linkerd2_proxy_api::inbound::{
 };
 use polixy_controller_core::{
     ClientAuthentication, ClientAuthorization, ClientIdentityMatch, ClientNetwork,
-    DiscoverInboundServer, InboundServer, InboundServerRx, ProxyProtocol,
+    DiscoverInboundServer, InboundServer, InboundServerRx, IpNet, ProxyProtocol,
 };
 use tracing::trace;
 
@@ -18,7 +20,7 @@ pub struct Server<T> {
 
 impl<T> Server<T>
 where
-    T: DiscoverInboundServer<PodPort> + Send + Sync + 'static,
+    T: DiscoverInboundServer<(String, String, u16)> + Send + Sync + 'static,
     T::Rx: Send + Sync + 'static,
 {
     pub fn new(discover: T, drain: drain::Watch) -> Self {
@@ -68,11 +70,7 @@ where
         // Lookup the configuration for an inbound port. If the pod hasn't (yet)
         // been indexed, return a Not Found error.
         self.discover
-            .discover_inbound_server(PodPort {
-                ns: ns.to_string(),
-                pod: name.to_string(),
-                port,
-            })
+            .discover_inbound_server((ns.to_string(), name.to_string(), port))
             .await
             .map_err(|e| tonic::Status::internal(format!("lookup failed: {}", e)))?
             .ok_or_else(|| {
@@ -87,7 +85,7 @@ where
 #[async_trait::async_trait]
 impl<T> InboundServerDiscovery for Server<T>
 where
-    T: DiscoverInboundServer<PodPort> + Send + Sync + 'static,
+    T: DiscoverInboundServer<(String, String, u16)> + Send + Sync + 'static,
     T::Rx: Send + Sync + 'static,
 {
     async fn get_port(
@@ -199,11 +197,11 @@ fn to_authz(
         // TODO use cluster networks (from config).
         vec![
             proto::Network {
-                net: Some(ipnet::IpNet::V4(Default::default()).into()),
+                net: Some(IpNet::V4(Default::default()).into()),
                 except: vec![],
             },
             proto::Network {
-                net: Some(ipnet::IpNet::V6(Default::default()).into()),
+                net: Some(IpNet::V6(Default::default()).into()),
                 except: vec![],
             },
         ]

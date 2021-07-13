@@ -5,5 +5,6 @@ members = [
     "controller",
     "controller/core",
     "controller/grpc",
-    "controller/k8s"
+    "controller/k8s",
+    "controller/k8s/api"
 ]

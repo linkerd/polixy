@@ -1,9 +1,10 @@
-use crate::{k8s, ServerRx};
+use crate::ServerRx;
 use anyhow::{anyhow, Error, Result};
 use polixy_controller_core::{
     ClientAuthentication, ClientAuthorization, ClientIdentityMatch, ClientNetwork, InboundServer,
     IpNet, ProxyProtocol,
 };
+use polixy_controller_k8s_api as k8s;
 use tokio::{sync::watch, time};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]

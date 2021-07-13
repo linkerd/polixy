@@ -1,18 +1,18 @@
-#![deny(warnings, rust_2018_idioms)]
-#![forbid(unsafe_code)]
-
 //! Linkerd Policy Controller
 //!
 //! The policy controller serves discovery requests from inbound proxies, indicating how the proxy
 //! should admit connections into a Pod. It watches cluster resources (Namespaces, Nodes, Pods,
 //! Servers, and ServerAuthorizations).
 
+#![deny(warnings, rust_2018_idioms)]
+#![forbid(unsafe_code)]
+
 mod index;
-mod k8s;
 pub mod lookup;
 
 pub use self::index::DefaultAllow;
 use polixy_controller_core::{InboundServer, IpNet};
+use polixy_controller_k8s_api as k8s;
 use tokio::{sync::watch, time};
 
 /// Watches a server's configuration for server/authorization changes.

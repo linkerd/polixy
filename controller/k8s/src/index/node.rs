@@ -1,9 +1,9 @@
 //! Node->Kubelet IP
 
 use super::Index;
-use crate::k8s::{self, ResourceExt};
 use anyhow::{anyhow, Context, Result};
 use polixy_controller_core::IpNet;
+use polixy_controller_k8s_api::{self as k8s, ResourceExt};
 use std::{
     collections::{hash_map::Entry as HashEntry, HashMap, HashSet},
     net::IpAddr,

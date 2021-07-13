@@ -1,12 +1,12 @@
 use super::{Index, ServerSelector, SrvIndex};
-use crate::k8s::{
-    self,
-    polixy::{self, authz::MeshTls},
-    ResourceExt,
-};
 use anyhow::{anyhow, bail, Result};
 use polixy_controller_core::{
     ClientAuthentication, ClientAuthorization, ClientIdentityMatch, ClientNetwork, IpNet,
+};
+use polixy_controller_k8s_api::{
+    self as k8s,
+    polixy::{self, authz::MeshTls},
+    ResourceExt,
 };
 use std::collections::{hash_map::Entry as HashEntry, HashMap, HashSet};
 use tracing::{debug, instrument, trace};

@@ -1,10 +1,8 @@
 use super::{authz::AuthzIndex, Index, Namespace, ServerSelector};
-use crate::{
-    k8s::{self, polixy, ResourceExt},
-    ServerRx, ServerTx,
-};
+use crate::{ServerRx, ServerTx};
 use anyhow::{anyhow, bail, Result};
 use polixy_controller_core::{ClientAuthorization, InboundServer, ProxyProtocol};
+use polixy_controller_k8s_api::{self as k8s, polixy, ResourceExt};
 use std::{
     collections::{hash_map::Entry as HashEntry, BTreeMap, HashMap, HashSet},
     sync::Arc,

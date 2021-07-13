@@ -1,9 +1,7 @@
 use super::{DefaultAllow, Index, KubeletIps, Namespace, NodeIndex, SrvIndex};
-use crate::{
-    k8s::{self, polixy, ResourceExt},
-    lookup, ServerRx, ServerRxTx,
-};
+use crate::{lookup, ServerRx, ServerRxTx};
 use anyhow::{anyhow, Result};
+use polixy_controller_k8s_api::{self as k8s, polixy, ResourceExt};
 use std::collections::{hash_map::Entry as HashEntry, HashMap, HashSet};
 use tokio::sync::watch;
 use tracing::{debug, instrument, trace, warn};

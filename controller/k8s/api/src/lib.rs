@@ -1,6 +1,3 @@
-use kube::api::{Api, ListParams};
-use kube_runtime::watcher;
-
 pub mod labels;
 pub mod polixy;
 mod watch;
@@ -17,13 +14,15 @@ pub use k8s_openapi::{
     apimachinery::pkg::apis::meta::v1::ObjectMeta,
 };
 pub use kube::api::ResourceExt;
+use kube::api::{Api, ListParams};
+use kube_runtime::watcher;
 
 /// Resource watches.
 pub struct ResourceWatches {
-    pub(crate) nodes_rx: Watch<Node>,
-    pub(crate) pods_rx: Watch<Pod>,
-    pub(crate) servers_rx: Watch<polixy::Server>,
-    pub(crate) authorizations_rx: Watch<polixy::ServerAuthorization>,
+    pub nodes_rx: Watch<Node>,
+    pub pods_rx: Watch<Pod>,
+    pub servers_rx: Watch<polixy::Server>,
+    pub authorizations_rx: Watch<polixy::ServerAuthorization>,
 }
 
 // === impl ResourceWatches ===

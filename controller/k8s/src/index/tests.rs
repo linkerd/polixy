@@ -1,11 +1,12 @@
 use super::*;
-use crate::{k8s::polixy::server::Port, *};
+use crate::*;
 use futures::prelude::*;
 use polixy_controller_core::{
     ClientAuthentication, ClientAuthorization, ClientIdentityMatch, ClientNetwork, InboundServerRx,
     IpNet, Ipv4Net, Ipv6Net, ProxyProtocol,
 };
-use std::{collections::BTreeMap, str::FromStr};
+use polixy_controller_k8s_api::polixy::server::Port;
+use std::{collections::BTreeMap, net::IpAddr, str::FromStr};
 use tokio::time;
 
 /// Creates a pod, then a server, then an authorization--then deletes these resources in the reverse

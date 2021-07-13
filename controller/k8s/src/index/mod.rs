@@ -15,12 +15,10 @@ use self::{
     node::NodeIndex,
     server::SrvIndex,
 };
-use crate::{
-    k8s::{self, ResourceExt},
-    lookup,
-};
+use crate::lookup;
 use anyhow::{Context, Error};
 use polixy_controller_core::IpNet;
+use polixy_controller_k8s_api::{self as k8s, ResourceExt};
 use std::sync::Arc;
 use tokio::{sync::watch, time};
 use tracing::{debug, instrument, warn};
